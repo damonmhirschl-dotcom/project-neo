@@ -1,0 +1,1608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlgoDesk — Trading</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/chart.js/dist/chart.umd.js"></script>
+<script src="https://unpkg.com/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script>window.QRCodeReady=true;</script>
+<script>/* Apply saved theme before React runs — prevents loading overlay colour mismatch */
+(function(){var t=localStorage.getItem('neo-theme');if(t)document.documentElement.setAttribute('data-theme',t);})();
+</script>
+<style>
+  /* ── Reset ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 14px; }
+
+  /* ── Tokens ── */
+  :root {
+    --bg:        #F9F8F6;
+    --surface:   #FFFFFF;
+    --surface-2: #F3F2EF;
+    --border:    rgba(0,0,0,0.08);
+    --border-md: rgba(0,0,0,0.13);
+    --text-1:    #1A1917;
+    --text-2:    #5C5A56;
+    --text-3:    #9B9892;
+    --green:     #2D6A4F;
+    --green-bg:  #D8F3DC;
+    --red:       #9B2226;
+    --red-bg:    #FFE8E8;
+    --amber:     #854D0E;
+    --amber-bg:  #FEF3C7;
+    --blue:      #1E40AF;
+    --blue-bg:   #DBEAFE;
+    --radius:    10px;
+    --radius-sm: 6px;
+    --shadow:    0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --font:      'DM Sans', sans-serif;
+    --mono:      'DM Mono', monospace;
+  }
+  [data-theme="dark"] {
+    --bg:        #0f1117;
+    --surface:   #181c25;
+    --surface-2: #1e2330;
+    --border:    rgba(255,255,255,0.07);
+    --border-md: rgba(255,255,255,0.12);
+    --text-1:    #eceef2;
+    --text-2:    #9aa0b0;
+    --text-3:    #555e72;
+    --green:     #4ade80;
+    --green-bg:  rgba(74,222,128,0.12);
+    --red:       #f87171;
+    --red-bg:    rgba(248,113,113,0.12);
+    --amber:     #fbbf24;
+    --amber-bg:  rgba(251,191,36,0.12);
+    --blue:      #60a5fa;
+    --blue-bg:   rgba(96,165,250,0.12);
+    --shadow:    0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+  }
+  .theme-toggle { background: none; border: 1px solid var(--border-md); border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; font-size: 0.78rem; color: var(--text-3); line-height: 1; transition: color 0.15s, background 0.15s; }
+  .theme-toggle:hover { color: var(--text-1); background: var(--surface-2); }
+
+  body {
+    background: var(--bg);
+    color: var(--text-1);
+    font-family: var(--font);
+    font-weight: 400;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ── */
+  .app { max-width: 1080px; margin: 0 auto; padding: 0 1.25rem 3rem; }
+
+  /* ── Topbar ── */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.25rem 0 1.5rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.75rem;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 0.75rem; }
+  .wordmark { font-size: 0.9rem; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+  .mode-pill {
+    font-size: 0.7rem; font-weight: 500; letter-spacing: 0.06em;
+    padding: 3px 10px; border-radius: 20px;
+    background: var(--green-bg); color: var(--green);
+  }
+  .mode-pill.live { background: var(--red-bg); color: var(--red); }
+  .topbar-right { display: flex; align-items: center; gap: 1rem; }
+  .clock { font-family: var(--mono); font-size: 0.8rem; color: var(--text-3); }
+  .logout-btn {
+    font-size: 0.75rem; color: var(--text-3); background: none; border: none;
+    cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
+    transition: color 0.15s, background 0.15s;
+  }
+  .logout-btn:hover { color: var(--text-1); background: var(--surface-2); }
+
+  /* ── Section label ── */
+  .sec-label {
+    font-size: 0.68rem; font-weight: 500; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-3);
+    margin-bottom: 0.6rem;
+  }
+  .sec-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.1rem 1.2rem;
+    margin-bottom: 1.25rem;
+  }
+
+  /* ── Divider ── */
+  .div { height: 1px; background: var(--border); margin: 0.75rem 0; }
+
+  /* ── Grid ── */
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1rem; margin-bottom: 1.25rem; align-items: start; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.75rem; margin-bottom: 0.9rem; }
+
+  /* ── Stat pill ── */
+  .stat-pill { background: var(--surface-2); border-radius: var(--radius-sm); padding: 0.65rem 0.85rem; }
+  .stat-pill .lbl { font-size: 0.7rem; color: var(--text-3); margin-bottom: 3px; }
+  .stat-pill .val { font-size: 1.15rem; font-weight: 500; font-family: var(--mono); color: var(--text-1); }
+  .stat-pill .sub { font-size: 0.68rem; color: var(--text-3); margin-top: 2px; }
+  .pos { color: var(--green) !important; }
+  .neg { color: var(--red) !important; }
+
+  /* ── Drawdown bars ── */
+  .dd-section { margin-top: 0.9rem; }
+  .dd-title { font-size: 0.72rem; font-weight: 500; color: var(--text-2); margin-bottom: 0.6rem; }
+  .dd-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.55rem; }
+  .dd-row:last-child { margin-bottom: 0; }
+  .dd-lbl { font-size: 0.72rem; color: var(--text-2); min-width: 112px; }
+  .dd-track { flex: 1; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+  .dd-fill { height: 5px; border-radius: 3px; transition: width 0.4s ease; }
+  .dd-fill.ok { background: var(--green); }
+  .dd-fill.warn { background: #D97706; }
+  .dd-fill.danger { background: var(--red); }
+  .dd-val { font-family: var(--mono); font-size: 0.72rem; font-weight: 500; min-width: 36px; text-align: right; }
+  .dd-limit { font-size: 0.68rem; color: var(--text-3); min-width: 32px; text-align: right; }
+
+  /* ── Margin bar ── */
+  .margin-section { margin-top: 0.9rem; }
+  .margin-bar-track { width: 100%; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin: 0.4rem 0 0.35rem; }
+  .margin-bar-fill { height: 5px; border-radius: 3px; background: var(--green); transition: width 0.4s ease; }
+  .margin-labels { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-3); }
+
+  /* ── Position rows ── */
+  .pos-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
+  .pos-stat .lbl { font-size: 0.7rem; color: var(--text-3); margin-bottom: 2px; }
+  .pos-stat .val { font-size: 1.1rem; font-weight: 500; font-family: var(--mono); }
+  .positions-list { max-height: 280px; overflow-y: auto; }
+  .pos-row, .trade-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.55rem 0; border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+  .pos-row:first-child, .trade-row:first-child { padding-top: 0; }
+  .pos-row:last-child, .trade-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .pos-pair, .trade-pair { font-weight: 500; min-width: 68px; }
+  .dir-badge {
+    font-size: 0.65rem; font-weight: 500; padding: 2px 7px; border-radius: 12px;
+  }
+  .dir-long { background: var(--green-bg); color: var(--green); }
+  .dir-short { background: var(--red-bg); color: var(--red); }
+  .pos-meta, .trade-meta { color: var(--text-3); font-size: 0.72rem; font-family: var(--mono); min-width: 80px; }
+  .trade-reason { color: var(--text-3); font-size: 0.72rem; min-width: 80px; }
+  .pos-pnl, .trade-pnl { font-weight: 500; font-family: var(--mono); text-align: right; min-width: 52px; }
+  .empty-row { padding: 1.5rem 0; text-align: center; font-size: 0.8rem; color: var(--text-3); }
+
+  /* ── Events ── */
+  .event-row { display: flex; align-items: flex-start; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+  .event-row:first-child { padding-top: 0; }
+  .event-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .event-time { font-family: var(--mono); font-size: 0.72rem; font-weight: 500; color: var(--text-2); min-width: 46px; }
+  .event-body { flex: 1; padding: 0 0.75rem; }
+  .event-name { font-size: 0.8rem; color: var(--text-1); }
+  .event-country { font-size: 0.68rem; color: var(--text-3); margin-top: 1px; }
+  .event-right { text-align: right; }
+  .tier1-badge { font-size: 0.65rem; font-weight: 500; padding: 2px 7px; border-radius: 10px; background: #FEE2E2; color: #991B1B; }
+  .event-fcst { font-size: 0.68rem; color: var(--text-3); margin-top: 3px; font-family: var(--mono); }
+
+  /* ── Download button ── */
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.72rem; font-weight: 500; color: var(--text-2);
+    background: var(--surface-2); border: 1px solid var(--border-md);
+    border-radius: var(--radius-sm); padding: 5px 10px;
+    cursor: pointer; text-decoration: none; transition: background 0.15s, color 0.15s;
+    font-family: var(--font);
+  }
+  .dl-btn:hover { background: var(--border); color: var(--text-1); }
+
+  /* ── Login ── */
+  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+  .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 2.5rem 2rem; width: 100%; max-width: 380px; text-align: center; }
+  .login-title { font-size: 1rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 0.35rem; color: var(--text-1); }
+  .login-sub { font-size: 0.8rem; color: var(--text-3); margin-bottom: 1.75rem; }
+  /* Input: explicit fill colour + autofill reset to defeat browser dark-mode injection */
+  .login-input { width: 100%; padding: 0.65rem 0.85rem; font-size: 0.85rem; font-family: var(--font); border: 1px solid var(--border-md); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-1); -webkit-text-fill-color: var(--text-1); margin-bottom: 0.65rem; outline: none; transition: border 0.15s; }
+  .login-input::placeholder { color: var(--text-3); opacity: 1; }
+  .login-input:focus { border-color: var(--text-2); }
+  .login-input:-webkit-autofill,
+  .login-input:-webkit-autofill:hover,
+  .login-input:-webkit-autofill:focus { transition: background-color 9999s ease-in-out 0s; }
+  /* Dark mode: hardcoded values override any browser colour-scheme interference */
+  [data-theme="dark"] .login-input { background: #1e2330; color: #eceef2; -webkit-text-fill-color: #eceef2; border-color: rgba(255,255,255,0.12); }
+  [data-theme="dark"] .login-input::placeholder { color: rgba(236,238,242,0.35); opacity: 1; }
+  [data-theme="dark"] .login-input:focus { border-color: rgba(255,255,255,0.28); }
+  [data-theme="dark"] .login-input:-webkit-autofill,
+  [data-theme="dark"] .login-input:-webkit-autofill:hover,
+  [data-theme="dark"] .login-input:-webkit-autofill:focus { -webkit-box-shadow: 0 0 0 1000px #1e2330 inset; -webkit-text-fill-color: #eceef2; }
+  /* Button: var(--bg) for text colour so contrast inverts correctly in both modes.
+     Light: #F9F8F6 text on #1A1917 bg ✓   Dark: #0f1117 text on #eceef2 bg ✓ */
+  .login-btn { width: 100%; padding: 0.7rem; font-size: 0.85rem; font-weight: 500; font-family: var(--font); background: var(--text-1); color: var(--bg); border: none; border-radius: var(--radius-sm); cursor: pointer; transition: opacity 0.15s; margin-top: 0.25rem; }
+  .login-btn:hover:not(:disabled) { opacity: 0.85; }
+  .login-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .login-err { font-size: 0.75rem; color: var(--red); margin-top: 0.65rem; }
+
+  /* ── Loading ── */
+  .loading-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .spinner { width: 24px; height: 24px; border: 2px solid var(--border-md); border-top-color: var(--text-2); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Performance panel ── */
+  .perf-filters {
+    display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  }
+  .preset-btn {
+    font-size: 0.72rem; font-weight: 500; font-family: var(--font);
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid var(--border-md); background: var(--surface-2);
+    color: var(--text-2); cursor: pointer; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .preset-btn:hover { background: var(--border); color: var(--text-1); }
+  .preset-btn.active {
+    background: var(--text-1); color: #fff; border-color: var(--text-1);
+  }
+  .date-sep { font-size: 0.72rem; color: var(--text-3); padding: 0 2px; }
+  .date-input {
+    font-size: 0.72rem; font-family: var(--mono); font-weight: 400;
+    padding: 4px 8px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border-md); background: var(--surface-2);
+    color: var(--text-1); cursor: pointer; outline: none;
+    transition: border 0.15s;
+  }
+  .date-input:focus { border-color: var(--text-2); }
+  .perf-summary {
+    display: grid; grid-template-columns: repeat(5, minmax(0,1fr));
+    gap: 0.6rem; margin: 0.75rem 0 0.25rem;
+  }
+  .perf-stat { padding: 0.6rem 0.75rem; background: var(--surface-2); border-radius: var(--radius-sm); }
+  .perf-stat .lbl { font-size: 0.65rem; color: var(--text-3); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .perf-stat .val { font-size: 1.05rem; font-weight: 500; font-family: var(--mono); }
+  .perf-stat .sub { font-size: 0.63rem; color: var(--text-3); margin-top: 1px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .topbar-right .clock { display: none; }
+    .perf-summary { grid-template-columns: repeat(3, 1fr); }
+  }
+  /* ── Initial loading overlay — hides content flash on first data fetch ── */
+  #app-loading {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #F9F8F6;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 9999;
+    transition: opacity 0.3s ease-out;
+  }
+  [data-theme="dark"] #app-loading { background: #0f1117; }
+  #app-loading.fade-out { opacity: 0; pointer-events: none; }
+  #app-loading .loading-spinner {
+    width: 36px; height: 36px;
+    border: 3px solid rgba(0,0,0,0.12);
+    border-top-color: #2D6A4F;
+    border-radius: 50%;
+    animation: neo-spin 0.8s linear infinite;
+  }
+  [data-theme="dark"] #app-loading .loading-spinner {
+    border-color: rgba(255,255,255,0.1);
+    border-top-color: #4ade80;
+  }
+  #app-loading .loading-text {
+    margin-top: 14px; color: #9B9892; font-size: 0.82rem; font-family: 'DM Sans', sans-serif;
+  }
+  [data-theme="dark"] #app-loading .loading-text { color: #555e72; }
+  @keyframes neo-spin { to { transform: rotate(360deg); } }
+
+  /* ── Equity curve tab ── */
+  .eq-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.65rem; margin-bottom: 1rem; }
+  @media (min-width: 640px) { .eq-stats { grid-template-columns: repeat(6, 1fr); } }
+  .eq-stat { background: var(--surface-2); border-radius: var(--radius-sm); padding: 0.55rem 0.7rem; }
+  .eq-stat .lbl { font-size: 0.66rem; color: var(--text-3); margin-bottom: 2px; white-space: nowrap; }
+  .eq-stat .val { font-size: 0.95rem; font-weight: 500; font-family: var(--mono); color: var(--text-1); }
+  .eq-period-btns { display: flex; gap: 0.4rem; margin-bottom: 1rem; }
+  .eq-period-btn { font-size: 0.72rem; font-weight: 500; font-family: var(--font); padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border-md); background: var(--surface-2); color: var(--text-2); cursor: pointer; transition: all 0.15s; }
+  .eq-period-btn.active { background: var(--text-1); color: var(--bg); border-color: var(--text-1); }
+  .eq-chart-wrap { position: relative; height: 220px; margin-bottom: 1rem; }
+  .eq-dd-wrap { position: relative; height: 120px; }
+  .eq-no-data { text-align: center; padding: 3rem 1rem; color: var(--text-3); font-size: 0.85rem; }
+  .tab-nav { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; overflow-x: auto; }
+  .tab-btn { font-size: 0.78rem; font-weight: 500; color: var(--text-3); background: none; border: none; border-bottom: 2px solid transparent; padding: 0.65rem 1rem 0.55rem; cursor: pointer; transition: color 0.15s; margin-bottom: -1px; white-space: nowrap; flex-shrink: 0; }
+  .tab-btn:hover { color: var(--text-1); }
+  .tab-btn.active { color: var(--text-1); border-bottom-color: var(--text-1); }
+</style>
+</head>
+<body>
+<div id="app-loading"><div class="loading-spinner"></div><div class="loading-text">Loading dashboard…</div></div>
+<div id="root"></div>
+<div id="neo-session-warning" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#f59e0b;color:#000;padding:10px 16px;align-items:center;justify-content:space-between;font-size:0.85rem;font-weight:500;gap:12px;">
+  <span>Your session will expire in 1 minute due to inactivity.</span>
+  <button onclick="resetTimers()" style="background:rgba(0,0,0,0.15);border:none;cursor:pointer;padding:4px 12px;border-radius:4px;font-weight:600;font-size:0.82rem;">Dismiss</button>
+</div>
+<script type="text/babel">
+
+// ─────────────────────────────────────────────
+// CONFIG — engineer updates these values
+// ─────────────────────────────────────────────
+const CONFIG = {
+  API_BASE:        'https://k24gcypjyh.execute-api.eu-west-2.amazonaws.com/dashboard',
+  COGNITO_DOMAIN:  'https://algodesk-trading-dev.auth.eu-west-2.amazoncognito.com',
+  CLIENT_ID:       '45ohgpuetqv9qbccr6nie65h6r',
+  REDIRECT_URI:    'https://d298t9cfy3xgxb.cloudfront.net',
+  REFRESH_MS:      60000,
+  MOCK_MODE:       false,
+};
+
+// ─────────────────────────────────────────────
+// MOCK DATA
+// ─────────────────────────────────────────────
+const MOCK = {
+  account: {
+    value: 25412.34, available: 22180.12, margin: 3232.22,
+    unrealised_pnl: 184.50, all_time_pnl: 412.34,
+    daily_loss_pct: 0.8, weekly_dd_pct: 1.1, max_from_peak_pct: 1.6,
+    daily_limit: 3, weekly_limit: 6, peak_limit: 15,
+    mode: 'paper',
+  },
+  positions: [
+    {
+      instrument:'EUR/USD', direction:'long',
+      entry_price:1.0842, current_price:1.0954, stop_price:1.0780, target_price:1.1050,
+      position_size:50000, position_size_usd:54770,
+      unrealised_pnl:121.30, unrealised_pips:112,
+      entry_time:'2026-04-14 08:15', session_at_entry:'london',
+      convergence_score:0.78, agents_agreed:'macro, technical, regime',
+      trailing_stop_pct:1.5, trailing_stop_active:true,
+      regime_at_entry:'trending',
+    },
+    {
+      instrument:'GBP/USD', direction:'short',
+      entry_price:1.2631, current_price:1.2571, stop_price:1.2700, target_price:1.2450,
+      position_size:40000, position_size_usd:50284,
+      unrealised_pnl:63.20, unrealised_pips:60,
+      entry_time:'2026-04-14 10:42', session_at_entry:'london',
+      convergence_score:0.71, agents_agreed:'technical, regime',
+      trailing_stop_pct:null, trailing_stop_active:false,
+      regime_at_entry:'trending',
+    },
+  ],
+  calendar: [
+    { scheduled_time:'14:30', indicator:'US CPI (MoM)',      country:'United States',  forecast:'0.3%' },
+    { scheduled_time:'15:00', indicator:'BOE Rate Decision',  country:'United Kingdom', forecast:'4.50%' },
+    { scheduled_time:'18:30', indicator:'Fed Chair Speech',   country:'United States',  forecast:null },
+  ],
+  trades: [
+    // April 2026 (this month)
+    { instrument:'AUD/USD', direction:'short', exit_date:'2026-04-14', exit_time:'13:47', exit_reason:'trailing stop', pnl:  88.00 },
+    { instrument:'USD/CAD', direction:'long',  exit_date:'2026-04-14', exit_time:'11:22', exit_reason:'stop',          pnl: -34.00 },
+    { instrument:'EUR/USD', direction:'long',  exit_date:'2026-04-13', exit_time:'09:05', exit_reason:'target',        pnl: 142.00 },
+    { instrument:'USD/JPY', direction:'short', exit_date:'2026-04-12', exit_time:'16:30', exit_reason:'stop',          pnl: -21.00 },
+    { instrument:'GBP/USD', direction:'long',  exit_date:'2026-04-11', exit_time:'14:15', exit_reason:'target',        pnl: 196.00 },
+    { instrument:'USD/CHF', direction:'short', exit_date:'2026-04-10', exit_time:'10:45', exit_reason:'trailing stop', pnl:  63.00 },
+    { instrument:'NZD/USD', direction:'long',  exit_date:'2026-04-09', exit_time:'08:22', exit_reason:'stop',          pnl: -48.00 },
+    { instrument:'EUR/USD', direction:'short', exit_date:'2026-04-08', exit_time:'15:10', exit_reason:'target',        pnl: 211.00 },
+    { instrument:'AUD/USD', direction:'long',  exit_date:'2026-04-07', exit_time:'11:55', exit_reason:'stop',          pnl: -67.00 },
+    { instrument:'USD/CAD', direction:'short', exit_date:'2026-04-04', exit_time:'13:20', exit_reason:'target',        pnl: 154.00 },
+    { instrument:'GBP/USD', direction:'short', exit_date:'2026-04-03', exit_time:'09:45', exit_reason:'regime_change', pnl: -29.00 },
+    { instrument:'USD/JPY', direction:'long',  exit_date:'2026-04-02', exit_time:'14:00', exit_reason:'target',        pnl: 178.00 },
+    // March 2026 (last month)
+    { instrument:'EUR/USD', direction:'long',  exit_date:'2026-03-31', exit_time:'15:30', exit_reason:'target',        pnl: 223.00 },
+    { instrument:'USD/CHF', direction:'long',  exit_date:'2026-03-28', exit_time:'10:10', exit_reason:'stop',          pnl: -55.00 },
+    { instrument:'AUD/USD', direction:'short', exit_date:'2026-03-27', exit_time:'12:45', exit_reason:'trailing stop', pnl:  91.00 },
+    { instrument:'GBP/USD', direction:'long',  exit_date:'2026-03-25', exit_time:'09:30', exit_reason:'target',        pnl: 167.00 },
+    { instrument:'NZD/USD', direction:'short', exit_date:'2026-03-21', exit_time:'14:55', exit_reason:'stop',          pnl: -42.00 },
+    { instrument:'USD/JPY', direction:'short', exit_date:'2026-03-18', exit_time:'11:20', exit_reason:'target',        pnl: 198.00 },
+    { instrument:'USD/CAD', direction:'long',  exit_date:'2026-03-14', exit_time:'13:05', exit_reason:'stop',          pnl: -73.00 },
+    { instrument:'EUR/USD', direction:'short', exit_date:'2026-03-11', exit_time:'16:00', exit_reason:'target',        pnl: 241.00 },
+    { instrument:'GBP/USD', direction:'short', exit_date:'2026-03-07', exit_time:'10:30', exit_reason:'trailing stop', pnl:  82.00 },
+    { instrument:'AUD/USD', direction:'long',  exit_date:'2026-03-04', exit_time:'09:15', exit_reason:'stop',          pnl: -38.00 },
+    // January–February 2026 (last quarter)
+    { instrument:'USD/JPY', direction:'long',  exit_date:'2026-02-27', exit_time:'14:40', exit_reason:'target',        pnl: 189.00 },
+    { instrument:'EUR/USD', direction:'long',  exit_date:'2026-02-20', exit_time:'11:00', exit_reason:'target',        pnl: 156.00 },
+    { instrument:'GBP/USD', direction:'short', exit_date:'2026-02-13', exit_time:'15:25', exit_reason:'stop',          pnl: -61.00 },
+    { instrument:'USD/CHF', direction:'short', exit_date:'2026-02-06', exit_time:'09:50', exit_reason:'trailing stop', pnl:  74.00 },
+    { instrument:'NZD/USD', direction:'long',  exit_date:'2026-01-30', exit_time:'13:15', exit_reason:'target',        pnl: 133.00 },
+    { instrument:'AUD/USD', direction:'short', exit_date:'2026-01-23', exit_time:'10:20', exit_reason:'stop',          pnl: -44.00 },
+    { instrument:'EUR/USD', direction:'short', exit_date:'2026-01-16', exit_time:'14:35', exit_reason:'target',        pnl: 207.00 },
+    { instrument:'USD/CAD', direction:'long',  exit_date:'2026-01-09', exit_time:'11:45', exit_reason:'stop',          pnl: -52.00 },
+  ],
+};
+
+// ─────────────────────────────────────────────
+// AUTH HELPERS
+// ─────────────────────────────────────────────
+function getToken() { return localStorage.getItem('neo_id_token'); }
+function getUser()  { return localStorage.getItem('neo_user'); }
+function clearAuth(){ localStorage.removeItem('neo_id_token'); localStorage.removeItem('neo_user'); }
+
+function parseJwt(token) {
+  try {
+    const base64 = token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+    return JSON.parse(atob(base64));
+  } catch { return null; }
+}
+
+function isTokenValid(token) {
+  const payload = parseJwt(token);
+  if (!payload) return false;
+  return payload.exp * 1000 > Date.now();
+}
+
+function getUserId() {
+  const token = getToken();
+  if (!token) return null;
+  const payload = parseJwt(token);
+  return payload ? (payload.sub || null) : null;
+}
+
+// ─────────────────────────────────────────────
+// API HELPERS
+// ─────────────────────────────────────────────
+async function apiGet(path, params = {}) {
+  // Build query string from params object, filtering out null/undefined
+  const qs = Object.entries(params)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+  const url = `${CONFIG.API_BASE}${path}${qs ? '?' + qs : ''}`;
+  const token = getToken();
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+// ── Response normalisation ─────────────────────────────────────────────────
+// Lambda responses use snake_case. These helpers map API responses to the
+// shape the components expect, providing fallbacks so the UI never breaks
+// if a field is missing from the API response.
+
+function normaliseAccount(raw) {
+  return {
+    value:              raw.account_value       ?? raw.value              ?? 0,
+    available:          raw.available_capital   ?? raw.available          ?? 0,
+    margin:             raw.margin_used         ?? raw.margin             ?? 0,
+    unrealised_pnl:     raw.unrealised_pnl      ?? 0,
+    all_time_pnl:       raw.all_time_pnl        ?? 0,
+    daily_loss_pct:     raw.daily_loss_pct      ?? 0,
+    weekly_dd_pct:      raw.weekly_dd_pct       ?? 0,
+    max_from_peak_pct:  raw.max_from_peak_pct   ?? 0,
+    daily_limit:        raw.daily_loss_limit    ?? raw.daily_limit        ?? 3,
+    weekly_limit:       raw.weekly_dd_limit     ?? raw.weekly_limit       ?? 6,
+    peak_limit:         raw.max_dd_limit        ?? raw.peak_limit         ?? 15,
+    mode:                    raw.mode                    ?? 'paper',
+    risk_profile:            raw.risk_profile            ?? null,
+    peak_account_value:      raw.peak_account_value      ?? null,
+    account_value_currency:  raw.account_value_currency  ?? 'USD',
+    ibkr_account_id:         raw.ibkr_account_id         ?? null,
+    daily_pnl:               raw.daily_pnl               ?? 0,
+    weekly_pnl:              raw.weekly_pnl              ?? 0,
+  };
+}
+
+function normalisePosition(raw) {
+  return {
+    instrument:          raw.instrument          ?? '',
+    direction:           raw.direction           ?? 'long',
+    entry_price:         raw.entry_price         ?? 0,
+    current_price:       raw.current_price       ?? raw.entry_price ?? 0,
+    stop_price:          raw.stop_price          ?? 0,
+    target_price:        raw.target_price        ?? null,
+    position_size:       raw.position_size       ?? 0,
+    position_size_usd:   raw.position_size_usd   ?? 0,
+    unrealised_pnl:      raw.unrealised_pnl      ?? raw.pnl ?? 0,
+    unrealised_pips:     raw.unrealised_pips     ?? raw.pnl_pips ?? 0,
+    entry_time:          raw.entry_time          ?? '',
+    session_at_entry:    raw.session_at_entry    ?? '',
+    convergence_score:   raw.convergence_score   ?? 0,
+    agents_agreed:       raw.agents_agreed       ?? '',
+    trailing_stop_pct:   raw.trailing_stop_pct   ?? null,
+    trailing_stop_active: raw.trailing_stop_active ?? false,
+    regime_at_entry:     raw.regime_at_entry     ?? '',
+  };
+}
+
+function normaliseCalendarEvent(raw) {
+  return {
+    scheduled_time: raw.scheduled_time ?? raw.time ?? '',
+    indicator:      raw.indicator      ?? raw.event ?? '',
+    country:        raw.country        ?? '',
+    forecast:       raw.forecast       ?? null,
+  };
+}
+
+function normaliseTrade(raw) {
+  // exit_date is derived from exit_time if not provided separately
+  const exitDate = raw.exit_date ?? (raw.exit_time ? raw.exit_time.split('T')[0].split(' ')[0] : '');
+  const exitTime = raw.exit_time_display ?? (raw.exit_time ? raw.exit_time.split('T')[1]?.slice(0,5) ?? raw.exit_time.split(' ')[1]?.slice(0,5) : '');
+  return {
+    instrument:  raw.instrument  ?? '',
+    direction:   raw.direction   ?? '',
+    exit_date:   exitDate,
+    exit_time:   exitTime,
+    exit_reason: raw.exit_reason ?? '',
+    pnl:         raw.pnl         ?? 0,
+  };
+}
+
+// ─────────────────────────────────────────────
+// COMPONENTS
+// ─────────────────────────────────────────────
+const { useState, useEffect, useCallback } = React;
+
+function Clock() {
+  const [time, setTime] = useState('');
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date();
+      setTime(now.toUTCString().split(' ')[4] + ' UTC');
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="clock">{time}</span>;
+}
+
+function DdBar({ label, value, limit }) {
+  const pct = Math.min((value / limit) * 100, 100);
+  const cls = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+  const valCls = pct >= 90 ? 'neg' : pct >= 70 ? '' : 'pos';
+  return (
+    <div className="dd-row">
+      <span className="dd-lbl">{label}</span>
+      <div className="dd-track"><div className={`dd-fill ${cls}`} style={{width:`${pct}%`}} /></div>
+      <span className={`dd-val ${valCls}`}>{value.toFixed(1)}%</span>
+      <span className="dd-limit">/ {limit}%</span>
+    </div>
+  );
+}
+
+function AccountCard({ data }) {
+  if (!data || data.value == null) {
+    return <div className="card"><div className="empty-row" style={{padding:'1.5rem',textAlign:'center',color:'var(--text-3)'}}>Loading account data…</div></div>;
+  }
+  const marginPct = data.value > 0 ? ((data.margin / data.value) * 100).toFixed(1) : '0.0';
+  return (
+    <div className="card">
+      <div className="grid-4">
+        <div className="stat-pill">
+          <div className="lbl">Account value</div>
+          <div className="val">${data.value.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+          <div className={`sub ${data.all_time_pnl >= 0 ? 'pos' : 'neg'}`}>{data.all_time_pnl >= 0 ? '+' : ''}${data.all_time_pnl.toFixed(2)} all time</div>
+        </div>
+        <div className="stat-pill">
+          <div className="lbl">Available capital</div>
+          <div className="val">${data.available.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+          <div className="sub">{data.value > 0 ? ((data.available/data.value)*100).toFixed(1) : '0.0'}% free</div>
+        </div>
+        <div className="stat-pill">
+          <div className="lbl">Margin in use</div>
+          <div className="val">${data.margin.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+          <div className="sub">{data.positions || 0} open positions</div>
+        </div>
+        <div className="stat-pill">
+          <div className="lbl">Unrealised P&L</div>
+          <div className={`val ${data.unrealised_pnl >= 0 ? 'pos' : 'neg'}`}>{data.unrealised_pnl >= 0 ? '+' : ''}${data.unrealised_pnl.toFixed(2)}</div>
+          <div className="sub">open positions</div>
+        </div>
+      </div>
+      <div className="div" />
+      <div className="dd-section">
+        <div className="dd-title">Drawdown limits</div>
+        <DdBar label="Daily loss"      value={data.daily_loss_pct}   limit={data.daily_limit} />
+        <DdBar label="Weekly drawdown" value={data.weekly_dd_pct}    limit={data.weekly_limit} />
+        <DdBar label="Max from peak"   value={data.max_from_peak_pct} limit={data.peak_limit} />
+      </div>
+      <div className="margin-section">
+        <div className="dd-title">Margin utilisation</div>
+        <div className="margin-bar-track">
+          <div className="margin-bar-fill" style={{width:`${marginPct}%`}} />
+        </div>
+        <div className="margin-labels">
+          <span>${data.margin.toLocaleString()} used</span>
+          <span>${data.available.toLocaleString()} free</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// RISK PROFILE CARD
+// Reads from /dashboard/account response's risk_profile block.
+// ─────────────────────────────────────────────
+function RiskProfileCard({ profile, currency }) {
+  if (!profile) {
+    return (
+      <div className="card">
+        <div className="empty-row">Risk profile unavailable — no risk_parameters row for this user.</div>
+      </div>
+    );
+  }
+
+  const ccy = profile.account_value_currency || currency || 'USD';
+  const symbol = ccy === 'GBP' ? '£' : ccy === 'EUR' ? '€' : '$';
+  const fmtMoney = v => v == null ? '—'
+    : symbol + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmtPct = v => v == null ? '—' : Number(v).toFixed(1) + '%';
+
+  const stepLabel = (() => {
+    const s = profile.drawdown_step_level ?? 0;
+    const m = profile.size_multiplier ?? 1.0;
+    if (s === 0) return 'Step 0 — full size';
+    if (m === 0) return `Step ${s} — trading halted`;
+    return `Step ${s} — size × ${m.toFixed(2)}`;
+  })();
+
+  const cbActive = !!profile.circuit_breaker_active;
+  const cbStyle = {
+    display:'inline-flex', alignItems:'center', gap:'4px',
+    fontSize:'0.68rem', fontWeight:600, letterSpacing:'0.04em',
+    padding:'2px 7px', borderRadius:'3px', textTransform:'uppercase',
+    background: cbActive ? 'rgba(220,38,38,0.12)' : 'rgba(22,163,74,0.12)',
+    color: cbActive ? '#dc2626' : '#16a34a',
+  };
+
+  const paper = !!profile.paper_mode;
+  const modeStyle = {
+    display:'inline-flex', alignItems:'center', gap:'4px',
+    fontSize:'0.68rem', fontWeight:600, letterSpacing:'0.04em',
+    padding:'2px 7px', borderRadius:'3px', textTransform:'uppercase',
+    background: paper ? 'rgba(217,119,6,0.14)' : 'rgba(22,163,74,0.12)',
+    color: paper ? '#b45309' : '#16a34a',
+  };
+
+  const row = (label, value, valueStyle) => (
+    <div style={{
+      display:'flex', justifyContent:'space-between', alignItems:'center',
+      padding:'0.4rem 0', borderBottom:'1px solid var(--border)',
+      fontSize:'0.78rem',
+    }}>
+      <span style={{color:'var(--text-3)'}}>{label}</span>
+      <span style={valueStyle || {color:'var(--text-1)', fontFamily:'var(--mono)'}}>{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="card">
+      {/* Risk settings section */}
+      <div>
+        {row('Profile', profile.profile_name || '—', {fontWeight:600, color:'var(--text-1)'})}
+        {row('Risk per trade', fmtPct(profile.risk_per_trade_pct))}
+        {row('Convergence threshold',
+             profile.convergence_threshold == null ? '—' : Number(profile.convergence_threshold).toFixed(2))}
+        {row('Daily loss limit', fmtPct(profile.daily_loss_limit_pct))}
+        {row('Max open positions',
+             profile.max_open_positions == null ? '—' : String(profile.max_open_positions))}
+        {row('Stop multiplier',
+             profile.atr_stop_multiplier == null ? '—'
+               : `ATR × ${Number(profile.atr_stop_multiplier).toFixed(1)}`)}
+        {row('Trailing stop', fmtPct(profile.trailing_stop_pct))}
+      </div>
+      <div className="div" />
+      {/* Account / state section */}
+      <div>
+        {row('Account',
+             profile.account_value == null ? '—'
+               : `${fmtMoney(profile.account_value)} (${ccy})`)}
+        {row('Peak', fmtMoney(profile.peak_account_value))}
+        {row('Drawdown',
+             `${Number(profile.current_drawdown_pct ?? 0).toFixed(1)}% (${stepLabel})`)}
+        {row('Circuit breaker',
+             <span style={cbStyle}>{cbActive ? 'ACTIVE — HALTED' : 'Inactive'}</span>,
+             {color:'var(--text-1)'})}
+        {row('Mode',
+             <span style={modeStyle}>{paper ? 'Paper Trading' : 'Live Trading'}</span>,
+             {color:'var(--text-1)'})}
+      </div>
+    </div>
+  );
+}
+
+function PositionsCard({ positions, account }) {
+  const totalPnl = positions.reduce((s,p) => s + p.unrealised_pnl, 0);
+  const todayPnl = account?.daily_pnl ?? 0;
+  return (
+    <div className="card" >
+      <div className="pos-stats">
+        <div className="pos-stat"><div className="lbl">Open</div><div className="val">{positions.length}</div></div>
+        <div className="pos-stat"><div className="lbl">Total P&L</div><div className={`val ${totalPnl >= 0 ? 'pos' : 'neg'}`}>{totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}</div></div>
+        <div className="pos-stat"><div className="lbl">Today</div><div className={`val ${todayPnl >= 0 ? 'pos' : 'neg'}`}>{todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}</div></div>
+      </div>
+      <div className="div" />
+      <div className="positions-list">
+      {positions.length === 0
+        ? <div className="empty-row">No open positions</div>
+        : positions.map((p,i) => (
+          <div key={i} className="pos-row">
+            <span className="pos-pair">{p.instrument}</span>
+            <span className={`dir-badge dir-${p.direction}`}>{p.direction}</span>
+            <span className="pos-meta">{p.entry_price}</span>
+            <span className="pos-meta">{p.position_size} lots</span>
+            <span className={`pos-pnl ${p.unrealised_pnl >= 0 ? 'pos' : 'neg'}`}>{p.unrealised_pnl >= 0 ? '+' : '-'}{Math.abs(p.unrealised_pnl).toFixed(2)} {account?.account_value_currency || 'GBP'}</span>
+          </div>
+        ))
+      }
+      </div>
+      {positions.length > 0 && (
+        <a
+          href="positions.html"
+          style={{
+            display:'block', marginTop:'0.75rem',
+            fontSize:'0.72rem', color:'var(--text-3)',
+            textDecoration:'none', textAlign:'center',
+            paddingTop:'0.6rem', borderTop:'1px solid var(--border)',
+            transition:'color 0.15s',
+          }}
+          onMouseOver={e=>e.target.style.color='var(--text-1)'}
+          onMouseOut={e=>e.target.style.color='var(--text-3)'}
+        >See all open positions →</a>
+      )}
+    </div>
+  );
+}
+
+function CalendarCard({ events }) {
+  return (
+    <div className="card" >
+      {events.length === 0
+        ? <div className="empty-row">No tier-1 events in next 12 hours</div>
+        : events.map((e,i) => (
+          <div key={i} className="event-row">
+            <span className="event-time">{e.scheduled_time}</span>
+            <div className="event-body">
+              <div className="event-name">{e.indicator}</div>
+              <div className="event-country">{e.country}</div>
+            </div>
+            <div className="event-right">
+              <span className="tier1-badge">Tier 1</span>
+              <div className="event-fcst">{e.forecast ? `Fcst ${e.forecast}` : 'No fcst'}</div>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  );
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+function today() { return startOfDay(new Date()); }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+function fmtDate(d) { return d.toISOString().split('T')[0]; }
+
+const PRESETS = [
+  { label: 'Today',        id: 'today' },
+  { label: 'This week',    id: 'week' },
+  { label: 'This month',   id: 'month' },
+  { label: 'Last month',   id: 'last_month' },
+  { label: 'Last quarter', id: 'quarter' },
+  { label: 'All time',     id: 'all' },
+];
+
+function getPresetRange(id) {
+  const t = today();
+  const yr = t.getFullYear(), mo = t.getMonth();
+  switch(id) {
+    case 'today':      return { from: fmtDate(t),                                    to: fmtDate(t) };
+    case 'week': {
+      const dow = t.getDay(); const mon = addDays(t, -(dow===0?6:dow-1));
+      return { from: fmtDate(mon), to: fmtDate(t) };
+    }
+    case 'month':      return { from: fmtDate(new Date(yr, mo, 1)),                  to: fmtDate(t) };
+    case 'last_month': return { from: fmtDate(new Date(yr, mo-1, 1)),                to: fmtDate(new Date(yr, mo, 0)) };
+    case 'quarter': {
+      const qStart = new Date(yr, Math.floor(mo/3)*3, 1);
+      return { from: fmtDate(qStart), to: fmtDate(t) };
+    }
+    case 'all':        return { from: '2000-01-01', to: fmtDate(addDays(t, 1)) };
+    default:           return { from: '2000-01-01', to: fmtDate(addDays(t, 1)) };
+  }
+}
+
+function calcMetrics(trades) {
+  if (!trades.length) return { pnl: 0, wins: 0, losses: 0, winRate: 0, profitFactor: 0, count: 0 };
+  const pnl    = trades.reduce((s,t) => s + t.pnl, 0);
+  const wins   = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl < 0);
+  const grossWin  = wins.reduce((s,t) => s + t.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((s,t) => s + t.pnl, 0));
+  return {
+    pnl,
+    count:        trades.length,
+    wins:         wins.length,
+    losses:       losses.length,
+    winRate:      Math.round((wins.length / trades.length) * 100),
+    profitFactor: grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : wins.length > 0 ? '∞' : '—',
+  };
+}
+
+function PerformancePanel({ trades, onDownload }) {
+  const [activePreset, setActivePreset] = React.useState('month');
+  const [customFrom, setCustomFrom]     = React.useState('');
+  const [customTo, setCustomTo]         = React.useState('');
+  const [showCustom, setShowCustom]     = React.useState(false);
+
+  const range = React.useMemo(() => {
+    if (showCustom && customFrom && customTo) return { from: customFrom, to: customTo };
+    return getPresetRange(activePreset);
+  }, [activePreset, showCustom, customFrom, customTo]);
+
+  const filtered = React.useMemo(() => {
+    return trades.filter(t => {
+      if (!t.exit_date) return true;
+      return t.exit_date >= range.from && t.exit_date <= range.to;
+    });
+  }, [trades, range]);
+
+  const metrics = React.useMemo(() => calcMetrics(filtered), [filtered]);
+
+  const handlePreset = (id) => {
+    setActivePreset(id);
+    setShowCustom(false);
+  };
+
+  const handleCustomToggle = () => {
+    setShowCustom(s => !s);
+    if (!customFrom) setCustomFrom(fmtDate(addDays(today(), -30)));
+    if (!customTo)   setCustomTo(fmtDate(today()));
+  };
+
+  const handleDownloadFiltered = () => {
+    const headers = ['instrument','direction','exit_date','exit_time','exit_reason','pnl'];
+    const rows = filtered.map(t => headers.map(h => t[h] ?? '').join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const label = showCustom ? `${customFrom}_${customTo}` : activePreset;
+    a.download = `trades-${label}.csv`;
+    a.click();
+  };
+
+  return (
+    <div className="card">
+      {/* Filter row */}
+      <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'0.5rem', marginBottom:'0.75rem'}}>
+        <div style={{display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap'}}>
+        <span style={{fontSize:'0.68rem', fontWeight:500, letterSpacing:'0.1em', textTransform:'uppercase', color:'var(--text-3)'}}>Performance</span>
+        <div className="perf-filters">
+          {PRESETS.map(p => (
+            <button
+              key={p.id}
+              className={`preset-btn ${activePreset === p.id && !showCustom ? 'active' : ''}`}
+              onClick={() => handlePreset(p.id)}
+            >{p.label}</button>
+          ))}
+          <button
+            className={`preset-btn ${showCustom ? 'active' : ''}`}
+            onClick={handleCustomToggle}
+          >Custom</button>
+          {showCustom && (
+            <>
+              <span className="date-sep">from</span>
+              <input
+                type="date" className="date-input" value={customFrom}
+                onChange={e => setCustomFrom(e.target.value)}
+              />
+              <span className="date-sep">to</span>
+              <input
+                type="date" className="date-input" value={customTo}
+                onChange={e => setCustomTo(e.target.value)}
+              />
+            </>
+          )}
+        </div>
+        </div>
+        <button className="dl-btn" onClick={handleDownloadFiltered}>
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5.5l3 3 3-3M1 10h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Download CSV
+        </button>
+      </div>
+
+      {/* Performance summary */}
+      <div className="perf-summary">
+        <div className="perf-stat">
+          <div className="lbl">P&L</div>
+          <div className={`val ${metrics.pnl >= 0 ? 'pos' : 'neg'}`}>
+            {metrics.pnl >= 0 ? '+' : ''}${Math.abs(metrics.pnl).toFixed(2)}
+          </div>
+          <div className="sub">{metrics.count} trades</div>
+        </div>
+        <div className="perf-stat">
+          <div className="lbl">Win rate</div>
+          <div className={`val ${metrics.winRate >= 50 ? 'pos' : metrics.count === 0 ? '' : 'neg'}`}>
+            {metrics.count === 0 ? '—' : `${metrics.winRate}%`}
+          </div>
+          <div className="sub">{metrics.wins}W / {metrics.losses}L</div>
+        </div>
+        <div className="perf-stat">
+          <div className="lbl">Profit factor</div>
+          <div className={`val ${parseFloat(metrics.profitFactor) >= 1 ? 'pos' : metrics.profitFactor === '—' ? '' : 'neg'}`}>
+            {metrics.profitFactor}
+          </div>
+          <div className="sub">gross win / loss</div>
+        </div>
+        <div className="perf-stat">
+          <div className="lbl">Avg win</div>
+          <div className="val pos">
+            {metrics.wins === 0 ? '—' : `$${(filtered.filter(t=>t.pnl>0).reduce((s,t)=>s+t.pnl,0)/metrics.wins).toFixed(0)}`}
+          </div>
+          <div className="sub">per winning trade</div>
+        </div>
+        <div className="perf-stat">
+          <div className="lbl">Avg loss</div>
+          <div className="val neg">
+            {metrics.losses === 0 ? '—' : `-$${(Math.abs(filtered.filter(t=>t.pnl<0).reduce((s,t)=>s+t.pnl,0))/metrics.losses).toFixed(0)}`}
+          </div>
+          <div className="sub">per losing trade</div>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="div" />
+
+      {/* Trade list */}
+      {filtered.length === 0
+        ? <div className="empty-row">No trades in this period</div>
+        : filtered.map((t,i) => (
+          <div key={i} className="trade-row">
+            <span className="trade-pair">{t.instrument}</span>
+            <span className={`dir-badge dir-${t.direction}`}>{t.direction}</span>
+            <span className="trade-meta" style={{minWidth:'90px'}}>{t.exit_date} {t.exit_time}</span>
+            <span className="trade-reason">{t.exit_reason}</span>
+            <span className={`trade-pnl ${t.pnl >= 0 ? 'pos' : 'neg'}`}>
+              {t.pnl >= 0 ? '+' : '-'}${Math.abs(t.pnl).toFixed(2)}
+            </span>
+          </div>
+        ))
+      }
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// INACTIVITY TIMEOUT
+// ─────────────────────────────────────────────
+const TIMEOUT_MS = 10 * 60 * 1000;
+const WARNING_MS =  9 * 60 * 1000;
+let inactivityTimer = null;
+let warningTimer    = null;
+
+function showSessionWarning() {
+  const el = document.getElementById('neo-session-warning');
+  if (el) el.style.display = 'flex';
+}
+function hideSessionWarning() {
+  const el = document.getElementById('neo-session-warning');
+  if (el) el.style.display = 'none';
+}
+function expireSession() {
+  stopInactivityTimer();
+  clearAuth();
+  localStorage.setItem('neo_session_timeout', '1');
+  window.location.reload();
+}
+function resetTimers() {
+  clearTimeout(inactivityTimer);
+  clearTimeout(warningTimer);
+  hideSessionWarning();
+  warningTimer    = setTimeout(showSessionWarning, WARNING_MS);
+  inactivityTimer = setTimeout(expireSession, TIMEOUT_MS);
+}
+function startInactivityTimer() {
+  ['mousemove','mousedown','keydown','touchstart','scroll','click'].forEach(ev => {
+    document.addEventListener(ev, resetTimers, { passive: true });
+  });
+  resetTimers();
+}
+function stopInactivityTimer() {
+  clearTimeout(inactivityTimer);
+  clearTimeout(warningTimer);
+  hideSessionWarning();
+  ['mousemove','mousedown','keydown','touchstart','scroll','click'].forEach(ev => {
+    document.removeEventListener(ev, resetTimers);
+  });
+  inactivityTimer = null;
+  warningTimer    = null;
+}
+
+// ─────────────────────────────────────────────
+// LOGIN SCREEN
+// ─────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [stage, setStage] = useState('signin');
+  const [username, setUsername] = useState('');
+  const [pass, setPass] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [newPass2, setNewPass2] = useState('');
+  const [session, setSession] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaSecret, setMfaSecret] = useState('');
+  const [qrCopied, setQrCopied] = useState(false);
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  // QR code generation — polls for QRCode library ready; cleanup returned to useEffect.
+  useEffect(() => {
+    if (stage !== 'mfasetup' || !mfaSecret || !username) return;
+    const uri = `otpauth://totp/ALGODESK:${encodeURIComponent(username)}?secret=${encodeURIComponent(mfaSecret)}&issuer=ALGODESK&algorithm=SHA1&digits=6&period=30`;
+    let pollId;
+    const tryRender = () => {
+      const container = document.getElementById('totp-qr-container');
+      if (!container) return false;
+      if (typeof QRCode === 'undefined') return false;
+      try {
+        container.innerHTML = '';
+        console.log("MFA_URI:", uri);
+          new QRCode(container, { text: uri, width: 200, height: 200, colorDark: '#000000', colorLight: '#ffffff' });
+      } catch(err) {
+        console.error('QR generation failed:', err);
+        container.innerHTML = '<p style="font-size:0.78rem;color:var(--text-3);margin:0.5rem 0">QR unavailable — use the code below</p>';
+      }
+      return true;
+    };
+    if (!tryRender()) {
+      let attempts = 0;
+      pollId = setInterval(() => {
+        attempts++;
+        const done = tryRender();
+        const giveUp = attempts >= 30 || window.QRCodeFailed;
+        if (done || giveUp) {
+          clearInterval(pollId);
+          if (!done) {
+            const c = document.getElementById('totp-qr-container');
+            if (c) c.innerHTML = '<p style="font-size:0.78rem;color:var(--text-3);margin:0.5rem 0">Use the code below to set up manually</p>';
+          }
+        }
+      }, 200);
+    }
+    return () => { if (pollId) clearInterval(pollId); };
+  }, [stage, mfaSecret, username]);
+
+  const handleSecretCopy = () => {
+    navigator.clipboard.writeText(mfaSecret).then(() => {
+      setQrCopied(true);
+      setTimeout(() => setQrCopied(false), 2000);
+    });
+  };
+
+  useEffect(() => {
+    const timedOut = localStorage.getItem('neo_session_timeout');
+    if (timedOut) {
+      setErr('Session expired after 10 minutes of inactivity. Please sign in again.');
+      localStorage.removeItem('neo_session_timeout');
+    }
+  }, []);
+
+  const IDP_URL = 'https://cognito-idp.eu-west-2.amazonaws.com/';
+
+  const cognitoCall = async (target, body) => {
+    const res = await fetch(IDP_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-amz-json-1.1',
+        'X-Amz-Target': 'AWSCognitoIdentityProviderService.' + target,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || data.__type || ('HTTP ' + res.status));
+    return data;
+  };
+
+  const finalizeLogin = (authResult) => {
+    localStorage.setItem('neo_id_token', authResult.IdToken);
+    if (authResult.RefreshToken) localStorage.setItem('neo_refresh', authResult.RefreshToken);
+    localStorage.setItem('neo_user', username);
+    startInactivityTimer();
+    onLogin();
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault(); setErr(''); setLoading(true);
+    try {
+      if (CONFIG.MOCK_MODE) {
+        localStorage.setItem('neo_id_token', 'mock_token');
+        localStorage.setItem('neo_user', username || 'trader');
+        startInactivityTimer(); onLogin(); return;
+      }
+      const data = await cognitoCall('InitiateAuth', {
+        ClientId: CONFIG.CLIENT_ID,
+        AuthFlow: 'USER_PASSWORD_AUTH',
+        AuthParameters: { USERNAME: username, PASSWORD: pass },
+      });
+      if (data.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
+        setSession(data.Session);
+        setStage('newpass');
+      } else if (data.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
+        setSession(data.Session);
+        setStage('totp');
+      } else if (data.ChallengeName === 'MFA_SETUP') {
+        const assoc = await cognitoCall('AssociateSoftwareToken', { Session: data.Session });
+        setMfaSecret(assoc.SecretCode);
+        setSession(assoc.Session);
+        setStage('mfasetup');
+      } else if (data.AuthenticationResult) {
+        finalizeLogin(data.AuthenticationResult);
+      } else {
+        throw new Error('Unexpected challenge: ' + (data.ChallengeName || 'unknown'));
+      }
+    } catch(e) { setErr(e.message || 'Login failed'); }
+    finally { setLoading(false); }
+  };
+
+  const handleNewPass = async (e) => {
+    e.preventDefault(); setErr(''); setLoading(true);
+    try {
+      if (newPass !== newPass2) throw new Error('Passwords do not match');
+      const data = await cognitoCall('RespondToAuthChallenge', {
+        ClientId: CONFIG.CLIENT_ID,
+        ChallengeName: 'NEW_PASSWORD_REQUIRED',
+        Session: session,
+        ChallengeResponses: { USERNAME: username, NEW_PASSWORD: newPass },
+      });
+      if (data.AuthenticationResult) {
+        finalizeLogin(data.AuthenticationResult);
+      } else if (data.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
+        setSession(data.Session);
+        setStage('totp');
+      } else if (data.ChallengeName === 'MFA_SETUP') {
+        const assoc = await cognitoCall('AssociateSoftwareToken', { Session: data.Session });
+        setMfaSecret(assoc.SecretCode);
+        setSession(assoc.Session);
+        setStage('mfasetup');
+      } else {
+        throw new Error('Unexpected challenge: ' + (data.ChallengeName || 'unknown'));
+      }
+    } catch(e) { setErr(e.message || 'Password change failed'); }
+    finally { setLoading(false); }
+  };
+
+  const handleTotp = async (e) => {
+    e.preventDefault(); setErr(''); setLoading(true);
+    try {
+      const data = await cognitoCall('RespondToAuthChallenge', {
+        ClientId: CONFIG.CLIENT_ID,
+        ChallengeName: 'SOFTWARE_TOKEN_MFA',
+        Session: session,
+        ChallengeResponses: { USERNAME: username, SOFTWARE_TOKEN_MFA_CODE: mfaCode },
+      });
+      if (data.AuthenticationResult) {
+        finalizeLogin(data.AuthenticationResult);
+      } else {
+        throw new Error('Unexpected challenge: ' + (data.ChallengeName || 'unknown'));
+      }
+    } catch(e) { setErr(e.message || 'MFA verification failed'); }
+    finally { setLoading(false); }
+  };
+
+  const handleMfaSetup = async (e) => {
+    e.preventDefault(); setErr(''); setLoading(true);
+    try {
+      const verified = await cognitoCall('VerifySoftwareToken', {
+        Session: session,
+        UserCode: mfaCode,
+      });
+      const data = await cognitoCall('RespondToAuthChallenge', {
+        ClientId: CONFIG.CLIENT_ID,
+        ChallengeName: 'MFA_SETUP',
+        Session: verified.Session,
+        ChallengeResponses: { USERNAME: username },
+      });
+      if (data.AuthenticationResult) {
+        finalizeLogin(data.AuthenticationResult);
+      } else if (data.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
+        setSession(data.Session);
+        setMfaCode('');
+        setStage('totp');
+      } else {
+        throw new Error('Unexpected challenge after MFA setup: ' + (data.ChallengeName || 'unknown'));
+      }
+    } catch(e) { setErr(e.message || 'MFA setup failed'); }
+    finally { setLoading(false); }
+  };
+
+  if (stage === 'totp') {
+    return (
+      <div className="login-wrap">
+        <div className="login-card">
+          <div className="login-title">Two-factor authentication</div>
+          <div className="login-sub">Enter the 6-digit code from your authenticator app</div>
+          <form onSubmit={handleTotp}>
+            <input className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} autoFocus />
+            <button className="login-btn" type="submit" disabled={loading||mfaCode.length!==6}>{loading ? 'Verifying...' : 'Verify'}</button>
+          </form>
+          {err && <div className="login-err">{err}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  if (stage === 'mfasetup') {
+    return (
+      <div className="login-wrap">
+        <div className="login-card">
+          <div className="login-title">Set up two-factor authentication</div>
+          <div className="login-sub">Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password)</div>
+          <div style={{display:'flex',justifyContent:'center',margin:'1rem 0 0.75rem'}}>
+            <div id="totp-qr-container" style={{background:'#fff',padding:'10px',borderRadius:'8px',display:'inline-block',lineHeight:0}}></div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:'0.6rem',margin:'0.75rem 0',color:'var(--text-3)',fontSize:'0.8rem'}}>
+            <div style={{flex:1,height:'1px',background:'var(--border)'}}></div>
+            <span>or enter the code manually</span>
+            <div style={{flex:1,height:'1px',background:'var(--border)'}}></div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:'0.5rem',margin:'0 0 1rem'}}>
+            <div style={{flex:1,fontFamily:'var(--mono)',fontSize:'0.8rem',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'0.6rem 0.8rem',wordBreak:'break-all',letterSpacing:'0.04em'}}>{mfaSecret}</div>
+            <button type="button" onClick={handleSecretCopy} style={{flexShrink:0,padding:'0.5rem 0.75rem',fontSize:'0.78rem',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',color:'var(--text-2)',cursor:'pointer',whiteSpace:'nowrap',transition:'color 0.15s'}}>{qrCopied ? 'Copied!' : 'Copy'}</button>
+          </div>
+          <div className="login-sub" style={{marginBottom:'0.5rem',textAlign:'left'}}>Enter the 6-digit code from your app to confirm</div>
+          <form onSubmit={handleMfaSetup}>
+            <input className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} autoFocus />
+            <button className="login-btn" type="submit" disabled={loading||mfaCode.length!==6}>{loading ? 'Confirming...' : 'Confirm & sign in'}</button>
+          </form>
+          {err && <div className="login-err">{err}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  if (stage === 'newpass') {
+    return (
+      <div className="login-wrap">
+        <div className="login-card">
+          <div className="login-title">Set new password</div>
+          <div className="login-sub">Required on first sign-in</div>
+          <form onSubmit={handleNewPass}>
+            <input className="login-input" type="password" placeholder="New password (min 12, upper/lower/number/symbol)" value={newPass} onChange={e=>setNewPass(e.target.value)} required minLength={12} />
+            <input className="login-input" type="password" placeholder="Confirm new password" value={newPass2} onChange={e=>setNewPass2(e.target.value)} required minLength={12} />
+            <button className="login-btn" type="submit" disabled={loading}>{loading ? 'Setting...' : 'Set password & sign in'}</button>
+          </form>
+          {err && <div className="login-err">{err}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="login-wrap">
+      <div className="login-card">
+        <div className="login-title">AlgoDesk</div>
+        <div className="login-sub">Trading dashboard</div>
+        <form onSubmit={handleSubmit}>
+          <input className="login-input" type="text" placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} required autoComplete="username" />
+          <input className="login-input" type="password" placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} required autoComplete="current-password" />
+          <button className="login-btn" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
+        </form>
+        {err && <div className="login-err">{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// EQUITY CURVE TAB
+// ─────────────────────────────────────────────
+function EquityTab({ userId }) {
+  const [period, setPeriod]         = React.useState('30d');
+  const [data, setData]             = React.useState(null);
+  const [loading, setLoading]       = React.useState(false);
+  const [error, setError]           = React.useState(null);
+  const equityChartRef              = React.useRef(null);
+  const ddChartRef                  = React.useRef(null);
+  const equityChartInst             = React.useRef(null);
+  const ddChartInst                 = React.useRef(null);
+
+  const loadEquityCurve = React.useCallback(async (uid, per) => {
+    if (!uid) { setError('No user ID available — please log in again.'); return; }
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(
+        `${CONFIG.API_BASE}/equity-curve?user_id=${encodeURIComponent(uid)}&period=${per}`,
+        { headers: { 'Authorization': `Bearer ${getToken()}` } }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setData(json);
+    } catch(e) {
+      setError('Failed to load equity curve: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (userId) loadEquityCurve(userId, period);
+  }, [userId, period, loadEquityCurve]);
+
+  useEffect(() => {
+    if (!data || !data.equity_curve || data.equity_curve.length === 0) return;
+    const curve   = data.equity_curve;
+    const isDark  = document.documentElement.getAttribute('data-theme') === 'dark';
+    const gridClr = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+    const txtClr  = isDark ? '#9aa0b0' : '#9B9892';
+    const labels  = curve.map(p => {
+      const d = new Date(p.time);
+      return d.toLocaleDateString('en-GB', { month:'short', day:'numeric' }) + ' ' +
+             d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+    });
+    const values   = curve.map(p => p.account_value);
+    const baseline = curve.map(p => p.capital_baseline);
+    const ddValues = curve.map(p => -Math.abs(p.drawdown_pct));
+
+    if (equityChartRef.current) {
+      if (equityChartInst.current) equityChartInst.current.destroy();
+      equityChartInst.current = new Chart(equityChartRef.current, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Account Value', data: values, borderColor: '#2D6A4F', backgroundColor: 'rgba(45,106,79,0.08)', fill: true, tension: 0.3, pointRadius: curve.length > 60 ? 0 : 3, borderWidth: 2 },
+            { label: 'Capital Baseline', data: baseline, borderColor: '#1E40AF', borderDash: [5,5], fill: false, tension: 0, pointRadius: 0, borderWidth: 1.5 }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { labels: { color: txtClr, font: { size: 11 }, boxWidth: 16 } },
+            tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: \u00a3${ctx.parsed.y.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})}` } },
+          },
+          scales: {
+            x: { ticks: { color: txtClr, maxTicksLimit: 8, font:{size:10} }, grid: { color: gridClr } },
+            y: { ticks: { color: txtClr, font:{size:10}, callback: v => '\u00a3' + v.toLocaleString('en-GB',{minimumFractionDigits:0}) }, grid: { color: gridClr } },
+          }
+        }
+      });
+    }
+
+    if (ddChartRef.current) {
+      if (ddChartInst.current) ddChartInst.current.destroy();
+      ddChartInst.current = new Chart(ddChartRef.current, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{ label: 'Drawdown %', data: ddValues, borderColor: '#9B2226', backgroundColor: 'rgba(155,34,38,0.15)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => ` Drawdown: ${Math.abs(ctx.parsed.y).toFixed(2)}%` } },
+          },
+          scales: {
+            x: { ticks: { color: txtClr, maxTicksLimit: 8, font:{size:10} }, grid: { color: gridClr } },
+            y: { max: 0, ticks: { color: txtClr, font:{size:10}, callback: v => v.toFixed(0)+'%' }, grid: { color: gridClr } },
+          }
+        }
+      });
+    }
+
+    return () => {
+      if (equityChartInst.current) { equityChartInst.current.destroy(); equityChartInst.current = null; }
+      if (ddChartInst.current) { ddChartInst.current.destroy(); ddChartInst.current = null; }
+    };
+  }, [data]);
+
+  const fmt    = (n, d=2) => n == null ? '\u2014' : Number(n).toLocaleString('en-GB',{minimumFractionDigits:d,maximumFractionDigits:d});
+  const fmtPct = n => n == null ? '\u2014' : (n >= 0 ? '+' : '') + fmt(n) + '%';
+  const hasData = data && data.equity_curve && data.equity_curve.length > 0;
+
+  return (
+    <div className="card">
+      <div className="sec-label" style={{marginBottom:'0.75rem'}}>Equity Curve</div>
+      <div className="eq-stats">
+        {[
+          ['Starting Capital', '\u00a3' + fmt(data?.starting_balance)],
+          ['Current Value',    '\u00a3' + fmt(data?.current_balance)],
+          ['Total Return',     fmtPct(data?.total_return_pct),   (data?.total_return_pct||0)>=0?'pos':'neg'],
+          ['Peak Value',       '\u00a3' + fmt(data?.peak_balance)],
+          ['Drawdown',         data?.current_drawdown_pct != null ? '-'+fmt(data.current_drawdown_pct)+'%' : '\u2014', (data?.current_drawdown_pct||0)>5?'neg':''],
+          ['Realised P&L',     '\u00a3' + fmt(data?.realised_pnl), (data?.realised_pnl||0)>=0?'pos':'neg'],
+        ].map(([lbl,val,cls]) => (
+          <div className="eq-stat" key={lbl}>
+            <div className="lbl">{lbl}</div>
+            <div className={`val ${cls||''}`}>{val}</div>
+          </div>
+        ))}
+      </div>
+      <div className="eq-period-btns">
+        {[['7d','1W'],['30d','1M'],['all','All']].map(([v,l]) => (
+          <button key={v} className={`eq-period-btn ${period===v?'active':''}`} onClick={()=>setPeriod(v)}>{l}</button>
+        ))}
+      </div>
+      {loading && <div className="eq-no-data">Loading equity curve\u2026</div>}
+      {error   && <div className="eq-no-data" style={{color:'var(--red)'}}>{error}</div>}
+      {!loading && !error && !hasData && <div className="eq-no-data">No equity curve data yet \u2014 data populates each execution cycle.</div>}
+      {!loading && !error && hasData && (
+        <>
+          <div className="eq-chart-wrap"><canvas ref={equityChartRef}></canvas></div>
+          <div style={{fontSize:'0.7rem',color:'var(--text-3)',marginBottom:'0.5rem',fontWeight:500}}>Drawdown</div>
+          <div style={{fontSize:'0.65rem',color:'var(--text-3)',marginBottom:'0.3rem',display:'flex',gap:'1.5rem'}}>
+            <span style={{color:'var(--amber)'}}>-5% caution</span>
+            <span style={{color:'#D97706'}}>-10% warning</span>
+            <span style={{color:'var(--red)'}}>-15% critical</span>
+          </div>
+          <div className="eq-dd-wrap"><canvas ref={ddChartRef}></canvas></div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MAIN DASHBOARD
+// ─────────────────────────────────────────────
+function Dashboard({ onLogout }) {
+  const [data, setData] = useState({
+    account:   null,
+    positions: [],
+    calendar:  [],
+    trades:    [],
+  });
+  const [lastRefresh, setLastRefresh]   = useState(new Date());
+  const [apiError, setApiError]         = useState(null);
+  const [activeTab, setActiveTab]       = useState('overview');
+
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem('neo-theme');
+    return saved ? saved === 'dark' : false;
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+    localStorage.setItem('neo-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  const toggleTheme = () => setDarkMode(d => !d);
+
+  const refresh = useCallback(async () => {
+    if (CONFIG.MOCK_MODE) { setLastRefresh(new Date()); return; }
+    try {
+      // Account, positions, and calendar refresh every cycle.
+      // Trades uses 'all' preset by default at the dashboard level —
+      // the PerformancePanel handles date filtering client-side from the full set.
+      // When MOCK_MODE is false, we fetch all trades once and let the panel filter.
+      // For very large trade histories (>500), consider switching to server-side
+      // filtering by passing the active date range from PerformancePanel up here.
+      const [accountRaw, positionsRaw, calendarRaw, tradesRaw] = await Promise.all([
+        apiGet('/account'),
+        apiGet('/positions'),
+        apiGet('/calendar'),
+        apiGet('/trades'),  // returns all closed trades; panel filters client-side
+      ]);
+
+      setData({
+        account:   normaliseAccount(accountRaw),
+        positions: (positionsRaw?.positions ?? positionsRaw ?? []).map(normalisePosition),
+        calendar:  (calendarRaw?.events ?? calendarRaw ?? []).map(normaliseCalendarEvent),
+        trades:    (tradesRaw?.trades ?? tradesRaw ?? []).map(normaliseTrade),
+      });
+      setLastRefresh(new Date());
+      // Dismiss loading overlay after first successful fetch
+      const overlay = document.getElementById('app-loading');
+      if (overlay) { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); }
+    } catch(e) {
+      console.warn('Refresh failed, keeping last data', e);
+      setApiError('Data refresh failed — showing last known values. Retrying...');
+      setTimeout(() => setApiError(null), 8000);
+      const overlay = document.getElementById('app-loading');
+      if (overlay) { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); }
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, CONFIG.REFRESH_MS);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const { account, positions, calendar, trades } = data;
+  const user = getUser();
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <div className="topbar-left">
+          <span className="wordmark">AlgoDesk</span>
+          <span className={`mode-pill ${account?.mode === 'live' ? 'live' : ''}`}>
+            {account?.mode === 'live' ? 'Live trading' : 'Paper trading'}
+          </span>
+        </div>
+        <div className="topbar-right">
+          <Clock />
+          <button className="theme-toggle" onClick={toggleTheme} title="Toggle dark mode">{darkMode ? '☀︎' : '☾'}</button>
+          <button className="logout-btn" onClick={onLogout}>{user} · Sign out</button>
+        </div>
+      </div>
+
+      {apiError && (
+        <div style={{
+          background:'var(--amber-bg)', color:'var(--amber)',
+          border:'1px solid rgba(133,77,14,0.2)', borderRadius:'var(--radius-sm)',
+          padding:'0.5rem 0.85rem', fontSize:'0.75rem', marginBottom:'1rem',
+          display:'flex', alignItems:'center', gap:'0.5rem',
+        }}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1L1 11h10L6 1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M6 5v2.5M6 9h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+          {apiError}
+        </div>
+      )}
+      {/* Tab navigation */}
+      <div className="tab-nav">
+        <button className={`tab-btn ${activeTab==='overview'?'active':''}`} onClick={()=>setActiveTab('overview')}>Overview</button>
+        <button className={`tab-btn ${activeTab==='equity'?'active':''}`} onClick={()=>setActiveTab('equity')}>Equity</button>
+      </div>
+
+      {activeTab === 'overview' && (<>
+        <div className="sec-label">Account overview</div>
+        <AccountCard data={{...(account || {}), positions: positions.length}} />
+
+        <div className="grid-2">
+          <div>
+            <div className="sec-label">Risk profile</div>
+            <RiskProfileCard
+              profile={account?.risk_profile}
+              currency={account?.account_value_currency}
+            />
+          </div>
+          <div>
+            <div className="sec-label">Open positions</div>
+            <PositionsCard positions={positions} account={account} />
+          </div>
+        </div>
+
+        <div className="grid-2">
+          <div>
+            <div className="sec-label">Upcoming tier-1 events</div>
+            <CalendarCard events={calendar} />
+          </div>
+        </div>
+
+        <PerformancePanel trades={trades} />
+      </>)}
+
+      {activeTab === 'equity' && (
+        <EquityTab userId={getUserId()} />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// ROOT
+// ─────────────────────────────────────────────
+function App() {
+  const [auth, setAuth] = useState(() => {
+    const token = getToken();
+    if (CONFIG.MOCK_MODE) return 'authed';
+    return token && isTokenValid(token) ? 'authed' : 'login';
+  });
+
+  // Dismiss loading overlay on mount — covers login path where Dashboard never mounts.
+  // Dashboard.refresh() also dismisses it on success, but this ensures it clears regardless.
+  useEffect(() => {
+    const overlay = document.getElementById('app-loading');
+    if (overlay) { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); }
+  }, []);
+
+  const handleLogin  = () => setAuth('authed');
+  const handleLogout = () => { stopInactivityTimer(); clearAuth(); setAuth('login'); };
+
+  if (auth === 'login')  return <LoginScreen onLogin={handleLogin} />;
+  if (auth === 'authed') return <Dashboard onLogout={handleLogout} />;
+  return <div className="loading-wrap"><div className="spinner" /></div>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
