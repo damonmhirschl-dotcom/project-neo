@@ -1131,25 +1131,12 @@ SIGNAL SCHEMA (all fields required):
     "reasoning": "<2 sentences max: key indicator confluence + timeframe alignment verdict>",
     "timeframe_alignment": "<aligned|mixed|conflicted>",
     "technical_analysis": {{
-      "indicators": {{"atr_14": 0, "adx": 0, "rsi": 0, "macd": 0, "macd_signal": 0,
-        "ema_50": 0, "ema_200": 0, "bb_upper": 0, "bb_lower": 0}},
-      "timeframe_analysis": {{"1d_trend": "", "1h_trend": "", "15m_trend": "",
-        "timeframe_alignment": "", "confidence_multiplier": 1.0}},
-      "regime_classification": "trending|ranging",
-      "current_price": 0, "price_change_24h": 0
+      "current_price": 0,
+      "indicators": {{"atr_14": 0}}
     }},
     "risk_management": {{
       "atr_stop_loss": null, "target_price": null, "rr_ratio": 0,
-      "expected_pips": 0, "stop_distance_pips": 0, "current_spread": 0,
-      "spread_to_signal_ratio": 0, "atr_normalised": false
-    }},
-    "session_context": {{
-      "current_session": "", "pair_session_alignment": "",
-      "session_alignment": "<primary|secondary|off>", "stop_hunt_window": false
-    }},
-    "data_quality": {{
-      "price_validation_passed": true, "spread_validation_passed": true,
-      "data_staleness_ok": true
+      "expected_pips": 0, "current_spread": 0
     }},
     "market_closed": false,
     "proposals": [{{"type": "<type>", "priority": "<high|medium|low>", "title": "<10 words max>", "reasoning": "<1 sentence>"}}]
@@ -1179,7 +1166,7 @@ SIGNAL SCHEMA (all fields required):
                 if self.mcp_servers:
                     response = self.anthropic_client.beta.messages.create(
                         model="claude-haiku-4-5-20251001",
-                        max_tokens=6000,
+                        max_tokens=12000,
                         mcp_servers=self.mcp_servers,
                         system=cached_system,
                         messages=conversation_context,
@@ -1189,7 +1176,7 @@ SIGNAL SCHEMA (all fields required):
                     # No MCP servers — stable messages endpoint.
                     response = self.anthropic_client.messages.create(
                         model="claude-haiku-4-5-20251001",
-                        max_tokens=6000,
+                        max_tokens=12000,
                         system=cached_system,
                         messages=conversation_context,
                     )
@@ -1482,11 +1469,10 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
                         'confidence': 0.1,
                         'payload': {
                             'reasoning': 'Signal not returned by LLM this cycle -- neutral gap-fill',
-                            'technical_analysis': {},
-                            'risk_management': {},
-                            'session_context': {'current_session': self.get_current_session()},
-                            'data_quality': {'llm_gap_fill': True},
                             'timeframe_alignment': 'insufficient',
+                            'technical_analysis': {'current_price': None, 'indicators': {'atr_14': None}},
+                            'risk_management': {'atr_stop_loss': None, 'target_price': None, 'rr_ratio': 0, 'expected_pips': 0, 'current_spread': 0},
+                            'market_closed': False,
                             'proposals': [],
                         }
                     })

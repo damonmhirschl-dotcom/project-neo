@@ -48,3 +48,4 @@ _archive/
 
 # AWS / cloud config
 .aws/
+*.bak[0-9]

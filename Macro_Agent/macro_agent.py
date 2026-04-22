@@ -801,9 +801,9 @@ D. CONTEXT OVERRIDES (use your judgement)
 
 OUTPUT FORMAT (strict — no preamble):
 Begin your response IMMEDIATELY with the first ```json block. No analysis, no pre-processing text, no commentary before, between, or after the blocks.
-Exactly 20 ```json ... ``` blocks in order: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY
-Count before finishing — add any missing pair as neutral.
-If a pair has insufficient data: output it with neutral score, low confidence, and set sentiment_degraded or low_confidence flag.
+CRITICAL: ALL 20 pairs must have a JSON block every cycle — no exceptions. "Skip" means score=0.0, bias=neutral, confidence=0.10. Count before finishing — if fewer than 20, add missing pairs as neutral.
+Pairs in order: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY
+If a pair has insufficient data: output it with neutral score, low confidence, and set sentiment_degraded:true.
 
 SCORE CALIBRATION (use the full range — do not anchor conservatively):
 ±0.80 to ±1.00: Extreme conviction — multiple independent fundamental drivers strongly aligned
@@ -827,26 +827,10 @@ SIGNAL SCHEMA (all fields required):
   "confidence": <0.0 to 1.0>,
   "expires_at": "<ISO now+20min>",
   "payload": {
-    "reasoning": "<2 sentences max: primary macro driver + key evidence supporting the bias>",
-    "data_sources": {
-      "eodhd_sentiment": <float>, "eodhd_articles_analyzed": <int>,
-      "tier_1_sources": <int>, "tier_2_sources": <int>, "tier_3_sources": <int>,
-      "recent_releases": [], "upcoming_events": [], "ssi_contrarian": <float>, "fred_indicators": []
-    },
-    "confidence_adjustments": {
-      "base_confidence": <float>, "sentiment_velocity_flag": <bool>,
-      "coordinated_narrative_flag": <bool>, "single_source_cap_applied": <bool>,
-      "low_tier_only": <bool>, "sentiment_degraded": <bool>, "tier_1_corroboration": <bool>
-    },
-    "adversarial_flags": {
-      "temporal_clustering": <bool>, "content_fingerprinting": <bool>,
-      "source_novelty_detected": <bool>, "cross_provider_divergence": <bool>
-    },
-    "counter_argument": "<1 sentence max: strongest opposing argument>",
-    "session_context": {
-      "current_session": "<str>", "pair_session_alignment": "<primary|secondary|off>",
-      "session_alignment": "<primary|secondary|off>"
-    },
+    "reasoning": "<2 sentences max: primary macro driver + key evidence>",
+    "sentiment_velocity_flag": <bool>,
+    "cot_extreme": <bool>,
+    "sentiment_degraded": <bool>,
     "proposals": [{"type": "<type>", "priority": "<high|medium|low>", "title": "<10 words max>", "reasoning": "<1 sentence>"}]
   }
 }
@@ -862,7 +846,7 @@ SIGNAL SCHEMA (all fields required):
                 if self.mcp_servers:
                     response = self.anthropic_client.beta.messages.create(
                         model="claude-sonnet-4-6",
-                        max_tokens=6000,
+                        max_tokens=8000,
                         mcp_servers=self.mcp_servers,
                         system=system_prompt,
                         messages=conversation_context,
@@ -872,7 +856,7 @@ SIGNAL SCHEMA (all fields required):
                     # No MCP servers — use the stable messages endpoint.
                     response = self.anthropic_client.messages.create(
                         model="claude-sonnet-4-6",
-                        max_tokens=6000,
+                        max_tokens=8000,
                         system=system_prompt,
                         messages=conversation_context,
                     )
@@ -1310,14 +1294,12 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                         'signal_type': 'macro_bias',
                         'score': 0.0,
                         'bias': 'neutral',
-                        'confidence': 0.2,
+                        'confidence': 0.1,
                         'payload': {
                             'reasoning': 'Signal not returned by LLM this cycle -- neutral gap-fill',
-                            'data_sources': {},
-                            'confidence_adjustments': {'llm_gap_fill': True},
-                            'adversarial_flags': {},
-                            'counter_argument': '',
-                            'session_context': {},
+                            'sentiment_velocity_flag': False,
+                            'cot_extreme': False,
+                            'sentiment_degraded': True,
                             'proposals': [],
                         }
                     })
@@ -1339,24 +1321,14 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                         "instrument": pair,
                         "signal_type": "macro_bias",
                         "score": 0.0,
-                        "bias": "neutral", 
-                        "confidence": 0.3,
+                        "bias": "neutral",
+                        "confidence": 0.1,
                         "payload": {
                             "reasoning": "Agent response parsing failed - degraded signal",
-                            "data_sources": {},
-                            "confidence_adjustments": {"agent_response_parse_failed": True},
-                            "adversarial_flags": {},
-                            "counter_argument": "Unable to parse agent reasoning",
-                            "session_context": {},
-                            "proposals": [{
-                                "type": "parameter_suggestion",
-                                "priority": "high",
-                                "title": "Agent response parsing failed",
-                                "reasoning": "Structured signal extraction failed from agent response",
-                                "data_supporting": "No valid JSON signals found",
-                                "suggested_action": "Review agent prompt and response format",
-                                "expected_impact": "Critical - signals may be unreliable"
-                            }]
+                            "sentiment_velocity_flag": False,
+                            "cot_extreme": False,
+                            "sentiment_degraded": True,
+                            "proposals": []
                         }
                     })
             

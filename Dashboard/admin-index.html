@@ -75,12 +75,12 @@
   .logout-btn { font-size: 0.75rem; color: var(--text-3); background: none; border: none; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); transition: color 0.15s, background 0.15s; }
   .logout-btn:hover { color: var(--text-1); background: var(--surface-2); }
 
-  .sec-label { font-size: 0.68rem; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin-bottom: 0.6rem; }
+  .sec-label { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 0.6rem; }
   .sec-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.2rem; margin-bottom: 1.25rem; }
   .div { height: 1px; background: var(--border); margin: 0.75rem 0; }
-  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1rem; margin-bottom: 1.25rem; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 24px; margin-bottom: 1.25rem; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1rem; margin-bottom: 1.25rem; }
   .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
 
@@ -147,7 +147,7 @@
   .api-detail { font-size: 0.65rem; color: var(--text-3); }
 
   /* Learning module */
-  .learn-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem 1.1rem; height: 100%; }
+  .learn-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 0.9rem 1rem; height: 100%; min-height: 80px; }
   .learn-title { font-size: 0.82rem; font-weight: 500; margin-bottom: 2px; }
   .learn-sub { font-size: 0.7rem; color: var(--text-3); margin-bottom: 0.75rem; }
   .empty-state { text-align: center; padding: 1.5rem 0.5rem; }
@@ -576,7 +576,38 @@
   .market-closed-banner h3 { font-size:0.74rem; font-weight:600; letter-spacing:0.1em; color:var(--amber); font-family:var(--mono); margin-bottom:2px; }
   .market-closed-banner p { font-size:0.7rem; color:var(--amber); opacity:0.8; line-height:1.4; margin:0; }
 
-@media(max-width:768px){.hide-mobile{display:none!important}.tab-btn{min-height:44px}}
+
+  /* ── Market-closed overlay v2 — dim bars + intentional overlay ── */
+  .conv-closed-wrap { position: relative; }
+  .conv-closed-scores { opacity: 0.28; pointer-events: none; filter: grayscale(0.4); }
+  .conv-closed-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(var(--surface-1-rgb, 255,255,255), 0.55);
+    backdrop-filter: blur(2px); border-radius: var(--radius);
+    border: 1px solid var(--border); gap: 4px;
+  }
+  .conv-closed-label { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+  .conv-closed-sub   { font-size: 0.62rem; color: var(--text-3); }
+
+  /* ── Signals panel — section dividers + neutral de-emphasis ── */
+  .sig-section-label { font-size: 0.58rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); padding: 6px 0 3px; border-top: 1px solid var(--border); margin-top: 4px; }
+  .sig-section-label:first-child { border-top: none; margin-top: 0; }
+  .sig-row-neutral { opacity: 0.45; }
+  .sig-row-neutral .conv-track { display: none; }
+  .sig-row-neutral .conv-val   { font-size: 0.68rem; }
+
+  /* ── Regime panel — tier group headers ── */
+  .regime-tier-label { font-size: 0.58rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); padding: 5px 0 2px; border-top: 1px solid var(--border); margin-top: 4px; }
+  .regime-tier-label:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+  /* ── Stat card top-border accents ── */
+  .stat-card-cycle   { border-top: 3px solid var(--blue) !important; }
+  .stat-card-trades  { border-top: 3px solid var(--green) !important; }
+  .stat-card-signals { border-top: 3px solid #8b5cf6 !important; }
+  .stat-card-regime  { border-top: 3px solid #D97706 !important; }
+  .stat-card .sub, .stat-card .lbl { font-size: 0.62rem; color: var(--text-3); }
+@media(max-width:768px){.hide-mobile{display:none!important}.tab-btn{min-height:44px}.stress-comp-grid{grid-template-columns:repeat(2,1fr)!important}}
 </style>
 </head>
 <body>
@@ -891,7 +922,7 @@ function PairGroup({ group, expanded, onToggle }) {
   );
 }
 
-function SignalsPanel({ signals_full }) {
+function SignalsPanel({ signals_full, pairGroup }) {
   const PAIR_ORDER = [
     'EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD',
     'EUR/GBP','EUR/JPY','GBP/JPY','EUR/CHF','GBP/CHF','EUR/AUD','GBP/AUD',
@@ -901,6 +932,7 @@ function SignalsPanel({ signals_full }) {
   const groupMap = {};
   (signals_full || []).forEach(s => {
     if (!s.pair || !['macro','technical','regime'].includes(s.agent_name)) return;
+    if (pairGroup && !pairGroup.includes(s.instrument)) return;
     if (!groupMap[s.pair]) groupMap[s.pair] = [];
     // Deduplicate: keep one row per agent per pair (highest |score|)
     const existing = groupMap[s.pair].find(x => x.agent_name === s.agent_name);
@@ -937,11 +969,33 @@ function SignalsPanel({ signals_full }) {
   if (!signals_full) return <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>;
   if (groups.length === 0) return <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>No signals yet — waiting for agent cycle</div>;
 
+  const USD_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD'];
+  // Build rendered list with section dividers
+  const renderedGroups = [];
+  let usdHeaderAdded = false;
+  let crossHeaderAdded = false;
+  groups.forEach(g => {
+    if (!pairGroup) {
+      const isUsd = USD_PAIRS.includes(g.pair);
+      if (isUsd && !usdHeaderAdded) {
+        renderedGroups.push(<div key="hdr-usd" className="sig-section-label">USD Pairs</div>);
+        usdHeaderAdded = true;
+      } else if (!isUsd && !crossHeaderAdded) {
+        renderedGroups.push(<div key="hdr-cross" className="sig-section-label">Cross Pairs</div>);
+        crossHeaderAdded = true;
+      }
+    }
+    const isNeutral = g.weightedScore === 0 || Math.abs(g.weightedScore) < 0.01;
+    renderedGroups.push(
+      <div key={g.pair} className={isNeutral ? "sig-row-neutral" : undefined}>
+        <PairGroup group={g} expanded={!!expanded[g.pair]} onToggle={() => toggle(g.pair)} />
+      </div>
+    );
+  });
+
   return (
     <div>
-      {groups.map(g => (
-        <PairGroup key={g.pair} group={g} expanded={!!expanded[g.pair]} onToggle={() => toggle(g.pair)} />
-      ))}
+      {renderedGroups}
     </div>
   );
 }
@@ -1901,6 +1955,8 @@ function Dashboard({ onLogout }) {
   const [obsAllSignals, setObsAllSignals] = useState([]);
   const [obsDecisions, setObsDecisions] = useState([]);
   const [obsPairFilter, setObsPairFilter] = useState(null);
+  const [obsError, setObsError] = React.useState(null);
+  const [obsLoading, setObsLoading] = React.useState(false);
   const [ksModal, setKsModal] = useState(null); // null | 'activate' | 'deactivate'
   const [alertsExpanded, setAlertsExpanded] = useState(false);
   const [proposals, setProposals] = useState({ proposals: [], pending_count: 0 });
@@ -1923,12 +1979,17 @@ function Dashboard({ onLogout }) {
       setObsAllSignals(getMockSignals());
     } else {
       // Fetch from /signals endpoint — use signals_full which includes payload and created_at
+      setObsLoading(true);
       apiFetch('/signals').then(res => {
         setObsAllSignals(res?.signals_full || []);
         setObsDecisions(res?.decisions || []);
-      }).catch(() => {});
+        setObsError(null);
+      }).catch(err => {
+        console.error('Signals fetch failed:', err);
+        setObsError('Failed to load signals — ' + (err.message || 'network error'));
+      }).finally(() => setObsLoading(false));
     }
-  }, [activeTab]);
+  }, [activeTab === 'observation' ? activeTab : null]);
 
   const refresh = useCallback(async () => {
     if (CONFIG.MOCK_MODE) return;
@@ -2053,10 +2114,10 @@ function Dashboard({ onLogout }) {
       {activeTab === 'overview' && (<>
       {/* System stats */}
       <div className="grid-4" style={{marginBottom:'1.25rem'}}>
-        <div className="stat-card"><div className="lbl">Cycle count</div><div className="val">{stats ? stats.cycle_count.toLocaleString() : '—'}</div><div className="sub">since session start</div></div>
-        <div className="stat-card"><div className="lbl">Trades today</div><div className="val">{stats ? stats.trades_today : '—'}</div><div className="sub">incl. open positions</div></div>
-        <div className="stat-card"><div className="lbl">Signals generated</div><div className="val">{stats ? stats.signals_generated : '—'}</div><div className="sub">last 15 min</div></div>
-        <div className="stat-card"><div className="lbl">Current regime</div><div className="val" style={{fontSize:'0.9rem',paddingTop:3}}>{stats ? stats.regime : '—'}</div><div className="sub">{stats ? stats.session : '—'} session</div></div>
+        <div className="stat-card stat-card-cycle"><div className="lbl">Cycle count</div><div className="val">{stats ? stats.cycle_count.toLocaleString() : '—'}</div><div className="sub">since session start</div></div>
+        <div className="stat-card stat-card-trades"><div className="lbl">Trades today</div><div className="val">{stats ? stats.trades_today : '—'}</div><div className="sub">incl. open positions</div></div>
+        <div className="stat-card stat-card-signals"><div className="lbl">Signals generated</div><div className="val">{stats ? stats.signals_generated : '—'}</div><div className="sub">last 15 min</div></div>
+        <div className="stat-card stat-card-regime"><div className="lbl">Current regime</div><div className="val" style={{fontSize:'0.9rem',paddingTop:3}}>{stats ? stats.regime : '—'}</div><div className="sub">{stats ? stats.session : '—'} session</div></div>
       </div>
 
       {/* System state bar */}
@@ -2149,33 +2210,61 @@ function Dashboard({ onLogout }) {
         );
       })()}
 
-      {/* Convergence + Signals */}
-      <div className="grid-2" style={{alignItems:'stretch'}}>
+      {/* ROW 4 — Convergence + Learning Module */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Convergence scores</div>
           <div className="card" style={{flex:1,position:'relative'}}>
-            {isMarketClosed && (
-              <div className="market-closed-overlay">
-                <h3>MARKET CLOSED</h3>
-                <p>FX market is closed</p>
-                <p>{isWeekendClosed ? "Opens: Sunday 22:00 UTC" : "Opens: 07:00 UTC"}</p>
-                <p>Scores shown are from last active session</p>
+            <div className={isMarketClosed ? "conv-closed-wrap" : undefined}>
+              <div className={isMarketClosed ? "conv-closed-scores" : undefined}>
+                {(convergence || []).map((c,i) => <ConvBar key={i} pair={c.pair} score={c.score} />)}
+                {!convergence && <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>}
+                {convergence && convergence.length === 0 && <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>No signals yet — waiting for agent cycle</div>}
               </div>
-            )}
-            {(convergence || []).map((c,i) => <ConvBar key={i} pair={c.pair} score={c.score} />)}
-            {!convergence && <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>}
-            {convergence && convergence.length === 0 && <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>No signals yet — waiting for agent cycle</div>}
+              {isMarketClosed && (
+                <div className="conv-closed-overlay">
+                  <span className="conv-closed-label">MARKET CLOSED</span>
+                  <span className="conv-closed-sub">{isWeekendClosed ? "Opens: Sunday 22:00 UTC" : "Opens: 07:00 UTC"}</span>
+                  <span className="conv-closed-sub">Last active session</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column'}}>
-          <div className="sec-label">Latest signals</div>
-          <div className="card" style={{flex:1}}>
-            <SignalsPanel signals_full={signals_full} />
+          <div className="sec-label">Learning module</div>
+          <div style={{flex:1}}>
+            {learning
+              ? <LearningModule learning={learning} />
+              : <div className="card" style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>
+            }
           </div>
         </div>
       </div>
 
-      {/* Regime panel */}
+      {/* ROW 5 — Latest signals — 3 columns by pair tier */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
+        <div style={{display:'flex',flexDirection:'column'}}>
+          <div className="sec-label">USD Pairs</div>
+          <div className="card" style={{flex:1}}>
+            <SignalsPanel signals_full={signals_full} pairGroup={['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD']} />
+          </div>
+        </div>
+        <div style={{display:'flex',flexDirection:'column'}}>
+          <div className="sec-label">Cross Pairs — Tier 1 & 2</div>
+          <div className="card" style={{flex:1}}>
+            <SignalsPanel signals_full={signals_full} pairGroup={['EURGBP','EURJPY','GBPJPY','EURCHF','GBPCHF','EURAUD','GBPAUD','EURCAD','GBPCAD']} />
+          </div>
+        </div>
+        <div style={{display:'flex',flexDirection:'column'}}>
+          <div className="sec-label">Cross Pairs — Tier 3</div>
+          <div className="card" style={{flex:1}}>
+            <SignalsPanel signals_full={signals_full} pairGroup={['AUDNZD','AUDJPY','CADJPY','NZDJPY']} />
+          </div>
+        </div>
+      </div>
+
+      {/* ROW 6 + 7 — Market regime */}
       {(() => {
         const regSig = (signals_full || []).find(s => s.agent_name === 'regime' && !s.pair);
         if (!regSig) return null;
@@ -2189,28 +2278,54 @@ function Dashboard({ onLogout }) {
         const killSwitch = p.kill_switch_active || false;
         const stressColor = stress >= 70 ? 'var(--red)' : stress >= 50 ? 'var(--amber)' : stress >= 30 ? 'var(--amber)' : 'var(--green)';
         const stressBg    = stress >= 70 ? 'var(--red-bg)' : stress >= 30 ? 'var(--amber-bg)' : 'var(--green-bg)';
-        const PAIRS = ['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD'];
-        // Weighted contribution = raw score × weight. Bars are drawn on this scale
-        // so a COT score of 77 at 10% weight shows 7.7 units — same axis as VIX 28.8 at 20% = 5.76.
         const COMP_META = {
           vix_level_trend:        { label:'VIX',              hint:null },
           cross_asset_risk:       { label:'Cross-Asset Risk', hint:'Equity/credit/commodity stress index. Neutral when no cross-asset data available.' },
           cot_extremes:           { label:'COT Extremes',     hint:'Weekly CFTC data. High score = crowded positioning.' },
-          yield_curve_slope:      { label:'Yield Curve',  hint:null },
-          realised_vol_divergence:{ label:'Realised Vol', hint:null },
-          order_flow_anomaly:     { label:'Order Flow',   hint:null },
-          correlation_breakdown:  { label:'Correlation',  hint:'Requires live trade history. Populates after first trades execute.' },
-          geopolitical_index:     { label:'Geopolitical', hint:'GDELT disabled (persistent 429s). Fixed neutral value (50) in use. NewsAPI.ai replacement pending.' },
+          yield_curve_slope:      { label:'Yield Curve',      hint:null },
+          realised_vol_divergence:{ label:'Realised Vol',     hint:null },
+          order_flow_anomaly:     { label:'Order Flow',       hint:null },
+          correlation_breakdown:  { label:'Correlation',      hint:'Requires live trade history. Populates after first trades execute.' },
+          geopolitical_index:     { label:'Geopolitical',     hint:'GDELT disabled (persistent 429s). Fixed neutral value (50) in use. NewsAPI.ai replacement pending.' },
         };
         const sessionLabel = sessCtx.session === 'off_hours'
           ? (sessCtx.day_of_week >= 5 ? 'Weekend — market closed' : 'Off hours')
           : (sessCtx.session || '').replace(/_/g,' ');
+
+        const renderPairRow = (pair) => {
+          const pr = pairRegimes[pair] || {};
+          const regime = pr.regime || 'unknown';
+          const adx = pr.adx != null ? Number(pr.adx).toFixed(1) : '—';
+          const conf = pr.regime_confidence || '';
+          const isTrending = regime === 'trending';
+          const isHighVol  = regime === 'high_volatility';
+          const isLowVol   = regime === 'low_volatility';
+          const isRanging  = regime === 'ranging';
+          const regimeBg    = isTrending ? 'var(--blue-bg)' : isHighVol ? 'var(--red-bg)' : isLowVol ? 'var(--green-bg)' : isRanging ? 'rgba(100,116,139,0.10)' : 'var(--surface-2)';
+          const regimeColor = isTrending ? 'var(--blue)'    : isHighVol ? 'var(--red)'    : isLowVol ? 'var(--green)'   : isRanging ? '#64748b' : 'var(--text-3)';
+          const confColor = conf === 'high' ? 'var(--green)' : 'var(--text-3)';
+          return (
+            <div key={pair} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'5px'}}>
+                <span title={`Regime confidence: ${conf}`} style={{width:'5px',height:'5px',borderRadius:'50%',background:confColor,flexShrink:0,display:'inline-block'}}></span>
+                <span style={{fontFamily:'var(--mono)',fontSize:'0.78rem',color:'var(--text-2)',letterSpacing:'0.02em'}}>{pair.slice(0,3)}/{pair.slice(3)}</span>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+                <span style={{fontSize:'0.65rem',padding:'1px 7px',borderRadius:'6px',fontWeight:500,background:regimeBg,color:regimeColor,textTransform:'capitalize'}}>
+                  {regime.replace(/_/g,' ')}
+                </span>
+                <span style={{fontFamily:'var(--mono)',fontSize:'0.7rem',color:'var(--text-3)',minWidth:'52px',textAlign:'right'}}>ADX {adx}</span>
+              </div>
+            </div>
+          );
+        };
+
         return (
           <div>
+            {/* Stress score header — full width above regime boxes */}
             <div className="sec-label">Market regime</div>
-            <div className="card">
-              {/* Header: stress score + session context */}
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'0.7rem'}}>
+            <div className="card" style={{marginBottom:'12px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'0.6rem'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
                   <span style={{fontFamily:'var(--mono)',fontSize:'1.35rem',fontWeight:500,color:stressColor,lineHeight:1}}>{stress.toFixed(1)}</span>
                   <div>
@@ -2221,99 +2336,68 @@ function Dashboard({ onLogout }) {
                 </div>
                 <span style={{fontSize:'0.68rem',padding:'2px 8px',borderRadius:'8px',fontWeight:500,background:stressBg,color:stressColor,textTransform:'capitalize'}}>{stressState}</span>
               </div>
-              {/* Stress bar */}
-              <div style={{height:'5px',background:'var(--surface-2)',borderRadius:'3px',marginBottom:'1rem',overflow:'hidden'}}>
+              <div style={{height:'5px',background:'var(--surface-2)',borderRadius:'3px',overflow:'hidden'}}>
                 <div style={{width:`${Math.min(stress,100)}%`,height:'100%',background:stressColor,borderRadius:'3px',transition:'width 0.4s ease'}}></div>
               </div>
+            </div>
 
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.25rem'}}>
-                {/* Per-pair regimes */}
-                <div>
-                  <div style={{fontSize:'0.65rem',fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'0.5rem'}}>
-                    Pair regimes
-                    {sessCtx.session === 'off_hours' && <span style={{fontWeight:400,textTransform:'none',marginLeft:6,letterSpacing:0,color:'var(--text-3)'}}>— ranging expected off-hours</span>}
-                  </div>
-                  {PAIRS.map(pair => {
-                    const pr = pairRegimes[pair] || {};
-                    const regime = pr.regime || 'unknown';
-                    const adx = pr.adx != null ? Number(pr.adx).toFixed(1) : '—';
-                    const conf = pr.regime_confidence || '';
-                    const isTrending = regime === 'trending';
-                    const isHighVol = regime === 'high_volatility';
-                    const isLowVol  = regime === 'low_volatility';
-                    const regimeBg = isTrending ? 'var(--blue-bg)' : isHighVol ? 'var(--red-bg)' : isLowVol ? 'var(--green-bg)' : 'var(--surface-2)';
-                    const regimeColor = isTrending ? 'var(--blue)' : isHighVol ? 'var(--red)' : isLowVol ? 'var(--green)' : 'var(--text-3)';
-                    // Confidence dot: high = solid, low = muted
-                    const confColor = conf === 'high' ? 'var(--green)' : 'var(--text-3)';
-                    return (
-                      <div key={pair} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:'5px'}}>
-                          <span title={`Regime confidence: ${conf}`} style={{width:'5px',height:'5px',borderRadius:'50%',background:confColor,flexShrink:0,display:'inline-block'}}></span>
-                          <span style={{fontFamily:'var(--mono)',fontSize:'0.78rem',color:'var(--text-2)',letterSpacing:'0.02em'}}>{pair.slice(0,3)}/{pair.slice(3)}</span>
-                        </div>
-                        <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
-                          <span style={{fontSize:'0.65rem',padding:'1px 7px',borderRadius:'6px',fontWeight:500,background:regimeBg,color:regimeColor,textTransform:'capitalize'}}>
-                            {regime.replace(/_/g,' ')}
-                          </span>
-                          <span style={{fontFamily:'var(--mono)',fontSize:'0.7rem',color:'var(--text-3)',minWidth:'52px',textAlign:'right'}}>ADX {adx}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
+            {/* ROW 6 — Pair regimes split 10+10 */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
+              <div className="card">
+                <div style={{fontSize:'0.65rem',fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'0.5rem'}}>
+                  Pair Regimes — USD & Tier 1
+                  {sessCtx.session === 'off_hours' && <span style={{fontWeight:400,textTransform:'none',marginLeft:6,letterSpacing:0,color:'var(--text-3)'}}>
+                    — ranging expected off-hours
+                  </span>}
                 </div>
+                {['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD','EURGBP','EURJPY','GBPJPY'].map(renderPairRow)}
+              </div>
+              <div className="card">
+                <div style={{fontSize:'0.65rem',fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'0.5rem'}}>
+                  Pair Regimes — Tier 2 & 3
+                </div>
+                {['EURCHF','GBPCHF','EURAUD','GBPAUD','EURCAD','GBPCAD','AUDNZD','AUDJPY','CADJPY','NZDJPY'].map(renderPairRow)}
+              </div>
+            </div>
 
-                {/* Stress components — bars show weighted contribution, not raw score */}
-                <div>
-                  <div style={{fontSize:'0.65rem',fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'0.5rem'}}>
-                    Stress components <span style={{fontWeight:400,textTransform:'none',letterSpacing:0}}>(bars = weighted contribution)</span>
-                  </div>
-                  {Object.entries(COMP_META).map(([key, meta]) => {
-                    const comp = components[key] || {};
-                    const score = comp.normalised_score != null ? Number(comp.normalised_score) : null;
-                    const weight = comp.weight != null ? Number(comp.weight) : 0;
-                    const isSubstituted = comp.source === 'substituted';
-                    const weightedContrib = score != null ? score * weight : 0; // 0–100 scale after ×weight
-                    // Bar width = weighted contribution as % of max possible (weight×100)
-                    // This keeps all bars on the same "contribution to stress" axis
-                    const barPct = Math.min(weightedContrib, 100);
-                    const barColor = weightedContrib >= 15 ? 'var(--red)' : weightedContrib >= 7 ? 'var(--amber)' : 'var(--green)';
-                    const subReason = meta.hint;
-                    return (
-                      <div key={key} style={{marginBottom:'6px'}}>
-                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'2px'}}>
-                          <span style={{fontSize:'0.72rem',color: isSubstituted ? 'var(--text-3)' : 'var(--text-2)'}} title={subReason || ''}>{meta.label}</span>
-                          <div style={{display:'flex',alignItems:'center',gap:'5px'}}>
-                            {isSubstituted ? (
-                              <span style={{fontSize:'0.62rem',color:'var(--text-3)',fontStyle:'italic'}} title={subReason || ''}>no data</span>
-                            ) : (
-                              <span style={{fontFamily:'var(--mono)',fontSize:'0.72rem',color:'var(--text-1)'}}>{score != null ? score.toFixed(0) : '—'}</span>
-                            )}
-                            <span style={{fontSize:'0.62rem',color:'var(--text-3)'}}>{Math.round(weight*100)}%</span>
-                          </div>
-                        </div>
-                        <div style={{height:'3px',background:'var(--surface-2)',borderRadius:'2px',overflow:'hidden'}}>
-                          {!isSubstituted && score != null
-                            ? <div style={{width:`${barPct}%`,height:'100%',background:barColor,borderRadius:'2px'}}></div>
-                            : <div style={{width:'100%',height:'100%',background:'repeating-linear-gradient(90deg,var(--border) 0px,var(--border) 4px,transparent 4px,transparent 8px)',borderRadius:'2px'}}></div>
-                          }
-                        </div>
+            {/* ROW 7 — Stress components — horizontal card grid */}
+            <div className="card" style={{marginBottom:'1.25rem'}}>
+              <div style={{fontSize:'0.65rem',fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'0.75rem'}}>
+                Stress components <span style={{fontWeight:400,textTransform:'none',letterSpacing:0}}>(bars = weighted contribution)</span>
+              </div>
+              <div className="stress-comp-grid" style={{display:'grid',gridTemplateColumns:'repeat(4, 1fr)',gap:'10px'}}>
+                {Object.entries(COMP_META).map(([key, meta]) => {
+                  const comp = components[key] || {};
+                  const score = comp.normalised_score != null ? Number(comp.normalised_score) : null;
+                  const weight = comp.weight != null ? Number(comp.weight) : 0;
+                  const isSubstituted = comp.source === 'substituted';
+                  const weightedContrib = score != null ? score * weight : 0;
+                  const barPct = Math.min(weightedContrib, 100);
+                  const barColor = weightedContrib >= 15 ? 'var(--red)' : weightedContrib >= 7 ? 'var(--amber)' : 'var(--green)';
+                  return (
+                    <div key={key} style={{background:'var(--surface-2)',borderRadius:'var(--radius-sm)',padding:'0.55rem 0.7rem'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'5px'}}>
+                        <span style={{fontSize:'0.68rem',fontWeight:500,color:isSubstituted?'var(--text-3)':'var(--text-2)'}} title={meta.hint||''}>{meta.label}</span>
+                        <span style={{fontSize:'0.6rem',color:'var(--text-3)'}}>{Math.round(weight*100)}%</span>
                       </div>
-                    );
-                  })}
-                  <div style={{fontSize:'0.62rem',color:'var(--text-3)',marginTop:'4px'}}>Hover component name for details on substituted sources</div>
-                </div>
+                      <div style={{height:'3px',background:'var(--border)',borderRadius:'2px',overflow:'hidden',marginBottom:'5px'}}>
+                        {!isSubstituted && score != null
+                          ? <div style={{width:`${barPct}%`,height:'100%',background:barColor,borderRadius:'2px'}}></div>
+                          : <div style={{width:'100%',height:'100%',background:'repeating-linear-gradient(90deg,var(--border) 0px,var(--border) 3px,transparent 3px,transparent 6px)',borderRadius:'2px'}}></div>
+                        }
+                      </div>
+                      {isSubstituted
+                        ? <span style={{fontSize:'0.6rem',color:'var(--text-3)',fontStyle:'italic'}} title={meta.hint||''}>no data</span>
+                        : <span style={{fontFamily:'var(--mono)',fontSize:'0.7rem',color:'var(--text-1)'}}>{score != null ? score.toFixed(0) : '—'}</span>
+                      }
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
         );
       })()}
-
-      {/* Learning module */}
-      <div className="sec-label">Learning module</div>
-      {learning
-        ? <LearningModule learning={learning} />
-        : <div className="card" style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>
-      }
 
       </>)}
 
@@ -2642,7 +2726,8 @@ function Dashboard({ onLogout }) {
               </div>
             </div>
           )}
-          <ObservationPanel signals={obsAllSignals} pairFilter={obsPairFilter} onPairFilter={setObsPairFilter} onDownload={() => downloadDecisionsCsv(obsDecisions)} />
+          {obsError && <div style={{color:'#ff6b6b',padding:'1rem',textAlign:'center'}}>{obsError}</div>}
+          <ObservationPanel signals={obsAllSignals} loading={obsLoading} pairFilter={obsPairFilter} onPairFilter={setObsPairFilter} onDownload={() => downloadDecisionsCsv(obsDecisions)} />
         </>
       )}
     </div>
@@ -3490,7 +3575,8 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function ObservationPanel({ signals, pairFilter, onPairFilter, onDownload }) {
+function ObservationPanel({ signals, loading, pairFilter, onPairFilter, onDownload }) {
+  if (loading) return React.createElement('div', {style:{color:'#aaa',padding:'1rem',textAlign:'center'}}, 'Loading signals…');
   const pairs = [
     'EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD',
     'EURGBP','EURJPY','GBPJPY','EURCHF','GBPCHF','EURAUD','GBPAUD',
