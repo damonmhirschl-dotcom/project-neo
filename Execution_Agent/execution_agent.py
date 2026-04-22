@@ -158,7 +158,14 @@ KILL_SWITCH_STOP_MULTIPLIERS = {
     "severe":   0.75,   # ATR × 0.75 for stress 93-100
 }
 
-FX_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+FX_PAIRS = [
+    # USD pairs
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
+    # Cross pairs
+    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
+    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
+    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+]
 
 
 # =============================================================================
@@ -1132,6 +1139,7 @@ class TradeExecutor:
             requested_size=varied_size,
             session_at_entry=_session_at_entry,
             agents_agreed=_agents_agreed,
+            entry_rank_position=payload.get("entry_rank_position"),
         )
 
         if trade_id is None:
@@ -1313,7 +1321,8 @@ class TradeExecutor:
                      target_price: Optional[float] = None,
                      requested_size: Optional[float] = None,
                      session_at_entry: Optional[str] = None,
-                     agents_agreed: Optional[str] = None) -> Optional[int]:
+                     agents_agreed: Optional[str] = None,
+                     entry_rank_position: Optional[int] = None) -> Optional[int]:
         """Write trade to RDS trades table."""
         cur = self.db.cursor()
         try:
@@ -1347,8 +1356,8 @@ class TradeExecutor:
                      requested_size, fill_pct, is_partial_fill,
                      slippage_pips, slippage_action, partial_fill_action,
                      fill_time_ms, entry_context, ibkr_order_id, convergence_score,
-                     target_price, session_at_entry, agents_agreed)
-                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     target_price, session_at_entry, agents_agreed, entry_rank_position)
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 self.user_id, instrument, direction, entry_price, stop_price,
@@ -1361,6 +1370,7 @@ class TradeExecutor:
                 target_price,
                 session_at_entry,
                 agents_agreed,
+                entry_rank_position,
             ))
             result = cur.fetchone()
             self.db.commit()

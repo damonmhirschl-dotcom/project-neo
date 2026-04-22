@@ -1723,12 +1723,41 @@ def main():
                     except Exception as hb_err:
                         logger.error(f"Heartbeat update failed: {hb_err}")
 
-                # Quiet hours: 60-min cycle; active hours: normal 15-min cycle
-                # Uses _interruptible_sleep so a market-state transition
-                # (e.g. quiet→active at London open) triggers an immediate
-                # cycle rather than waiting out the full sleep interval.
+                # Quiet hours: interruptible 60-min sleep
+                # Wakes early on: state transition OR 06:40/12:40 UTC pre-open window
                 if market['state'] == 'quiet':
-                    _interruptible_sleep(3600)
+                    _sleep_start = time.time()
+                    _sleep_total = 3600
+                    while time.time() - _sleep_start < _sleep_total:
+                        time.sleep(30)
+                        for _agent in agent_list:
+                            try:
+                                _agent.update_heartbeat()
+                            except Exception:
+                                pass
+                        import datetime as _dt
+                        _now = _dt.datetime.now(_dt.timezone.utc)
+                        _hr, _min = _now.hour, _now.minute
+                        _pre_open = (
+                            (_hr == 6  and _min >= 40) or  # London pre-open 06:40-07:00
+                            (_hr == 12 and _min >= 40)     # NY pre-open 12:40-13:00
+                        )
+                        if _pre_open:
+                            logger.info(
+                                f"Pre-open wake at {_hr:02d}:{_min:02d} UTC -- "
+                                f"firing early cycle before market open"
+                            )
+                            break
+                        try:
+                            _new_state = get_market_state().get('state')
+                            if _new_state != 'quiet':
+                                logger.info(
+                                    f"Market state transition: quiet -> {_new_state} -- "
+                                    f"breaking sleep early"
+                                )
+                                break
+                        except Exception:
+                            pass
                 else:
                     _interruptible_sleep(primary.CYCLE_INTERVAL_MINUTES * 60)
 

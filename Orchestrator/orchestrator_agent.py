@@ -2020,6 +2020,10 @@ class OrchestratorAgent:
         _mkt_state = get_market_state().get('state', 'active')
         decisions = []
         approved_this_cycle = set()  # tracks instruments approved this cycle to prevent stale-read duplicates
+
+        # ── Pass 1: score every pair ──────────────────────────────────────────
+        # Convergence history writes happen here, in original FX_PAIRS order.
+        _scored = []
         for pair in FX_PAIRS:
             base_convergence, bias, confidence, detail = self.convergence_calc.compute_pair_convergence(
                 pair=pair,
@@ -2049,7 +2053,15 @@ class OrchestratorAgent:
                 bias=bias,
             )
             detail["historical_bonus"] = historical_detail
+            _scored.append((pair, final_convergence, bias, confidence, detail))
 
+        # ── Pass 2: evaluate in top-conviction order ──────────────────────────
+        # Sort by absolute convergence descending — highest-conviction pairs
+        # get capacity slots first regardless of their position in FX_PAIRS.
+        # All gates, checks, and side-effects below are unchanged.
+        _scored.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        for pair, final_convergence, bias, confidence, detail in _scored:
             # >>> DIRECTIONAL GATE — runs BEFORE threshold comparison <<<
             macro_sig = next(
                 (s for s in signals.get("macro", []) if s.get("instrument") == pair), None
@@ -2310,9 +2322,16 @@ class OrchestratorAgent:
             self.signal_writer.write_orchestrator_signal(full_payload)
 
             # Write individual trade approvals for Risk Guardian
-            for decision in decisions:
-                if decision["approved"]:
-                    self.signal_writer.write_trade_approval(decision)
+            # Rank approved decisions by convergence score descending (1 = highest conviction).
+            # entry_rank_position flows through the payload to the trades table.
+            _approved = sorted(
+                [d for d in decisions if d["approved"]],
+                key=lambda d: d["convergence"],
+                reverse=True,
+            )
+            for _rank, decision in enumerate(_approved, start=1):
+                decision["entry_rank_position"] = _rank
+                self.signal_writer.write_trade_approval(decision)
 
         cycle_duration = time.time() - cycle_start
         logger.info(

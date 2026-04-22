@@ -217,7 +217,11 @@ class IGBroker(BrokerInterface):
         return self.account_id
 
     def get_swap_rates(self, pair: str):
-        # IG REST does not expose swap rates - return None (rates from DB)
+        # TODO: IG REST API does not expose overnight financing/swap rates via any endpoint.
+        # instrument.rolloverDetails is null on /markets responses.
+        # Full solution is documented in Notion RG2 spec (3484d2ec-e676-81e5-9308-e9d0f1813c35).
+        # Options: A) static rate table refreshed quarterly, B) EODHD rollover proxy.
+        # Until implemented, swap cost adjustment is skipped -- acceptable for paper trading.
         return None
 
     # ── Quotes ──────────────────────────────────────────────────────────────

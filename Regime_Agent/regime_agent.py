@@ -1244,6 +1244,11 @@ class StressScoreEngine:
             component.source = "live"
             return component.normalised_score
 
+        # KNOWN GAP: stale_cycles is in-memory only — resets to 0 on every service restart.
+        # During extended API outages with multiple restarts, the agent may use last_known_value
+        # indefinitely rather than escalating to neutral_midpoint or raising a proposal.
+        # Fix: persist stale_cycles and last_updated to shared.api_cache table across restarts.
+        # Priority: medium — only matters if VIX spikes during a combined outage + restart event.
         # Data is null — increment stale counter
         component.stale_cycles += 1
 
@@ -3072,9 +3077,7 @@ def main():
                     pass
 
         # Heartbeat between cycles; quiet hours: 60-min cycle, active: 15-min
-        # _prior_state captured here so the inner loop can detect a transition
-        # (e.g. quiet→active at London open) and break early to fire an
-        # immediate cycle instead of sleeping out the full interval.
+        # Wakes early on: state transition OR 06:40/12:40 UTC pre-open window
         interval = 3600 if market['state'] == 'quiet' else CYCLE_INTERVAL_SECONDS
         _prior_state = market['state']
         next_cycle = time.time() + interval
@@ -3086,6 +3089,16 @@ def main():
                 except Exception as e:
                     logger.warning(f"Heartbeat failed: {e}")
             time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            if _prior_state == 'quiet':
+                import datetime as _dt
+                _now = _dt.datetime.now(_dt.timezone.utc)
+                _hr, _min = _now.hour, _now.minute
+                if (_hr == 6 and _min >= 40) or (_hr == 12 and _min >= 40):
+                    logger.info(
+                        f"Pre-open wake at {_hr:02d}:{_min:02d} UTC -- "
+                        f"firing early cycle before market open"
+                    )
+                    break
             try:
                 current_state = get_market_state().get("state")
                 if current_state != _prior_state:

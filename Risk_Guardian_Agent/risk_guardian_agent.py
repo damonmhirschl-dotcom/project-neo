@@ -140,7 +140,14 @@ SLIPPAGE_THRESHOLDS = {
     "AUDUSD": 5, "USDCAD": 5, "NZDUSD": 5,
 }
 
-FX_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+FX_PAIRS = [
+    # USD pairs
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
+    # Cross pairs
+    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
+    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
+    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+]
 
 
 # =============================================================================
@@ -972,6 +979,68 @@ class RiskGuardian:
             self._write_decision(decision)
             return decision
 
+        # Per-currency cap — defined once here, shared by pre-check and CHECK 4.5.
+        _curr_cap = MAX_CURRENCY_EXPOSURE.get(self.user_id, 3)
+
+        # -----------------------------------------------------------------
+        # CHECK 4 pre-check: shared-currency directional concentration
+        # The correlation matrix has no meaningful entries for cross pairs
+        # (e.g. EURUSD/EURGBP is structurally ~0 even though both carry EUR).
+        # This block catches that gap by counting how many open positions are
+        # LONG (or SHORT) the same currency as the proposed trade.
+        #
+        # Rule: long pair → goes LONG base, SHORT quote
+        #       short pair → goes SHORT base, LONG quote
+        # Block if: (existing same-direction count for any currency) + 1 > cap
+        # -----------------------------------------------------------------
+        def _long_currencies(instr: str, dir_: str) -> set:
+            """Return the set of currencies this trade is net-LONG."""
+            legs = CURRENCY_EXPOSURE_MAP.get(instr.upper(), ())
+            if len(legs) != 2:
+                return set()
+            base, quote = legs
+            return {base} if dir_ == "long" else {quote}
+
+        def _short_currencies(instr: str, dir_: str) -> set:
+            """Return the set of currencies this trade is net-SHORT."""
+            legs = CURRENCY_EXPOSURE_MAP.get(instr.upper(), ())
+            if len(legs) != 2:
+                return set()
+            base, quote = legs
+            return {quote} if dir_ == "long" else {base}
+
+        _long_counts: dict = {}
+        _short_counts: dict = {}
+        for _p in open_positions:
+            for _c in _long_currencies(_p["instrument"], _p.get("direction", "long")):
+                _long_counts[_c] = _long_counts.get(_c, 0) + 1
+            for _c in _short_currencies(_p["instrument"], _p.get("direction", "long")):
+                _short_counts[_c] = _short_counts.get(_c, 0) + 1
+
+        _proposed_longs = _long_currencies(instrument, direction)
+        _proposed_shorts = _short_currencies(instrument, direction)
+        _conc_breaches = []
+        for _c in _proposed_longs:
+            if _long_counts.get(_c, 0) + 1 > _curr_cap:
+                _conc_breaches.append(
+                    f"{_c}:long={_long_counts.get(_c,0)+1}/{_curr_cap}"
+                )
+        for _c in _proposed_shorts:
+            if _short_counts.get(_c, 0) + 1 > _curr_cap:
+                _conc_breaches.append(
+                    f"{_c}:short={_short_counts.get(_c,0)+1}/{_curr_cap}"
+                )
+        if _conc_breaches:
+            decision["rejection_reasons"].append(
+                f"shared_currency_concentration: {instrument} {direction} would stack "
+                f"same-direction exposure beyond cap (cap={_curr_cap}): "
+                f"{', '.join(_conc_breaches)}"
+            )
+            decision["checks"]["correlation"] = "FAIL"
+            decision["risk_details"]["shared_currency_concentration"] = _conc_breaches
+        else:
+            decision["risk_details"]["shared_currency_concentration"] = "PASS"
+
         corr_passed, corr_reasons = self.correlation_checker.check(
             instrument=instrument,
             direction=direction,
@@ -986,32 +1055,46 @@ class RiskGuardian:
             decision["checks"]["correlation"] = "PASS"
 
         # =================================================================
-        # CHECK 4.5: Per-currency exposure cap
-        # Counts how many open positions already carry each currency (base
-        # or quote leg). Blocks if adding this trade would exceed the
-        # per-profile cap for any currency the proposed pair carries.
+        # CHECK 4.5: Per-currency net exposure cap (direction-aware)
+        # Tracks SIGNED net exposure per currency:
+        #   long pair  → +1 base, -1 quote
+        #   short pair → -1 base, +1 quote
+        # Applies to all pairs including USD-base (USDJPY long = +1 USD, -1 JPY).
+        # Blocks if abs(current_net + proposed_delta) > cap for any currency
+        # in the proposed pair. Hedges that reduce net exposure are allowed.
+        # _curr_cap defined at top of CHECK 4 block above.
         # =================================================================
-        _curr_cap = MAX_CURRENCY_EXPOSURE.get(self.user_id, 3)
-        _currencies: dict = {}
+        _net_exposure: dict = {}
+
+        def _currency_signed_delta(instr: str, dir_: str) -> dict:
+            """Return signed currency deltas {currency: +1 or -1} for one trade."""
+            legs = CURRENCY_EXPOSURE_MAP.get(instr.upper(), ())
+            if len(legs) != 2:
+                return {}
+            base, quote = legs
+            return {base: +1, quote: -1} if dir_ == "long" else {base: -1, quote: +1}
+
         for _p in open_positions:
-            _legs = CURRENCY_EXPOSURE_MAP.get(_p["instrument"].upper(), ())
-            for _c in _legs:
-                _currencies[_c] = _currencies.get(_c, 0) + 1
-        _new_legs = CURRENCY_EXPOSURE_MAP.get(instrument.upper(), ())
+            for _c, _d in _currency_signed_delta(
+                _p["instrument"], _p.get("direction", "long")
+            ).items():
+                _net_exposure[_c] = _net_exposure.get(_c, 0) + _d
+
+        _proposed_delta = _currency_signed_delta(instrument, direction)
         _cap_breaches = [
-            f"{_c}:{_currencies.get(_c,0)+1}/{_curr_cap}"
-            for _c in _new_legs
-            if _currencies.get(_c, 0) + 1 > _curr_cap
+            f"{_c}:net={_net_exposure.get(_c,0):+d}→{_net_exposure.get(_c,0)+_proposed_delta[_c]:+d}(cap=±{_curr_cap})"
+            for _c in _proposed_delta
+            if abs(_net_exposure.get(_c, 0) + _proposed_delta[_c]) > _curr_cap
         ]
         if _cap_breaches:
             decision["rejection_reasons"].append(
                 f"currency_exposure_cap: {instrument} would breach per-currency limit "
-                f"(cap={_curr_cap}): {', '.join(_cap_breaches)}"
+                f"(cap=±{_curr_cap}): {', '.join(_cap_breaches)}"
             )
             decision["checks"]["currency_exposure"] = "FAIL"
         else:
             decision["checks"]["currency_exposure"] = "PASS"
-        decision["risk_details"]["currency_exposure"] = dict(_currencies)
+        decision["risk_details"]["currency_exposure"] = dict(_net_exposure)
         decision["risk_details"]["currency_exposure_cap"] = _curr_cap
 
         # Log which positions were checked

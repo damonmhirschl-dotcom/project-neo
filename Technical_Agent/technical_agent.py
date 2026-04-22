@@ -722,8 +722,9 @@ class TechnicalAgent:
             plus_di = 100 * (plus_dm.ewm(span=14).mean() / atr)
             minus_di = 100 * (minus_dm.ewm(span=14).mean() / atr)
 
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-            indicators["adx"] = dx.ewm(span=14).mean().iloc[-1] if not dx.empty else 20
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, float('nan'))
+            _adx_val = dx.ewm(span=14).mean().iloc[-1]
+            indicators["adx"] = _adx_val if not pd.isna(_adx_val) else 20.0
 
             # RSI (14-period)
             delta = df['close'].diff()
@@ -839,12 +840,12 @@ class TechnicalAgent:
                 return None, None, None
 
             # Apply T1 rule: ATR expansion check
-            if len(price_metrics) >= 16:  # Need 4 hours of data (16 × 15min)
-                atr_4h_ago = price_metrics['atr_14'].iloc[-16]
+            if len(price_metrics) >= 4:   # Need 4 × 1H bars = 4 hours
+                atr_4h_ago = price_metrics['atr_14'].iloc[-4]
                 if atr_4h_ago > 0 and (current_atr / atr_4h_ago) > 3.0:  # 200% expansion = 3× ratio
                     # Use 5-day ATR average instead
-                    if len(price_metrics) >= 96:  # 5 days × 96 periods per day (15min)
-                        current_atr = price_metrics['atr_14'].tail(96).mean()
+                    if len(price_metrics) >= 120:  # 120 × 1H bars = 5 days
+                        current_atr = price_metrics['atr_14'].tail(120).mean()
                         logger.info(f"{pair}: ATR normalized due to 200%+ expansion")
 
             # Get ATR multiplier for user profile
@@ -948,7 +949,7 @@ class TechnicalAgent:
         return alignment
 
     def get_polygon_technical_indicators(self) -> Dict[str, Dict]:
-        """Fetch pre-computed technical indicators from Polygon.io for all 7 pairs.
+        """Fetch pre-computed technical indicators from Polygon.io for all 20 pairs.
 
         Called once per cycle from build_conversation_context() to provide an external
         cross-validation reference for RSI, EMA, SMA, and MACD.  Failures are non-fatal
@@ -1051,14 +1052,14 @@ class TechnicalAgent:
     def create_technical_system_prompt(self) -> str:
         """Condensed system prompt — static rules only. Cycle data goes in the user message."""
         session_lines = (
-            "London: primary=EURUSD,GBPUSD,USDCHF | secondary=USDJPY\n"
-            "NY: primary=EURUSD,GBPUSD,USDCAD,USDJPY | secondary=AUDUSD\n"
-            "Overlap: primary=EURUSD,GBPUSD,USDJPY | secondary=AUDUSD,USDCAD,USDCHF,NZDUSD\n"
-            "Asian: primary=AUDUSD,NZDUSD,USDJPY | secondary=USDCAD"
+            "London: primary=EURUSD,GBPUSD,USDCHF | secondary=USDJPY,EURGBP,EURCHF,GBPCHF,EURJPY,GBPJPY,EURAUD,GBPAUD,EURCAD,GBPCAD\n"
+            "NY: primary=EURUSD,GBPUSD,USDCAD,USDJPY | secondary=AUDUSD,EURCAD,GBPCAD,CADJPY\n"
+            "Overlap: primary=EURUSD,GBPUSD,USDJPY | secondary=AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY,EURAUD,GBPAUD,EURCAD,GBPCAD\n"
+            "Asian: primary=AUDUSD,NZDUSD,USDJPY | secondary=USDCAD,AUDNZD,AUDJPY,NZDJPY,CADJPY"
         )
         spread_r = self.MIN_SIGNAL_SPREAD_RATIOS
         rr_r = self.MIN_RR_RATIOS
-        return f"""You are the TECHNICAL AGENT for Project Neo, an autonomous FX trading system. Generate price-action signals for 7 FX pairs: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD. You carry 45% weight in orchestrator convergence scoring.
+        return f"""You are the TECHNICAL AGENT for Project Neo, an autonomous FX trading system. Generate price-action signals for 20 FX pairs: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY. You carry 45% weight in orchestrator convergence scoring.
 
 OBJECTIVE: Maximize risk-adjusted returns (Sortino). ACTIVE profit-seeking — recommend deployment when setups show favorable R:R within risk constraints.
 
@@ -1114,7 +1115,7 @@ Multi-tier corroboration is only required for |score| > 0.65 — scores in 0.40�
 
 OUTPUT FORMAT (strict — no preamble):
 Begin your response IMMEDIATELY with the first ```json block. No analysis, no pre-processing text, no commentary before, between, or after the blocks.
-CRITICAL: ALL 7 pairs must have a JSON block every cycle — no exceptions. "Skip" means output score=0.0, bias=neutral, confidence=0.10. Count your blocks before finishing — if fewer than 7, add the missing pairs as neutral.
+CRITICAL: ALL 20 pairs must have a JSON block every cycle — no exceptions. "Skip" means output score=0.0, bias=neutral, confidence=0.10. Count your blocks before finishing — if fewer than 20, add the missing pairs as neutral.
 Market-closed pairs: still generate signal from historical bars; confidence x0.5; entry/stop/target=null; market_closed:true.
 
 SIGNAL SCHEMA (all fields required):
@@ -1228,7 +1229,7 @@ SIGNAL SCHEMA (all fields required):
         Accepts pre-fetched live_prices to avoid a duplicate TraderMade call when
         run_cycle has already fetched prices for the LLM-skip threshold check.
         """
-        # Fetch Polygon cross-validation indicators once per cycle (all 7 pairs)
+        # Fetch Polygon cross-validation indicators once per cycle (all 20 pairs)
         polygon_data = self.get_polygon_technical_indicators()
 
         # Get current session and live prices (TraderMade → RDS fallback)
@@ -1415,7 +1416,7 @@ Pairs Ready for Analysis: {len(pair_analysis)}
 {json.dumps(polygon_cross_val_summary, indent=2, default=str) if polygon_cross_val_summary else "Polygon data unavailable this cycle."}
 
 ## TASK
-Apply T1, T2 rules and adversarial defenses to the data above. Output 7 signals per schema. Pairs with market_closed:true — use historical structure only, confidence x0.5, null entry levels.
+Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals per schema. Pairs with market_closed:true — use historical structure only, confidence x0.5, null entry levels.
 """
 
         return [{"role": "user", "content": context_message}]
@@ -1460,6 +1461,35 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 7 signals 
                     continue
                 if isinstance(signal_data, dict) and 'instrument' in signal_data:
                     signals.append(signal_data)
+
+            # Gap-fill: ensure every pair has a signal even if the LLM omitted some.
+            # Runs before the 'no signals at all' fallback so partial results
+            # (e.g. 7/20) are topped up rather than left missing.
+            _parsed_instruments = {s.get('instrument') for s in signals}
+            _missing_pairs = [p for p in self.PAIRS if p not in _parsed_instruments]
+            if _missing_pairs:
+                logger.warning(
+                    f'LLM returned technical signals for {len(_parsed_instruments)}/{len(self.PAIRS)} '
+                    f'pairs -- inserting neutral fallback for: {_missing_pairs}'
+                )
+                for _gap_pair in _missing_pairs:
+                    signals.append({
+                        'agent_name': self.AGENT_NAME,
+                        'instrument': _gap_pair,
+                        'signal_type': 'price_action',
+                        'score': 0.0,
+                        'bias': 'neutral',
+                        'confidence': 0.1,
+                        'payload': {
+                            'reasoning': 'Signal not returned by LLM this cycle -- neutral gap-fill',
+                            'technical_analysis': {},
+                            'risk_management': {},
+                            'session_context': {'current_session': self.get_current_session()},
+                            'data_quality': {'llm_gap_fill': True},
+                            'timeframe_alignment': 'insufficient',
+                            'proposals': [],
+                        }
+                    })
 
             # Create fallback signals if parsing failed
             if not signals:
@@ -2156,6 +2186,11 @@ def main():
                     _sleep_total = 1800
                     while time.time() - _sleep_start < _sleep_total:
                         time.sleep(30)
+                        for agent in agent_list:
+                            try:
+                                agent.update_heartbeat()
+                            except Exception:
+                                pass
                         # Check for pre-open wake (20 min before London/NY open)
                         import datetime as _dt
                         _now = _dt.datetime.now(_dt.timezone.utc)
