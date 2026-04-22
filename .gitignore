@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+*.log.*
+logs/
+
+# Environment / secrets — never commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+*api_key*
+*api-key*
+*password*
+*secret*
+*secrets*
+
+# Backup files (all patterns used in this project)
+*.bak
+*.bak.*
+*.bak-*
+*.bak_*
+_bak/
+
+# Stale / archive directories
+_stale_backup_*/
+_archive/
+
+# Binary / build artefacts
+*.zip
+*.tmp
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AWS / cloud config
+.aws/
