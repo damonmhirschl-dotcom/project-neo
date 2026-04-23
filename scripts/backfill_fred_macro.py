@@ -10,6 +10,7 @@ Fixes vs user draft:
   - GBP CPI series corrected to GBRCPIALLMINMEI
   - Unemployment stores previous period rate in 'previous' column
   - Yield uses country=currency code (e.g. 'EUR') not 'EU'
+  - EUR unemployment supplemented by Eurostat EA21 series (FRED ends ~2023)
 """
 import requests, boto3, json, psycopg2, time, subprocess
 from datetime import datetime
@@ -170,6 +171,60 @@ def insert_unemployment_series(conn, currency, obs):
     return rows
 
 # ---------------------------------------------------------------------------
+# Eurostat EUR unemployment (fills FRED gap post-2023)
+# ---------------------------------------------------------------------------
+
+def ingest_eurostat_unemployment(conn):
+    """Ingest EUR unemployment from Eurostat JSON-stat API.
+
+    Uses EA21 (Euro area - 21 countries), seasonally adjusted, total, monthly.
+    Extends coverage beyond the FRED LRHUTTTTEZM156S series which ends ~2023.
+    Time format from API: 'YYYY-MM' e.g. '1983-01'.
+    """
+    url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/une_rt_m"
+    params = {
+        'geo': 'EA21', 's_adj': 'SA', 'age': 'TOTAL',
+        'sex': 'T', 'unit': 'PC_ACT', 'format': 'JSON', 'lang': 'EN'
+    }
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+
+    values = data.get('value', {})
+    times = list(data['dimension']['time']['category']['index'].keys())
+
+    # Build sorted list of (period, value) pairs — period is 'YYYY-MM'
+    obs_sorted = sorted(
+        [(times[int(k)], v) for k, v in values.items() if v is not None],
+        key=lambda x: x[0]
+    )
+
+    cur = conn.cursor()
+    inserted = 0
+    for i, (period, val) in enumerate(obs_sorted):
+        # 'YYYY-MM' -> 'YYYY-MM-01'
+        year, month = period.split('-')
+        release_date = f"{year}-{month}-01"
+        prev_val = obs_sorted[i - 1][1] if i > 0 else None
+        cur.execute(
+            """
+            INSERT INTO forex_network.economic_releases
+                (source, country, indicator, release_time, actual, previous, unit, impact_level)
+            VALUES ('EUROSTAT', %s, %s, %s, %s, %s, %s, 'HIGH')
+            ON CONFLICT (source, country, indicator, release_time) DO UPDATE SET
+                actual   = EXCLUDED.actual,
+                previous = EXCLUDED.previous
+            """,
+            ('EUR', 'EUR_UNEMPLOYMENT', release_date, float(val), prev_val, '%')
+        )
+        inserted += 1
+
+    conn.commit()
+    if obs_sorted:
+        print(f"  EUR Eurostat (EA21, une_rt_m): {inserted} rows  {obs_sorted[0][0]} -> {obs_sorted[-1][0]}")
+    return inserted
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -185,7 +240,7 @@ def run():
             print(f"  {currency}: no data")
             continue
         n = insert_yield_series(conn, currency, obs)
-        print(f"  {currency} ({series_id}): {n} rows  {obs[0]['date']} → {obs[-1]['date']}")
+        print(f"  {currency} ({series_id}): {n} rows  {obs[0]['date']} -> {obs[-1]['date']}")
         total += n
         time.sleep(0.12)
 
@@ -197,7 +252,7 @@ def run():
             continue
         n = insert_cpi_series(conn, currency, obs, periods)
         freq = 'Q' if periods == 4 else 'M'
-        print(f"  {currency} ({series_id}, {freq}, lag={periods}): {len(obs)} raw → {n} YoY rows")
+        print(f"  {currency} ({series_id}, {freq}, lag={periods}): {len(obs)} raw -> {n} YoY rows")
         total += n
         time.sleep(0.12)
 
@@ -208,9 +263,16 @@ def run():
             print(f"  {currency}: no data")
             continue
         n = insert_unemployment_series(conn, currency, obs)
-        print(f"  {currency} ({series_id}): {n} rows  {obs[0]['date']} → {obs[-1]['date']}")
+        print(f"  {currency} ({series_id}): {n} rows  {obs[0]['date']} -> {obs[-1]['date']}")
         total += n
         time.sleep(0.12)
+
+    print("\n=== EUR UNEMPLOYMENT (Eurostat) ===")
+    try:
+        n = ingest_eurostat_unemployment(conn)
+        total += n
+    except Exception as e:
+        print(f"  Eurostat ingest failed: {e}")
 
     print(f"\nTotal rows upserted: {total}")
     conn.close()
