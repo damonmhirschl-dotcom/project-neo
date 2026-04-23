@@ -918,6 +918,84 @@ class TechnicalAgent:
         min_ratio = self.MIN_SIGNAL_SPREAD_RATIOS.get(profile, 5.0)
         return expected_pips > (spread * min_ratio)
 
+    def _detect_swing_points(self, instrument: str, lookback: int = 5) -> dict:
+        """
+        Identify most recent swing high and swing low using N-bar rule on 1D data.
+        A swing high: candle whose high > N candles before AND after it.
+        A swing low: candle whose low < N candles before AND after it.
+        Returns: {
+            'swing_high': float,          # most recent swing high price
+            'swing_low': float,           # most recent swing low price
+            'swing_high_date': str,       # date of swing high
+            'swing_low_date': str,        # date of swing low
+            'trend_structure': str,       # 'bullish' (HH+HL), 'bearish' (LH+LL), 'neutral'
+            'bars_since_swing_low': int,
+            'bars_since_swing_high': int,
+        }
+        """
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT ts, high, low, close
+                    FROM forex_network.historical_prices
+                    WHERE instrument = %s AND timeframe = '1D'
+                    ORDER BY ts DESC LIMIT 100
+                """, (instrument,))
+                rows = cur.fetchall()
+
+            if len(rows) < lookback * 2 + 1:
+                return {}
+
+            df = pd.DataFrame(rows, columns=['ts', 'high', 'low', 'close'])
+            df = df.iloc[::-1].reset_index(drop=True)  # chronological order
+            df = df.astype({'high': float, 'low': float, 'close': float})
+
+            swing_highs = []
+            swing_lows  = []
+
+            for i in range(lookback, len(df) - lookback):
+                window_high = df['high'].iloc[i - lookback:i + lookback + 1]
+                window_low  = df['low'].iloc[i - lookback:i + lookback + 1]
+                if df['high'].iloc[i] == window_high.max():
+                    swing_highs.append((df['ts'].iloc[i], df['high'].iloc[i]))
+                if df['low'].iloc[i] == window_low.min():
+                    swing_lows.append((df['ts'].iloc[i], df['low'].iloc[i]))
+
+            if not swing_highs or not swing_lows:
+                return {}
+
+            latest_sh = swing_highs[-1]
+            latest_sl = swing_lows[-1]
+
+            trend = 'neutral'
+            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+                hh = swing_highs[-1][1] > swing_highs[-2][1]
+                hl = swing_lows[-1][1]  > swing_lows[-2][1]
+                lh = swing_highs[-1][1] < swing_highs[-2][1]
+                ll = swing_lows[-1][1]  < swing_lows[-2][1]
+                if hh and hl:
+                    trend = 'bullish'
+                elif lh and ll:
+                    trend = 'bearish'
+
+            last_idx = len(df) - 1
+            sh_idx = next((i for i in range(len(df)) if df['ts'].iloc[i] == latest_sh[0]), last_idx)
+            sl_idx = next((i for i in range(len(df)) if df['ts'].iloc[i] == latest_sl[0]), last_idx)
+
+            return {
+                'swing_high':           round(float(latest_sh[1]), 5),
+                'swing_low':            round(float(latest_sl[1]), 5),
+                'swing_high_date':      str(latest_sh[0]),
+                'swing_low_date':       str(latest_sl[0]),
+                'trend_structure':      trend,
+                'bars_since_swing_high': last_idx - sh_idx,
+                'bars_since_swing_low':  last_idx - sl_idx,
+            }
+
+        except Exception as e:
+            logger.warning(f"_detect_swing_points({instrument}): {e}")
+            return {}
+
     def generate_signals(self, live_prices: Dict[str, Dict]) -> List[Dict]:
         """
         Deterministic signal generation using RSI(14) pullback + ADX(14) trend filter.
@@ -970,6 +1048,10 @@ class TechnicalAgent:
                 pip_size = 0.01 if 'JPY' in pair else 0.0001
                 trending = adx > 20
 
+                # ── swing high/low structure (1D data, 5-bar rule) ────────────
+                swing      = self._detect_swing_points(pair)
+                swing_trend = swing.get('trend_structure', 'neutral')
+
                 # ── RSI pullback direction & conviction ──────────────────────
                 if trending and 38.0 <= rsi <= 55.0:
                     direction  =  1.0   # bullish pullback
@@ -978,6 +1060,15 @@ class TechnicalAgent:
                     direction  = -1.0   # bearish rally into resistance
                     conviction = (rsi - 45.0) / (62.0 - 45.0)   # 1.0 @ RSI=62, 0.0 @ RSI=45
                 else:
+                    direction  = 0.0
+                    conviction = 0.0
+
+                # ── swing structure filter ────────────────────────────────────
+                # Suppress longs against bearish structure, shorts against bullish
+                if direction > 0 and swing_trend == 'bearish':
+                    direction  = 0.0
+                    conviction = 0.0
+                elif direction < 0 and swing_trend == 'bullish':
                     direction  = 0.0
                     conviction = 0.0
 
@@ -1004,6 +1095,13 @@ class TechnicalAgent:
                         'trending':           trending,
                         'session':            session,
                         'session_weight':     session_weight,
+                        'swing_high':         swing.get('swing_high'),
+                        'swing_low':          swing.get('swing_low'),
+                        'swing_high_date':    swing.get('swing_high_date'),
+                        'swing_low_date':     swing.get('swing_low_date'),
+                        'trend_structure':    swing.get('trend_structure', 'neutral'),
+                        'bars_since_swing_high': swing.get('bars_since_swing_high'),
+                        'bars_since_swing_low':  swing.get('bars_since_swing_low'),
                         'proposals':          [],
                         # signal_contract stubs — required by shared/signal_validator.py
                         'risk_management': {
