@@ -216,13 +216,48 @@ class IGBroker(BrokerInterface):
     def get_account_id(self) -> str:
         return self.account_id
 
+    # Representative daily overnight swap rates (pips/day).
+    # IG REST API does not expose overnight financing — instrument.rolloverDetails
+    # is null on all /markets responses.  These values are derived from central-bank
+    # rate differentials as of Q2 2026 and should be reviewed quarterly.
+    # CB rate basis: USD 4.25%, EUR 2.0%, GBP 4.25%, JPY 0.5%,
+    #                CHF 0.25%, AUD 3.85%, CAD 2.75%, NZD 3.25%
+    # Sign convention: negative = debit (you pay), positive = credit (you receive).
+    _STATIC_SWAP_RATES = {
+        # USD pairs
+        "EURUSD": (-0.45,  0.25),
+        "GBPUSD": (-0.05, -0.05),
+        "USDJPY": ( 0.50, -0.65),
+        "USDCHF": ( 0.55, -0.70),
+        "AUDUSD": (-0.08,  0.04),
+        "USDCAD": ( 0.25, -0.40),
+        "NZDUSD": (-0.15,  0.08),
+        # Cross pairs
+        "EURGBP": (-0.20,  0.10),
+        "EURJPY": ( 0.25, -0.40),
+        "GBPJPY": ( 0.50, -0.65),
+        "EURCHF": ( 0.30, -0.45),
+        "GBPCHF": ( 0.55, -0.70),
+        "EURAUD": (-0.30,  0.18),
+        "GBPAUD": ( 0.08, -0.18),
+        "EURCAD": (-0.12,  0.06),
+        "GBPCAD": ( 0.25, -0.38),
+        "AUDNZD": ( 0.10, -0.18),
+        "AUDJPY": ( 0.45, -0.60),
+        "CADJPY": ( 0.30, -0.45),
+        "NZDJPY": ( 0.38, -0.52),
+    }
+
     def get_swap_rates(self, pair: str):
-        # TODO: IG REST API does not expose overnight financing/swap rates via any endpoint.
-        # instrument.rolloverDetails is null on /markets responses.
-        # Full solution is documented in Notion RG2 spec (3484d2ec-e676-81e5-9308-e9d0f1813c35).
-        # Options: A) static rate table refreshed quarterly, B) EODHD rollover proxy.
-        # Until implemented, swap cost adjustment is skipped -- acceptable for paper trading.
-        return None
+        """Return representative overnight swap rates for a currency pair.
+
+        Returns {'swap_long': float, 'swap_short': float, 'source': 'ig_static'},
+        or None if the pair is not recognised.
+        """
+        entry = self._STATIC_SWAP_RATES.get(pair.upper())
+        if entry is None:
+            return None
+        return {"swap_long": entry[0], "swap_short": entry[1], "source": "ig_static"}
 
     # ── Quotes ──────────────────────────────────────────────────────────────
 

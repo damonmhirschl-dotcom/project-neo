@@ -2904,12 +2904,14 @@ class ExecutionAgent:
                 try:
                     cur.execute("""
                         INSERT INTO forex_network.swap_rates
-                            (instrument, rate_date, long_rate_pips, short_rate_pips)
-                        VALUES (%s, CURRENT_DATE, %s, %s)
+                            (instrument, rate_date, long_rate_pips, short_rate_pips, source)
+                        VALUES (%s, CURRENT_DATE, %s, %s, %s)
                         ON CONFLICT (instrument, rate_date)
                         DO UPDATE SET long_rate_pips = EXCLUDED.long_rate_pips,
-                                      short_rate_pips = EXCLUDED.short_rate_pips
-                    """, (pair, rates["swap_long"], rates["swap_short"]))
+                                      short_rate_pips = EXCLUDED.short_rate_pips,
+                                      source = EXCLUDED.source
+                    """, (pair, rates["swap_long"], rates["swap_short"],
+                          rates.get("source", "static")))
                     self.db.commit()
                 except Exception as e:
                     logger.warning(f"Swap rate write failed for {pair}: {e}")
