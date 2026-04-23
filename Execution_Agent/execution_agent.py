@@ -1122,7 +1122,22 @@ class TradeExecutor:
         _lot_size = float(response.get("size") or varied_size)
         _entry_context_dict = payload.get("entry_context") or {}
         _agents_agreed = _entry_context_dict.get("agents_agreed")
-        _session_at_entry = get_market_state().get("state", "unknown")
+        # Derive session from UTC hour — consistent with learning module _get_session_at_time.
+        # get_market_state().get('state') returns 'active'/'quiet', not a session name.
+        _now_h = datetime.datetime.now(datetime.timezone.utc).hour
+        if 0 <= _now_h < 7:
+            _session_at_entry = 'asian'
+        elif 7 <= _now_h < 12:
+            _session_at_entry = 'london'
+        elif 12 <= _now_h < 16:
+            _session_at_entry = 'overlap'
+        elif 16 <= _now_h < 20:
+            _session_at_entry = 'newyork'
+        elif 20 <= _now_h < 22:
+            _session_at_entry = 'ny_close'
+        else:
+            _session_at_entry = 'off_hours'
+
         trade_id = self._write_trade(
             instrument=instrument,
             direction=direction,
