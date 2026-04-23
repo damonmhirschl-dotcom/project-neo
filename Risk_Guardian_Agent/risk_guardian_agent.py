@@ -33,6 +33,7 @@ import psycopg2
 import psycopg2.extras
 from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
+from shared.system_events import log_event
 
 EXPECTED_TABLES = {
     "forex_network.risk_parameters":      ["user_id", "convergence_threshold", "max_risk_pct",
@@ -879,6 +880,10 @@ class RiskGuardian:
                 )
             except Exception as _ale:
                 logger.warning(f"circuit_breaker alert failed: {_ale}")
+            log_event('CIRCUIT_BREAKER_FIRED', f'Circuit breaker active for {self.user_id}',
+                category='RISK', agent='risk_guardian', severity='WARN', user_id=str(self.user_id),
+                payload={'instrument': instrument, 'direction': direction,
+                         'daily_loss_pct': round(daily_loss_pct, 2) if daily_loss_pct is not None else None})
             self._write_decision(decision)
             return decision
         decision["checks"]["circuit_breaker"] = "PASS"
@@ -917,6 +922,9 @@ class RiskGuardian:
                     f"User {self.user_id}: weekly loss {weekly_loss_pct:.3f}% "
                     f">= limit {weekly_limit}% — rejecting"
                 )
+                log_event('DRAWDOWN_LIMIT', f'Drawdown {weekly_loss_pct:.2f}% >= limit {weekly_limit:.2f}%',
+                    category='RISK', agent='risk_guardian', severity='WARN', user_id=str(self.user_id),
+                    payload={'drawdown': round(weekly_loss_pct, 2), 'limit': round(weekly_limit, 2)})
                 self._write_decision(decision)
                 return decision
             else:
@@ -1039,6 +1047,9 @@ class RiskGuardian:
             )
             decision["checks"]["correlation"] = "FAIL"
             decision["risk_details"]["shared_currency_concentration"] = _conc_breaches
+            log_event('CAP_BLOCK', f'{instrument} {direction} blocked — shared_currency_concentration cap={_curr_cap}',
+                category='RISK', agent='risk_guardian', user_id=str(self.user_id), instrument=instrument,
+                payload={'breaches': _conc_breaches, 'cap': _curr_cap, 'direction': direction})
         else:
             decision["risk_details"]["shared_currency_concentration"] = "PASS"
 

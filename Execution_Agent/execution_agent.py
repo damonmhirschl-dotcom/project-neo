@@ -36,6 +36,7 @@ import psycopg2.extras
 from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
 from shared.market_hours import get_market_state
+from shared.system_events import log_event
 from shared.broker_interface import BrokerInterface
 
 EXPECTED_TABLES = {
@@ -1275,6 +1276,8 @@ class TradeExecutor:
     def _handle_hard_rejection(self, instrument: str, direction: str, response: Dict):
         """Handle permanent rejection — no retry."""
         logger.error(f"HARD REJECTION: {instrument} {direction} — {response}")
+        log_event('TRADE_FAILED', f'{instrument} {direction} rejected by IG: {response.get("error", "unknown")}',
+            category='TRADE', agent='execution', severity='CRITICAL', instrument=instrument)
         self.events.write_order_event(None, "rejected_hard", {
             "instrument": instrument, "direction": direction, "rejection_reason": response.get("error", response.get("reason", str(response))),
             "response": str(response),
@@ -1376,6 +1379,10 @@ class TradeExecutor:
             self.db.commit()
             trade_id = result["id"]
             logger.info(f"Trade written: ID {trade_id}, {instrument} {direction}")
+            log_event('TRADE_OPENED', f'{instrument} {direction} {position_size:.2f}lots @ {entry_price}',
+                category='TRADE', agent='execution', user_id=str(self.user_id), instrument=instrument,
+                payload={'entry_price': entry_price, 'stop_distance': stop_distance,
+                         'target': target_price, 'size': position_size, 'convergence': convergence_score})
             return trade_id
         except Exception as e:
             logger.error(f"Trade write failed: {e}")
@@ -2363,6 +2370,9 @@ class ExecutionAgent:
                 f"[close] {instrument}: no mktPrice in prev_snapshot — "
                 f"exit_price will be NULL (first cycle after restart or snapshot miss)"
             )
+            log_event('SNAPSHOT_MISS', f'{instrument} closed with no snapshot — exit_price will be NULL',
+                category='TRADE', agent='execution', severity='WARN', instrument=instrument,
+                payload={'trade_id': trade_id})
 
         # ── P&L — primary: IG transaction history (confirmed account currency) ──
         # _compute_pnl cannot be used here: position_size_usd stores the IG deal
@@ -2491,6 +2501,10 @@ class ExecutionAgent:
                 f"pnl={pnl_pips}pips/${pnl_usd} "
                 f"(hold: {hold_days:.1f}d, swap: {swap_cost_pips:.1f}pips/${swap_cost_usd:.2f})"
             )
+            log_event('TRADE_CLOSED', f'{instrument} {close_cause} @ {exit_price} pnl={pnl_usd}',
+                category='TRADE', agent='execution', user_id=str(self.user_id), instrument=instrument,
+                payload={'exit_price': exit_price, 'pnl': pnl_usd, 'exit_reason': close_cause,
+                         'pips': pnl_pips, 'trade_id': trade_id})
         except Exception as e:
             logger.error(f"Trade close handling failed: {e}")
             self.db.rollback()

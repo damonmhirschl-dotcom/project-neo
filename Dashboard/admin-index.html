@@ -148,7 +148,7 @@
 
   /* Learning module */
   .learn-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 0.9rem 1rem; height: 100%; box-sizing: border-box; word-break: normal; overflow-wrap: normal; }
-  .learn-title { font-size: 0.82rem; font-weight: 500; margin-bottom: 2px; }
+  .learn-title { font-size: 0.8rem; font-weight: 500; margin-bottom: 2px; }
   .learn-sub { font-size: 0.7rem; color: var(--text-3); margin-bottom: 0.75rem; }
   .empty-state { text-align: center; padding: 0.75rem 0.5rem; }
   .empty-val { font-size: 1.75rem; font-weight: 500; color: var(--text-3); margin-bottom: 4px; font-family: var(--mono); }
@@ -157,21 +157,21 @@
   .accuracy-row { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
   .accuracy-row:first-child { padding-top: 0; }
   .accuracy-row:last-child { border-bottom: none; padding-bottom: 0; }
-  .acc-agent { font-size: 0.82rem; font-weight: 500; }
+  .acc-agent { font-size: 0.72rem; font-weight: 500; }
   .acc-trades { font-size: 0.68rem; color: var(--text-3); margin-top: 1px; }
   .acc-right { display: flex; align-items: center; gap: 0.5rem; }
-  .acc-bar { width: 72px; height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
-  .acc-fill { height: 4px; border-radius: 2px; }
+  .acc-bar { width: 72px; height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+  .acc-fill { height: 3px; border-radius: 2px; }
   .acc-val { font-family: var(--mono); font-size: 0.72rem; font-weight: 500; min-width: 30px; text-align: right; }
   .learn-note { font-size: 0.68rem; color: var(--text-3); margin-top: 0.65rem; padding-top: 0.65rem; border-top: 1px solid var(--border); line-height: 1.4; }
   .failure-row { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
   .failure-row:first-child { padding-top: 0; }
   .failure-row:last-child { border-bottom: none; padding-bottom: 0; }
   .failure-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
-  .failure-mode { font-size: 0.78rem; font-weight: 500; }
+  .failure-mode { font-size: 0.72rem; font-weight: 500; }
   .failure-count { font-size: 0.68rem; color: var(--text-3); }
-  .failure-track { width: 100%; height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
-  .failure-fill { height: 3px; border-radius: 2px; background: var(--red); }
+  .failure-track { width: 100%; height: 2px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+  .failure-fill { height: 2px; border-radius: 2px; background: var(--red); }
 
   /* Trade history */
   .trade-row { display: flex; align-items: center; justify-content: space-between; padding: 0.55rem 0; border-bottom: 1px solid var(--border); font-size: 0.78rem; }
@@ -1365,10 +1365,10 @@ function LoginScreen({ onLogin }) {
 function LearningModule({ learning }) {
   const { patterns, accuracy, failures } = learning;
   return (
-    <div style={{display:'flex', flexDirection:'column', gap:'16px', flex:1}}>
+    <div style={{display:'flex', flexDirection:'column', gap:'8px', flex:1, alignItems:'stretch'}}>
 
       {/* Card 1 — Active Patterns */}
-      <div className="card" style={{flex:1}}>
+      <div className="card" style={{flex:1, minHeight:0, padding:'0.75rem'}}>
         <div className="learn-title">Active patterns</div>
         <div className="learn-sub">Filters applied before each trade</div>
         {patterns.length === 0
@@ -1382,8 +1382,8 @@ function LearningModule({ learning }) {
               <div style={{fontSize:'0.78rem'}}>{p.description}</div>
               <div style={{fontSize:'0.68rem',color:'var(--text-3)',marginTop:2}}>{p.context}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:5}}>
-                <div style={{flex:1,height:3,background:'var(--surface-2)',borderRadius:2,overflow:'hidden'}}>
-                  <div style={{height:3,background:'var(--red)',borderRadius:2,width:`${p.failure_rate*100}%`}} />
+                <div style={{flex:1,height:2,background:'var(--surface-2)',borderRadius:2,overflow:'hidden'}}>
+                  <div style={{height:2,background:'var(--red)',borderRadius:2,width:`${p.failure_rate*100}%`}} />
                 </div>
                 <span style={{fontSize:'0.68rem',color:'var(--red)',fontFamily:'var(--mono)',minWidth:28}}>{(p.failure_rate*100).toFixed(0)}%</span>
                 <span style={{fontSize:'0.65rem',color:'var(--text-3)'}}>n={p.sample_size}</span>
@@ -1394,7 +1394,7 @@ function LearningModule({ learning }) {
       </div>
 
       {/* Card 2 — Agent Accuracy */}
-      <div className="card" style={{flex:1}}>
+      <div className="card" style={{flex:1, minHeight:0, padding:'0.75rem'}}>
         <div className="learn-title">Agent accuracy</div>
         <div className="learn-sub">Signal accuracy · all regimes</div>
         {accuracy.map((a,i) => (
@@ -1415,7 +1415,7 @@ function LearningModule({ learning }) {
       </div>
 
       {/* Card 3 — Failure Modes */}
-      <div className="card" style={{flex:1}}>
+      <div className="card" style={{flex:1, minHeight:0, padding:'0.75rem'}}>
         <div className="learn-title">Failure modes</div>
         <div className="learn-sub">From trade autopsies · losing trades</div>
         {failures.length === 0
@@ -2213,10 +2213,10 @@ function Dashboard({ onLogout }) {
       })()}
 
       {/* ROW 4 — Convergence + Learning Module */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'stretch'}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Convergence scores</div>
-          <div className="card" style={{flex:1,position:'relative'}}>
+          <div className="card" style={{position:'relative'}}>
             <div className={isMarketClosed ? "conv-closed-wrap" : undefined}>
               <div className={isMarketClosed ? "conv-closed-scores" : undefined}>
                 {(convergence || []).map((c,i) => <ConvBar key={i} pair={c.pair} score={c.score} />)}
@@ -2243,22 +2243,22 @@ function Dashboard({ onLogout }) {
       </div>
 
       {/* ROW 5 — Latest signals — 3 columns by pair tier */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'stretch'}}>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">USD Pairs</div>
-          <div className="card" style={{flex:1}}>
+          <div className="card" style={{flex:1, height:'100%'}}>
             <SignalsPanel signals_full={signals_full} pairGroup={['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD']} />
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Cross Pairs — Tier 1 & 2</div>
-          <div className="card" style={{flex:1}}>
+          <div className="card" style={{flex:1, height:'100%'}}>
             <SignalsPanel signals_full={signals_full} pairGroup={['EURGBP','EURJPY','GBPJPY','EURCHF','GBPCHF','EURAUD','GBPAUD','EURCAD','GBPCAD']} />
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Cross Pairs — Tier 3</div>
-          <div className="card" style={{flex:1}}>
+          <div className="card" style={{flex:1, height:'100%'}}>
             <SignalsPanel signals_full={signals_full} pairGroup={['AUDNZD','AUDJPY','CADJPY','NZDJPY']} />
           </div>
         </div>

@@ -35,6 +35,7 @@ sys.path.insert(0, '/root/Project_Neo_Damon')
 from shared.alerting import send_alert
 from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary, AGENT_SCOPE_USER_ID
+from shared.system_events import log_event
 from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
 
@@ -2229,9 +2230,18 @@ class OrchestratorAgent:
                 approved_this_cycle.add(pair)
                 open_positions.append({"instrument": pair, "direction": direction})  # same-cycle race fix
                 logger.info(f"✅ {pair}: APPROVED (convergence={final_convergence:.4f}, bias={direction or bias})")
+                log_event('TRADE_APPROVED', f'{pair} approved conv={final_convergence:.3f} bias={direction or bias}',
+                    category='APPROVAL', agent='orchestrator', user_id=str(self.user_id), instrument=pair,
+                    payload={'convergence': round(final_convergence, 4),
+                             'threshold': round(decision.get('effective_threshold', 0), 4),
+                             'stress': market_context.get('stress_score', 0)})
             else:
                 reasons = "; ".join(decision["rejection_reasons"][:2])
                 logger.info(f"❌ {pair}: REJECTED ({reasons})")
+                log_event('TRADE_REJECTED', f'{pair} rejected: {reasons}',
+                    category='REJECTION', agent='orchestrator', user_id=str(self.user_id), instrument=pair,
+                    payload={'reason': reasons, 'convergence': round(final_convergence, 4),
+                             'threshold': round(decision.get('effective_threshold', 0), 4)})
 
         # A. Convergence collapse / spike alert
         _current_conv_scores = {d["pair"]: d["convergence"] for d in decisions}

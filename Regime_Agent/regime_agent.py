@@ -42,6 +42,7 @@ from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
+from shared.system_events import log_event
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":        ["agent_name", "instrument", "signal_type", "score",
@@ -2817,6 +2818,17 @@ def run_cycle(
     classifier = RegimeClassifier(conn, user_id, previous_snapshot)
     pair_regimes = classifier.classify_all_pairs()
 
+    # 8b. Log regime changes vs previous cycle
+    for _pair, _pr in pair_regimes.items():
+        _prev_regime = _prev_classifications.get(_pair, {}).get('regime')
+        if _prev_regime and _prev_regime != _pr.regime.value:
+            log_event('REGIME_CHANGE',
+                f'{_pair} changed {_prev_regime} → {_pr.regime.value}' +
+                (f' ADX={_pr.adx:.1f}' if _pr.adx else ''),
+                category='REGIME', agent='regime', instrument=_pair,
+                payload={'old': _prev_regime, 'new': _pr.regime.value,
+                         'adx': round(_pr.adx, 1) if _pr.adx else None})
+
     # Compute trajectory modifiers before write_agent_signal (must run before
     # entering the write_agent_signal transaction to avoid rollback conflicts)
     # Single batch query for all pairs
@@ -2956,6 +2968,11 @@ def run_cycle(
                 )
             except Exception as _ae:
                 logger.warning(f"audit stress_threshold_crossed failed: {_ae}")
+            log_event('STRESS_ELEVATED',
+                f'Stress score {stress_score:.1f} transitioning {prev_state_val} → {stress_state.value}',
+                category='SYSTEM', agent='regime', severity='WARN', user_id=user_id,
+                payload={'score': round(stress_score, 2), 'band': stress_state.value,
+                         'prev_band': prev_state_val})
 
     # 13. Heartbeat
     _deg_mode = (

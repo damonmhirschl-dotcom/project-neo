@@ -53,6 +53,7 @@ from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary, AGENT_SCOPE_USER_ID
 from shared.score_trajectory import get_recent_trajectory, analyse_trajectory, format_trajectory_for_prompt
 from shared.schema_validator import validate_schema
+from shared.system_events import log_event
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":     ["agent_name", "instrument", "signal_type", "score",
@@ -1287,6 +1288,10 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                     f'LLM returned signals for {len(_parsed_instruments)}/{len(self.PAIRS)} '
                     f'pairs -- inserting neutral fallback for: {_missing_pairs}'
                 )
+                log_event('GAP_FILL',
+                    f'LLM returned {len(_parsed_instruments)}/20 signals — gap-filled {len(_missing_pairs)} pairs',
+                    category='DATA', agent='macro',
+                    payload={'returned': len(_parsed_instruments), 'missing': _missing_pairs})
                 for _gap_pair in _missing_pairs:
                     signals.append({
                         'agent_name': self.AGENT_NAME,
