@@ -1036,17 +1036,31 @@ class ConvergenceCalculator:
                 logger.warning(f"No signal from {agent_name} for {pair}")
                 continue
 
-            # Staleness decay: expired signals contribute with linearly decaying weight
-            # over 30 minutes post-expiry. Prevents hard cliff when an agent's TTL lapses
-            # between cycles — convergence degrades smoothly rather than dropping the
-            # agent's weight to zero instantly.
-            # Signal age — observability only. Most recent signal IS the current
-            # analysis until replaced. No decay applied; agent liveness tracked
-            # separately via agent_heartbeats / read_degradation_state().
+            # Staleness decay: signals past their TTL have reduced weight in convergence.
+            # Bracket decay (minutes past expires_at):
+            #   0-10 min past TTL  → 0.85   (signal is recent, probably just lagged)
+            #   10-20 min past TTL → 0.65   (noticeably stale)
+            #   >20 min past TTL   → 0.0    (effectively expired, drop from convergence)
+            #   not yet expired    → 1.0    (full weight)
             stale_decay = 1.0
             signal_age_min = float(pair_signal.get("signal_age_min") or 0)
             if signal_age_min > 0:
                 detail[f"{agent_name}_signal_age_min"] = round(signal_age_min, 1)
+            _sig_expires = pair_signal.get("expires_at")
+            if _sig_expires is not None:
+                _now_for_decay = datetime.datetime.now(datetime.timezone.utc)
+                _mins_past_expiry = max(
+                    0.0, (_now_for_decay - _sig_expires).total_seconds() / 60
+                )
+                if _mins_past_expiry > 20:
+                    stale_decay = 0.0
+                elif _mins_past_expiry > 10:
+                    stale_decay = 0.65
+                elif _mins_past_expiry > 0:
+                    stale_decay = 0.85
+                if stale_decay < 1.0:
+                    detail[f"{agent_name}_stale_decay"] = stale_decay
+                    detail[f"{agent_name}_mins_past_expiry"] = round(_mins_past_expiry, 1)
 
             score = float(pair_signal["score"] or 0) * stale_decay
             confidence = float(pair_signal["confidence"] or 0)
