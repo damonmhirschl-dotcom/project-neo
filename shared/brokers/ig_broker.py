@@ -743,3 +743,67 @@ class IGBroker(BrokerInterface):
         raise IGConnectionError(
             f"IGBroker.get_account_value: account {self.account_id} not found in /accounts response"
         )
+
+    def get_recent_transactions(self, hours: int = 4) -> list:
+        """GET /history/transactions for the past N hours.
+
+        Returns list of normalised dicts (DEAL transactions only):
+          instrument_name, close_level, open_level, profit_and_loss, size, date_utc, reference
+        profit_and_loss is a float in account currency (GBP for this deployment).
+        """
+        import datetime as _dt
+        now     = _dt.datetime.utcnow()
+        from_dt = now - _dt.timedelta(hours=hours)
+        params  = {
+            "type": "ALL",
+            "from": from_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to":   now.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        try:
+            r = self._session.get(
+                self.base_url + "/history/transactions",
+                headers=self._get_headers(version="2"),
+                params=params,
+                timeout=IG_TIMEOUT,
+            )
+            if r.status_code != 200:
+                logger.warning(f"get_recent_transactions: HTTP {r.status_code} {r.text[:200]}")
+                return []
+            result = []
+            for t in r.json().get("transactions", []):
+                if t.get("transactionType") != "DEAL":
+                    continue
+                raw_pnl = str(t.get("profitAndLoss", "") or "")
+                try:
+                    pnl_val = float(
+                        raw_pnl.replace("£","").replace("£","").replace("$","")
+                                .replace(",","").strip()
+                    )
+                except (ValueError, AttributeError):
+                    pnl_val = None
+                raw_size = str(t.get("size", "0") or "0")
+                try:
+                    size_val = abs(float(raw_size.replace("+","").replace("-","").strip()))
+                except (ValueError, TypeError):
+                    size_val = None
+                try:
+                    close_val = float(t.get("closeLevel") or 0) or None
+                except (ValueError, TypeError):
+                    close_val = None
+                try:
+                    open_val = float(t.get("openLevel") or 0) or None
+                except (ValueError, TypeError):
+                    open_val = None
+                result.append({
+                    "instrument_name": t.get("instrumentName", ""),
+                    "close_level":     close_val,
+                    "open_level":      open_val,
+                    "profit_and_loss": pnl_val,
+                    "size":            size_val,
+                    "date_utc":        t.get("dateUtc", ""),
+                    "reference":       t.get("reference", ""),
+                })
+            return result
+        except Exception as e:
+            logger.warning(f"get_recent_transactions failed: {e}")
+            return []

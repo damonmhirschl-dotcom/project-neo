@@ -2325,40 +2325,92 @@ class ExecutionAgent:
             except Exception as e:
                 logger.warning(f'[close] {instrument}: stop fill price lookup failed: {e}')
 
-        # Fallback: last-known mktPrice from previous cycle snapshot
+        # Fallback: last-known market price from previous cycle snapshot.
+        # IG returns 'current_price' (mapped from bid/offer); IBKR returns 'mktPrice'.
         if exit_price is None:
             prev_pos = (prev_snapshot or {}).get(instrument, {})
             if isinstance(prev_pos, dict):
-                raw = prev_pos.get("mktPrice") or prev_pos.get("mkt_price") or prev_pos.get("marketPrice")
+                raw = (prev_pos.get("mktPrice") or prev_pos.get("mkt_price")
+                       or prev_pos.get("marketPrice") or prev_pos.get("current_price"))
                 if raw is not None:
                     try:
-                        exit_price = float(raw)
-                        exit_price_source = 'position_snapshot'
+                        candidate = float(raw)
+                        if candidate > 0:
+                            exit_price = candidate
+                            exit_price_source = 'position_snapshot'
                     except (TypeError, ValueError):
                         pass
+
+        # Final fallback for stop_hit: use recorded stop level as best approximation.
+        # IG inline stops fill at or near this level; more accurate than leaving NULL.
+        if exit_price is None and close_cause == 'stop_hit':
+            raw_stop = trade.get('stop_price')
+            if raw_stop is not None:
+                try:
+                    candidate = float(raw_stop)
+                    if candidate > 0:
+                        exit_price = candidate
+                        exit_price_source = 'stop_price_approx'
+                        logger.warning(
+                            f"[close] {instrument}: snapshot had no usable price — "
+                            f"using stop_price={exit_price} as exit_price approx"
+                        )
+                except (TypeError, ValueError):
+                    pass
+
         if exit_price is None:
             logger.warning(
                 f"[close] {instrument}: no mktPrice in prev_snapshot — "
                 f"exit_price will be NULL (first cycle after restart or snapshot miss)"
             )
 
-        # ── P&L calculation ──────────────────────────────────────────────────────
-        pnl_pips = None
-        pnl_usd = None
-        if exit_price is not None and trade.get("entry_price") and trade.get("direction"):
-            pnl_pips, pnl_usd = self._compute_pnl(
-                instrument,
-                trade["direction"],
-                float(trade["entry_price"]),
-                exit_price,
-                float(trade.get("position_size_usd") or 0),
+        # ── P&L — primary: IG transaction history (confirmed account currency) ──
+        # _compute_pnl cannot be used here: position_size_usd stores the IG deal
+        # size (e.g. 8.3 lots), not a USD amount, making pnl_usd wrong by ~6000x.
+        # _close_position() uses IG's profit field directly; we replicate that by
+        # fetching /history/transactions and matching on size + open_level.
+        pnl_pips     = None
+        pnl_usd      = None   # stored in account currency (GBP); variable name is legacy
+        ig_txn_match = None
+
+        try:
+            transactions  = self.broker.get_recent_transactions(hours=4)
+            position_size = float(trade.get("position_size") or 0)
+            entry_price_f = float(trade.get("entry_price")   or 0)
+            for t in transactions:
+                t_size = t.get("size")       or 0
+                t_open = t.get("open_level") or 0
+                if (t_size > 0 and abs(t_size - position_size) < 0.01
+                        and t_open > 0 and abs(t_open - entry_price_f) < 0.00005):
+                    ig_txn_match = t
+                    break
+        except Exception as _e:
+            logger.warning(f"[close] {instrument}: IG transaction lookup failed: {_e}")
+
+        if ig_txn_match:
+            ig_close = ig_txn_match.get("close_level")
+            if ig_close and ig_close > 0:
+                exit_price        = ig_close
+                exit_price_source = "ig_transaction"
+            pnl_usd = ig_txn_match.get("profit_and_loss")
+            logger.info(
+                f"[close] {instrument}: IG transaction matched "
+                f"(close={exit_price}, pnl=£{pnl_usd}, ref={ig_txn_match.get('reference')})"
             )
-            if pnl_pips is None:
-                logger.warning(
-                    f"[close] {instrument}: P&L calculation returned None "
-                    f"(entry={trade.get('entry_price')}, exit={exit_price}, "
-                    f"size={trade.get('position_size_usd')})"
-                )
+        else:
+            logger.warning(
+                f"[close] {instrument} trade {trade_id}: no matching IG transaction "
+                f"(size={trade.get('position_size')}, entry={trade.get('entry_price')}) "
+                f"— pnl will be NULL, manual backfill needed"
+            )
+
+        # pnl_pips: pip move from final exit_price (IG does not return pips)
+        if exit_price is not None and trade.get("entry_price") and trade.get("direction"):
+            _pip_size      = 0.01 if instrument.upper().endswith('JPY') else 0.0001
+            _dir_sign      = 1 if trade["direction"] == "long" else -1
+            pnl_pips       = round(
+                (exit_price - float(trade["entry_price"])) * _dir_sign / _pip_size, 1
+            )
 
         # ── Hold duration ────────────────────────────────────────────────────────
         entry_time = trade.get("entry_time")
