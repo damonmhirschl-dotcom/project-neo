@@ -115,6 +115,10 @@ def _truncate_signal(sig):
     Applied to macro/technical/regime signals whose raw DB payload contains
     full LLM output (technical_analysis, session_context, proposals, etc.).
     Orchestrator card_payload is explicitly constructed -- not passed here.
+
+    For macro deterministic_macro_v2 payloads, synthesises currency_scores
+    from base_currency/base_composite and quote_currency/quote_composite so
+    the dashboard renderCard cross-pair derivation JS needs no changes.
     """
     p = sig.get("payload")
     if not isinstance(p, dict):
@@ -123,6 +127,17 @@ def _truncate_signal(sig):
     r = trimmed.get("reasoning", "")
     if r and len(r) > 300:
         trimmed["reasoning"] = r[:300] + "\u2026"
+    # Synthesise currency_scores for v2 flat macro payload so renderCard
+    # cross-pair derivation continues to work without JS changes.
+    if "currency_scores" not in trimmed:
+        cs = {}
+        for side in ("base", "quote"):
+            ccy   = p.get(f"{side}_currency")
+            score = p.get(f"{side}_composite")
+            if ccy and score is not None:
+                cs[ccy] = {"score": float(score)}
+        if cs:
+            trimmed["currency_scores"] = cs
     sig["payload"] = trimmed
     return sig
 
@@ -346,10 +361,10 @@ def handler(event, context):
             for e in aggregated if e["pair"] is not None
         ]
 
-        # ── 2b. Currency strength — aggregate currency_scores from macro signals ──────
-        # macro payload contains: {"currency_scores": {"EUR": {"score": -0.25, "confidence": 0.42}, ...}}
-        # One row per (macro, instrument) after DISTINCT ON, so each pair contributes once.
-        ccy_accum = {}  # {ccy: [{score, confidence, instrument}]}
+        # ── 2b. Currency strength — aggregate from deterministic_macro_v2 flat payload ──
+        # v2 macro payload has flat fields: base_currency, base_composite,
+        # quote_currency, quote_composite (no longer a nested currency_scores dict).
+        ccy_accum = {}  # {ccy: [composite_score, ...]}
         for r in raw:
             if r["agent_name"] != "macro" or r["instrument"] is None:
                 continue
@@ -357,41 +372,21 @@ def handler(event, context):
             if isinstance(p, str):
                 try: p = json.loads(p)
                 except: p = {}
-            cs = (p or {}).get("currency_scores")
-            if not isinstance(cs, dict):
+            if not isinstance(p, dict):
                 continue
-            for ccy, data in cs.items():
-                if not isinstance(data, dict):
-                    continue
-                score = data.get("score")
-                if score is None:
-                    continue
-                conf = float(data.get("confidence") or 0.5)
-                ccy_accum.setdefault(ccy, []).append({
-                    "score":      float(score),
-                    "confidence": conf,
-                    "instrument": r["instrument"],
-                })
+            for side in ("base", "quote"):
+                ccy   = p.get(f"{side}_currency")
+                score = p.get(f"{side}_composite")
+                if ccy and score is not None:
+                    ccy_accum.setdefault(ccy, []).append(float(score))
 
         currency_strength = []
-        for ccy, entries in ccy_accum.items():
-            if not entries:
-                continue
-            total_weight = sum(e["confidence"] for e in entries)
-            if total_weight > 0:
-                avg_score = sum(e["score"] * e["confidence"] for e in entries) / total_weight
-                avg_conf  = total_weight / len(entries)
-            else:
-                avg_score = sum(e["score"] for e in entries) / len(entries)
-                avg_conf  = 0.5
-            # Key driver: instrument with highest confidence for this currency
-            key = max(entries, key=lambda e: e["confidence"])
+        for ccy, scores in ccy_accum.items():
+            avg = sum(scores) / len(scores)
             currency_strength.append({
                 "currency":    ccy,
-                "score":       round(avg_score, 3),
-                "confidence":  round(avg_conf, 3),
-                "sample_size": len(entries),
-                "key_driver":  _pair(key["instrument"]) or key["instrument"],
+                "score":       round(avg, 3),
+                "sample_size": len(scores),
             })
         currency_strength.sort(key=lambda x: x["score"], reverse=True)
 
