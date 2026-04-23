@@ -994,7 +994,12 @@ class TechnicalAgent:
                     'score':       0.0,
                     'bias':        'neutral',
                     'confidence':  0.10,
-                    'payload':     {'error': str(_e), 'proposals': []},
+                    'payload': {
+                        'error': str(_e), 'proposals': [],
+                        # signal_contract stubs — required even on error path
+                        'risk_management':    {'stop_distance_pips': 20.0, 'current_spread': 0.0},
+                        'technical_analysis': {'indicators': {}, 'rsi_14': 0.0, 'adx_14': 0.0},
+                    },
                 })
 
         logger.info(
