@@ -85,8 +85,8 @@ AGENT_NAME = "orchestrator"
 
 # Convergence weights
 CONVERGENCE_WEIGHTS = {
-    "macro":     0.35,
-    "technical": 0.45,
+    "macro":     0.40,
+    "technical": 0.40,
     "regime":    0.20,
 }
 
@@ -2242,55 +2242,91 @@ class OrchestratorAgent:
                 )
                 continue
 
-            direction, should_proceed, dc_reason = self.convergence_calc.check_directional_consensus(
-                macro_sig, tech_sig
+            # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
+            # Layer 1 — macro gate
+            MACRO_THRESHOLD    = float(risk_params.get('convergence_threshold', 0.30))
+            TECH_MIN_THRESHOLD = 0.10
+
+            _macro_score = float(macro_sig.get('score') or 0)
+            _tech_score  = float(tech_sig.get('score') or 0)
+
+            def _gate_reject(_reason, _pair=pair, _ms=macro_sig, _ts=tech_sig):
+                _stress_val = float(market_context.get("stress_score", 0) or 0)
+                _cat = self.convergence_calc.classify_conflict(_ms, _ts, _stress_val)
+                logger.info(
+                    f"{_pair}: REJECTED — {_reason} "
+                    f"(macro={float(_ms.get('score') or 0):+.3f}, "
+                    f"tech={float(_ts.get('score') or 0):+.3f}, "
+                    f"convergence={final_convergence:.3f})"
+                )
+                self.convergence_calc._write_rejection(
+                    _pair, _reason, _cat, _ms, _ts, _stress_val,
+                )
+                decisions.append({
+                    "pair": _pair,
+                    "convergence": round(final_convergence, 4),
+                    "bias": bias,
+                    "confidence": round(confidence, 4),
+                    "effective_threshold": round(effective_threshold, 4),
+                    "approved": False,
+                    "rejection_reasons": [_reason],
+                    "conflict_category": _cat,
+                    "checks": {"directional_gate": "FAIL"},
+                    "convergence_detail": detail,
+                })
+                self._write_rejected_signal(
+                    pair=_pair, reason=_reason,
+                    convergence=final_convergence, threshold=effective_threshold,
+                    bias=bias,
+                    macro_score=float(_ms.get("score") or 0),
+                    tech_score=float(_ts.get("score") or 0),
+                    regime_score=detail.get("regime_score"),
+                    payload={"rejection_reasons": [_reason], "conflict_category": _cat},
+                )
+
+            if abs(_macro_score) < MACRO_THRESHOLD:
+                _gate_reject(
+                    f"macro_gate_fail: abs({_macro_score:.3f}) < {MACRO_THRESHOLD:.3f}"
+                )
+                continue
+
+            _macro_direction = 'long' if _macro_score > 0 else 'short'
+
+            # Layer 2 — technical trigger
+            if abs(_tech_score) < TECH_MIN_THRESHOLD:
+                _gate_reject(
+                    f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
+                )
+                continue
+
+            _tech_direction = 'long' if _tech_score > 0 else 'short'
+            if _tech_direction != _macro_direction:
+                _gate_reject(
+                    f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
+                    f"vs tech={_tech_direction} ({_tech_score:+.3f})"
+                )
+                continue
+
+            # Layer 3 — all existing session, stress, R:R, spread checks in evaluate_pair
+            direction  = 'bullish' if _macro_direction == 'long' else 'bearish'
+            dc_reason  = (
+                f"aligned: macro={_macro_direction}({_macro_score:+.3f}) "
+                f"tech={_tech_direction}({_tech_score:+.3f})"
             )
             detail["directional_consensus"] = {
                 "direction": direction,
                 "reason": dc_reason,
                 "macro_bias": (macro_sig.get("bias") or "neutral").lower(),
                 "technical_bias": (tech_sig.get("bias") or "neutral").lower(),
+                "macro_gate": round(_macro_score, 4),
+                "tech_gate":  round(_tech_score, 4),
             }
 
-            if not should_proceed:
-                stress_val = market_context.get("stress_score", 0) or 0
-                conflict_category = self.convergence_calc.classify_conflict(
-                    macro_sig, tech_sig, stress_val,
-                )
-                logger.info(
-                    f"{pair}: REJECTED — {dc_reason} [{conflict_category}] "
-                    f"(macro={macro_sig.get('bias')}/{float(macro_sig.get('score') or 0):+.2f}, "
-                    f"tech={tech_sig.get('bias')}/{float(tech_sig.get('score') or 0):+.2f}, "
-                    f"stress={float(stress_val):.1f}, "
-                    f"convergence={final_convergence:.3f})"
-                )
-                self.convergence_calc._write_rejection(
-                    pair, dc_reason, conflict_category,
-                    macro_sig, tech_sig, stress_val,
-                )
-                decisions.append({
-                    "pair": pair,
-                    "convergence": round(final_convergence, 4),
-                    "bias": bias,
-                    "confidence": round(confidence, 4),
-                    "effective_threshold": round(effective_threshold, 4),
-                    "approved": False,
-                    "rejection_reasons": [dc_reason],
-                    "conflict_category": conflict_category,
-                    "checks": {"directional_gate": "FAIL"},
-                    "convergence_detail": detail,
-                })
-                self._write_rejected_signal(
-                    pair=pair, reason=dc_reason,
-                    convergence=final_convergence, threshold=effective_threshold,
-                    bias=bias,
-                    macro_score=float(macro_sig.get("score") or 0),
-                    tech_score=float(tech_sig.get("score") or 0),
-                    regime_score=detail.get("regime_score"),
-                    payload={"rejection_reasons": [dc_reason],
-                             "conflict_category": conflict_category},
-                )
-                continue
+            # Convergence for display — 40/40/20
+            _regime_s_display = float(detail.get("regime_score_used") or 0.50)
+            detail["hierarchical_convergence"] = round(
+                abs(_macro_score) * 0.40 + abs(_tech_score) * 0.40 + _regime_s_display * 0.20, 4
+            )
 
             logger.info(f"{pair}: {dc_reason} (convergence={final_convergence:.3f})")
 
@@ -2653,8 +2689,8 @@ class OrchestratorTester:
         logger.info("\n--- Test: Convergence Weights ---")
         total = sum(CONVERGENCE_WEIGHTS.values())
         self._assert(abs(total - 1.0) < 0.001, "Weights sum to 1.0", f"Got: {total}")
-        self._assert(CONVERGENCE_WEIGHTS["macro"] == 0.35, "Macro weight is 0.35")
-        self._assert(CONVERGENCE_WEIGHTS["technical"] == 0.45, "Technical weight is 0.45")
+        self._assert(CONVERGENCE_WEIGHTS["macro"] == 0.40, "Macro weight is 0.40")
+        self._assert(CONVERGENCE_WEIGHTS["technical"] == 0.40, "Technical weight is 0.40")
         self._assert(CONVERGENCE_WEIGHTS["regime"] == 0.20, "Regime weight is 0.20")
 
     def test_threshold_base_values(self):
