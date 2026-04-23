@@ -270,40 +270,38 @@ class TechnicalAgent:
         logger.info(f"Anthropic client initialized with {len(self.mcp_servers)} MCP servers")
 
     def _load_historical_spreads(self):
-        """Load historical spread averages for sanity checking."""
+        """Load historical spread averages for sanity checking.
+
+        Groups by instrument only (not session) so that cross pairs whose
+        historical rows carry session='utc' or session=None are still usable.
+        The spread proxy (avg high-low × 0.3) is used as a session-independent
+        baseline; validate_spreads applies a pair-aware fallback when absent.
+        """
         try:
             with self.db_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Calculate average spreads by pair and session from recent data
                 cur.execute("""
-                    WITH recent_prices AS (
-                        SELECT instrument, session,
-                               AVG(high - low) as avg_spread_proxy
-                        FROM forex_network.historical_prices
-                        WHERE ts >= NOW() - INTERVAL '30 days'
-                          AND timeframe = '15M'
-                        GROUP BY instrument, session
-                    )
-                    SELECT instrument, session, avg_spread_proxy * 0.3 as historical_spread_avg
-                    FROM recent_prices
+                    SELECT instrument,
+                           AVG(high - low) * 0.3 AS historical_spread_avg
+                    FROM forex_network.historical_prices
+                    WHERE ts >= NOW() - INTERVAL '30 days'
+                      AND timeframe = '15M'
+                    GROUP BY instrument
                 """)
-
                 results = cur.fetchall()
-
+                # Flat dict: {pair: avg_spread} — no per-session split needed
                 self.historical_spreads = {}
                 for row in results:
                     pair = row['instrument']
-                    session = row['session']
-                    if pair not in self.historical_spreads:
-                        self.historical_spreads[pair] = {}
-                    self.historical_spreads[pair][session] = float(row['historical_spread_avg']) if row['historical_spread_avg'] else 0.0002
-
+                    val  = float(row['historical_spread_avg']) if row['historical_spread_avg'] else None
+                    if val:
+                        self.historical_spreads[pair] = val
                 logger.info(f"Loaded historical spreads for {len(self.historical_spreads)} pairs")
 
         except Exception as e:
             logger.error(f"Failed to load historical spreads: {e}")
-            # Use fallback defaults
+            # Pair-aware fallback: JPY pairs quoted at 2dp vs 4dp for others
             self.historical_spreads = {
-                pair: {"london": 0.0001, "newyork": 0.0001, "asian": 0.0002, "overlap": 0.0001}
+                pair: (0.010 if pair.endswith('JPY') else 0.0001)
                 for pair in self.PAIRS
             }
 
@@ -816,7 +814,13 @@ class TechnicalAgent:
                 continue
 
             current_spread = live_prices[pair]["spread"]
-            historical_avg = self.historical_spreads.get(pair, {}).get(session, 0.0002)
+            # JPY pairs are quoted at 2 d.p. (spreads ~0.008–0.015) vs 4 d.p.
+            # for others (~0.0001–0.0003).  Use pair-aware fallback when no DB
+            # data is available (cross pairs may lack 15M history).
+            _jpy_default = 0.010  # 1.0 pip in JPY terms
+            _std_default  = 0.0002  # 0.2 pip for all other pairs
+            _default_spread = _jpy_default if pair.endswith('JPY') else _std_default
+            historical_avg = self.historical_spreads.get(pair, _default_spread)
 
             # Check if spread is within 5× historical average (adversarial defense)
             max_allowed_spread = historical_avg * self.SPREAD_SANITY_MULTIPLIER

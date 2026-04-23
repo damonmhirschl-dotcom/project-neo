@@ -905,7 +905,7 @@ class PerformanceTracker:
                   AND exit_time IS NOT NULL
                   AND exit_time > %s
             """, (self.user_id, DATA_QUALITY_CUTOFF))
-            _closed_trades = _gate_cur.fetchone()[0]
+            _closed_trades = _gate_cur.fetchone()['count']
         finally:
             _gate_cur.close()
         if _closed_trades < MIN_TRADES_FOR_PROPOSALS:
@@ -1567,7 +1567,7 @@ class LearningModule:
                   AND exit_time IS NOT NULL
                   AND exit_time > %s
             """, (self.user_id, DATA_QUALITY_CUTOFF))
-            _closed_trades = _gate_cur.fetchone()[0]
+            _closed_trades = _gate_cur.fetchone()['count']
         finally:
             _gate_cur.close()
         if _closed_trades < MIN_TRADES_FOR_PROPOSALS:
