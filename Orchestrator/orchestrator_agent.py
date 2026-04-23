@@ -112,6 +112,24 @@ FX_PAIRS = [
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
 ]
 
+# Session constraints for cross pairs — these pairs have lower liquidity
+# outside their primary session; enforced in evaluate_pair CHECK 6.7.
+CROSS_PAIR_SESSIONS = {
+    'EURGBP': ['london'],
+    'EURJPY': ['london', 'overlap'],
+    'GBPJPY': ['london', 'overlap'],
+    'EURCHF': ['london'],
+    'GBPCHF': ['london'],
+    'EURAUD': ['london', 'overlap'],
+    'GBPAUD': ['london', 'overlap'],
+    'EURCAD': ['overlap', 'newyork'],
+    'GBPCAD': ['overlap', 'newyork'],
+    'AUDNZD': ['asian', 'london'],
+    'AUDJPY': ['asian', 'london'],
+    'CADJPY': ['newyork', 'overlap'],
+    'NZDJPY': ['asian'],
+}
+
 # Per-cycle convergence cache for collapse-alert delta comparison
 _prev_convergence_scores: dict = {}
 
@@ -1220,6 +1238,29 @@ class ConvergenceCalculator:
         else:
             decision["checks"]["off_hours"] = "PASS"
 
+        # === CHECK 6.6: Stop-hunt window — no new entries 07:00–07:30 UTC ===
+        # London open first 30 min: retail stops hunted; spread widens; signals unreliable.
+        if market_context.get("stop_hunt_window"):
+            decision["rejection_reasons"].append(
+                "stop_hunt_window: no entries during 07:00-07:30 UTC London open"
+            )
+            decision["checks"]["stop_hunt_window"] = "FAIL"
+        else:
+            decision["checks"]["stop_hunt_window"] = "PASS"
+
+        # === CHECK 6.7: Cross-pair session filter ===
+        # Cross pairs have specific liquidity windows; block outside those windows.
+        _cross_sessions = CROSS_PAIR_SESSIONS.get(pair)
+        _cur_session = market_context.get("current_session", "")
+        if _cross_sessions and _cur_session not in _cross_sessions:
+            decision["rejection_reasons"].append(
+                f"cross_pair_session: {pair} only tradeable in {_cross_sessions}, "
+                f"current={_cur_session}"
+            )
+            decision["checks"]["cross_pair_session"] = "FAIL"
+        else:
+            decision["checks"]["cross_pair_session"] = "PASS"
+
         # === CHECK 7: Friday cutoff — no new positions after 16:00 UTC Friday ===
         if day_of_week == 5:
             now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -1600,7 +1641,7 @@ class OrchestratorAgent:
             stage = "directional"
         elif "threshold" in r_lower or "below" in r_lower:
             stage = "threshold"
-        elif "session" in r_lower or "ny_close" in r_lower or "friday" in r_lower:
+        elif "session" in r_lower or "stop_hunt" in r_lower or "ny_close" in r_lower or "friday" in r_lower or "off_hours" in r_lower:
             stage = "session_gate"
         elif "spread" in r_lower:
             stage = "spread_gate"
