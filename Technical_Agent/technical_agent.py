@@ -53,7 +53,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 import boto3
 from botocore.exceptions import ClientError
-import anthropic
 
 sys.path.insert(0, '/root/Project_Neo_Damon')
 from shared.market_hours import get_market_state
@@ -193,9 +192,6 @@ class TechnicalAgent:
         # Initialize database connection
         self._init_database()
 
-        # Initialize Anthropic client with MCP servers
-        self._init_anthropic_client()
-
         # Load historical spread averages for sanity checking
         self._load_historical_spreads()
 
@@ -214,8 +210,6 @@ class TechnicalAgent:
             self.rds_credentials = self._get_secret('platform/rds/credentials')
             self.tradermade_key = self._get_secret('platform/tradermade/api-key')['api_key']
             self.eodhd_key = self._get_secret('platform/eodhd/api-key')['api_key']
-            self.anthropic_key = self._get_secret('platform/anthropic/api-key')['api_key']
-
             logger.info("Configuration loaded successfully")
 
         except Exception as e:
@@ -258,17 +252,7 @@ class TechnicalAgent:
             logger.error(f"Database connection failed: {e}")
             raise
 
-    def _init_anthropic_client(self):
-        """Initialize Anthropic client with MCP servers."""
-        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_key)
 
-        # MCP server configurations — currently all disabled:
-        #   • EODHD — v2 OAuth 400s from Anthropic MCP connector
-        #   • Alpha Vantage — MCP endpoint times out from the Anthropic connector
-        #   • Polygon — disabled; returned 0 for all live FX pairs
-        self.mcp_servers = []
-
-        logger.info(f"Anthropic client initialized with {len(self.mcp_servers)} MCP servers")
 
     def _load_historical_spreads(self):
         """Load historical spread averages for sanity checking.
@@ -901,667 +885,112 @@ class TechnicalAgent:
         min_ratio = self.MIN_SIGNAL_SPREAD_RATIOS.get(profile, 5.0)
         return expected_pips > (spread * min_ratio)
 
-    def analyze_timeframe_alignment(self, df_1d: pd.DataFrame, df_1h: pd.DataFrame, df_15m: pd.DataFrame) -> Dict[str, Any]:
-        """Analyze alignment across multiple timeframes and apply T2 rule."""
-        alignment = {
-            "timeframe_alignment": "unknown",
-            "1d_trend": "neutral",
-            "1h_trend": "neutral",
-            "15m_trend": "neutral",
-            "final_direction": "neutral",
-            "confidence_multiplier": 1.0
-        }
-
-        try:
-            # Determine trend direction for each timeframe
-            for tf_name, df in [("1d", df_1d), ("1h", df_1h), ("15m", df_15m)]:
-                if df.empty or len(df) < 10:
-                    continue
-
-                # Simple trend determination using price vs EMA
-                current_price = df['close'].iloc[-1]
-                ema_20 = df['close'].ewm(span=20).mean().iloc[-1] if len(df) >= 20 else current_price
-
-                if current_price > ema_20 * 1.001:  # 0.1% buffer
-                    trend = "bullish"
-                elif current_price < ema_20 * 0.999:
-                    trend = "bearish"
-                else:
-                    trend = "neutral"
-
-                alignment[f"{tf_name}_trend"] = trend
-
-            # Apply T2 rule hierarchy
-            trends = [alignment["1d_trend"], alignment["1h_trend"], alignment["15m_trend"]]
-
-            if trends[0] != "neutral" and trends[1] != "neutral":
-                if trends[0] == trends[1]:  # 1D and 1H agree
-                    if trends[2] == trends[0]:  # All agree
-                        alignment["timeframe_alignment"] = "full"
-                        alignment["final_direction"] = trends[0]
-                        alignment["confidence_multiplier"] = 1.0
-                    else:  # 1D and 1H agree, 15M different
-                        alignment["timeframe_alignment"] = "partial_1D_1H"
-                        alignment["final_direction"] = trends[0]  # 1D takes precedence
-                        alignment["confidence_multiplier"] = 0.8
-                else:  # 1D and 1H conflict (both non-neutral, opposite directions)
-                    alignment["timeframe_alignment"] = "conflict"
-                    alignment["final_direction"] = trends[0]  # 1D direction retained
-                    alignment["confidence_multiplier"] = 0.4  # score × 0.40 per T2 rule
-            elif trends[1] != "neutral" and trends[2] != "neutral":
-                if trends[1] == trends[2]:  # 1H and 15M agree, no 1D signal
-                    alignment["timeframe_alignment"] = "partial_1H_15M"
-                    alignment["final_direction"] = trends[1]
-                    alignment["confidence_multiplier"] = 0.7
-                else:  # 1H and 15M conflict
-                    alignment["timeframe_alignment"] = "conflict"
-                    alignment["final_direction"] = trends[1]  # 1H takes precedence over 15M
-                    alignment["confidence_multiplier"] = 0.5
-            elif trends[0] != "neutral":  # 1D is set but 1H is neutral — partial 1D signal
-                alignment["timeframe_alignment"] = "partial_1D_1H"
-                alignment["final_direction"] = trends[0]  # 1D direction retained
-                alignment["confidence_multiplier"] = 0.6
-            else:  # No usable directional signal on any timeframe
-                alignment["timeframe_alignment"] = "insufficient"
-                alignment["final_direction"] = "neutral"
-                alignment["confidence_multiplier"] = 0.3
-
-        except Exception as e:
-            logger.error(f"Error analyzing timeframe alignment: {e}")
-
-        return alignment
-
-    def get_polygon_technical_indicators(self) -> Dict[str, Dict]:
-        """Fetch pre-computed technical indicators from Polygon.io for all 20 pairs.
-
-        Called once per cycle from build_conversation_context() to provide an external
-        cross-validation reference for RSI, EMA, SMA, and MACD.  Failures are non-fatal
-        — returns an empty dict so the agent degrades gracefully.
+    def generate_signals(self, live_prices: Dict[str, Dict]) -> List[Dict]:
         """
-        try:
-            api_key = self._get_secret('platform/polygon/api-key')['api_key']
-        except Exception as e:
-            logger.warning(f"Polygon API key unavailable — skipping cross-validation: {e}")
-            return {}
+        Deterministic signal generation using RSI(14) pullback + ADX(14) trend filter.
 
-        base = "https://api.polygon.io"
-        results: Dict[str, Dict] = {}
+        Logic:
+          - trending       : ADX > 20
+          - bullish setup  : trending AND 38 <= RSI <= 55  (pullback in uptrend)
+          - bearish setup  : trending AND 45 <= RSI <= 62  (rally in downtrend)
+          - score          : direction × (ADX/100) × conviction × session_weight
+          - conviction     : linear position within the RSI pullback zone
+          - bias           : bullish if score > 0.1, bearish if score < -0.1, else neutral
+          - stop_distance  : ATR(14) × 1.5 in pips
 
-        def _get(url: str) -> Dict:
-            try:
-                resp = requests.get(url, timeout=10)
-                resp.raise_for_status()
-                return resp.json()
-            except Exception as exc:
-                logger.debug(f"Polygon fetch error: {exc}")
-                return {}
-
-        for pair in self.PAIRS:
-            ticker = f"C:{pair}"
-            data: Dict = {}
-
-            # RSI 14-period daily  (ticker in URL path)
-            _t0 = time.time()
-            try:
-                d = _get(f"{base}/v1/indicators/rsi/{ticker}"
-                         f"?timespan=day&window=14&series_type=close&limit=1&apiKey={api_key}")
-                vals = d.get("results", {}).get("values", [])
-                data["rsi_14d"] = round(vals[0]["value"], 2) if vals else None
-                log_api_call(self.db_conn, 'polygon', '/v1/indicators/rsi', 'technical',
-                             bool(vals), int((time.time() - _t0) * 1000))
-            except Exception as _ind_e:
-                logger.debug(f"RSI-14d fetch failed: {_ind_e}")
-                data["rsi_14d"] = None
-
-            # RSI 14-period hourly
-            _t0 = time.time()
-            try:
-                d = _get(f"{base}/v1/indicators/rsi/{ticker}"
-                         f"?timespan=hour&window=14&series_type=close&limit=1&apiKey={api_key}")
-                vals = d.get("results", {}).get("values", [])
-                data["rsi_14h"] = round(vals[0]["value"], 2) if vals else None
-                log_api_call(self.db_conn, 'polygon', '/v1/indicators/rsi', 'technical',
-                             bool(vals), int((time.time() - _t0) * 1000))
-            except Exception as _ind_e:
-                logger.debug(f"RSI-14h fetch failed: {_ind_e}")
-                data["rsi_14h"] = None
-
-            # EMA 50-period daily
-            _t0 = time.time()
-            try:
-                d = _get(f"{base}/v1/indicators/ema/{ticker}"
-                         f"?timespan=day&window=50&series_type=close&limit=1&apiKey={api_key}")
-                vals = d.get("results", {}).get("values", [])
-                data["ema_50d"] = round(vals[0]["value"], 5) if vals else None
-                log_api_call(self.db_conn, 'polygon', '/v1/indicators/ema', 'technical',
-                             bool(vals), int((time.time() - _t0) * 1000))
-            except Exception as _ind_e:
-                logger.debug(f"EMA-50d fetch failed: {_ind_e}")
-                data["ema_50d"] = None
-
-            # SMA 50-period daily
-            _t0 = time.time()
-            try:
-                d = _get(f"{base}/v1/indicators/sma/{ticker}"
-                         f"?timespan=day&window=50&series_type=close&limit=1&apiKey={api_key}")
-                vals = d.get("results", {}).get("values", [])
-                data["sma_50d"] = round(vals[0]["value"], 5) if vals else None
-                log_api_call(self.db_conn, 'polygon', '/v1/indicators/sma', 'technical',
-                             bool(vals), int((time.time() - _t0) * 1000))
-            except Exception as _ind_e:
-                logger.debug(f"SMA-50d fetch failed: {_ind_e}")
-                data["sma_50d"] = None
-
-            # MACD 1H (12, 26, 9) — timespan=hour matches agent's df_1h computation
-            _t0 = time.time()
-            try:
-                d = _get(f"{base}/v1/indicators/macd/{ticker}"
-                         f"?timespan=hour&fast_period=12&slow_period=26&signal_period=9"
-                         f"&series_type=close&limit=1&apiKey={api_key}")
-                vals = d.get("results", {}).get("values", [])
-                if vals:
-                    data["macd_line"]   = round(vals[0].get("value", 0), 6)
-                    data["macd_signal"] = round(vals[0].get("signal", 0), 6)
-                    data["macd_hist"]   = round(vals[0].get("histogram", 0), 6)
-                else:
-                    data["macd_line"] = data["macd_signal"] = data["macd_hist"] = None
-                log_api_call(self.db_conn, 'polygon', '/v1/indicators/macd', 'technical',
-                             bool(vals), int((time.time() - _t0) * 1000))
-            except Exception as _ind_e:
-                logger.debug(f"MACD fetch failed: {_ind_e}")
-                data["macd_line"] = data["macd_signal"] = data["macd_hist"] = None
-
-            results[pair] = data
-
-        fetched = sum(1 for p in results.values() if p.get("rsi_14d") is not None)
-        logger.info(f"Polygon cross-validation: fetched indicators for {fetched}/{len(self.PAIRS)} pairs")
-        return results
-
-    def create_technical_system_prompt(self) -> str:
-        """Condensed system prompt — static rules only. Cycle data goes in the user message."""
-        session_lines = (
-            "London: primary=EURUSD,GBPUSD,USDCHF | secondary=USDJPY,EURGBP,EURCHF,GBPCHF,EURJPY,GBPJPY,EURAUD,GBPAUD,EURCAD,GBPCAD\n"
-            "NY: primary=EURUSD,GBPUSD,USDCAD,USDJPY | secondary=AUDUSD,EURCAD,GBPCAD,CADJPY\n"
-            "Overlap: primary=EURUSD,GBPUSD,USDJPY | secondary=AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY,EURAUD,GBPAUD,EURCAD,GBPCAD\n"
-            "Asian: primary=AUDUSD,NZDUSD,USDJPY | secondary=USDCAD,AUDNZD,AUDJPY,NZDJPY,CADJPY"
-        )
-        spread_r = self.MIN_SIGNAL_SPREAD_RATIOS
-        rr_r = self.MIN_RR_RATIOS
-        return f"""You are the TECHNICAL AGENT for Project Neo, an autonomous FX trading system. Generate price-action signals for 20 FX pairs: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY. You carry 45% weight in orchestrator convergence scoring.
-
-OBJECTIVE: Maximize risk-adjusted returns (Sortino). ACTIVE profit-seeking — recommend deployment when setups show favorable R:R within risk constraints.
-
-INDICATORS:
-High-confidence (always): ATR(14), ADX(14), EMA 50/200, RSI(14)
-Moderate (weight by regime): Bollinger Bands(20,2σ), MACD(12,26,9), Stochastic(14,3,3)
-Regime alignment:
-  ADX>25 trending  -> weight MA crossover + MACD; BB touches = continuation, not reversal
-  ADX<20 ranging   -> weight RSI extremes + BB reversals; MA crossovers unreliable, reduce weight
-
-SESSION WEIGHTING:
-London 07:00-09:00 UTC: highest priority. Overlap 12:00-16:00: most reliable. Asian 00:00-07:00: trend signals less reliable, favor mean reversion. NY close 20:00-22:00: no new entries.
-{session_lines}
-Session alignment is METADATA only — record it in session_context.session_alignment. Do NOT multiply score by session weight. Score is determined solely by the calibration table above.
-
-STOPS: ATR(14)x1.5 conservative/balanced, ATR(14)x2.0 aggressive
-SPREAD-TO-SIGNAL MINIMUMS (expected_pips must exceed spread x ratio):
-  conservative={spread_r['conservative']}x  balanced={spread_r['balanced']}x  aggressive={spread_r['aggressive']}x
-MINIMUM R:R:
-  conservative={rr_r['conservative']}  balanced={rr_r['balanced']}  aggressive={rr_r['aggressive']}
-(assume "balanced" profile unless instructed otherwise)
-
-ADVERSARIAL RULES (mandatory):
-- Price sanity: live vs recent historical >1% divergence -> exclude pair, confidence -0.15
-- Spread sanity: spread >5x historical session avg -> suspect, exclude for this cycle
-- Data staleness: London/NY max 5 min, Asian max 30 min, off-hours max 60 min -> stale reduces confidence 0.15
-
-DECISION RULES (apply exactly):
-T1 ATR expansion: ATR expands >200% within 4h -> use 5-day ATR avg instead. If 5-day avg stop >3x normal session avg -> output score=0.0, bias=neutral, confidence=0.10, log atr_normalised:true. NEVER omit the pair's JSON block.
-T2 Timeframe hierarchy (absolute):
-  1D sets bias direction — never enter against 1D trend
-  1H overrides 15M for entry timing; 15M for precise entry only
-  1H+1D conflict -> 1D direction, 1H timing
-  15M+1H conflict -> 1H direction, 15M timing (confidence_multiplier=0.7 on CONFIDENCE only — score unchanged)
-  1D biased + 1H/15M neutral -> timeframe_alignment=partial_1D_1H, confidence_multiplier=0.6. Apply 0.6x to CONFIDENCE only — do NOT reduce the score. Score reflects evidence strength per calibration table regardless of alignment quality.
-  1D conflicts with 1H (both non-neutral, opposite directions) -> timeframe_alignment=conflict, retain 1D bias direction, score = 1D-directional score × 0.40, confidence=0.20. NEVER omit the pair.
-  Insufficient data (no 1D or 1H direction determinable) -> timeframe_alignment=insufficient, score=0.0, bias=neutral, confidence=0.10. NEVER omit the pair.
-  Log timeframe_alignment: full | partial_1D_1H | partial_1H_15M | conflict | insufficient
-  Top-level payload field timeframe_alignment (aligned|mixed|conflicted) — mapping:
-    full -> aligned
-    partial_1D_1H | partial_1H_15M -> mixed
-    conflict | insufficient -> conflicted
-
-SCORE CALIBRATION (use the full range — do not anchor conservatively):
-±0.80 to ±1.00: Extreme conviction — all timeframes aligned, multiple indicators confirming, strong session alignment, clean structure
-±0.60 to ±0.79: Strong conviction — 1D+1H aligned, 2+ indicators confirming, good session fit
-±0.40 to ±0.59: Moderate conviction — 1D trend clear, 1H supportive, at least 1 strong indicator
-±0.20 to ±0.39: Weak conviction — partial timeframe alignment, mixed indicators, marginal session fit
-±0.00 to ±0.19: Neutral/no conviction — conflicting timeframes or flat structure, no directional edge
-Scores must reflect actual technical evidence. A pair with 1D+1H aligned and RSI/MACD confirming deserves ±0.55+, not ±0.25.
-T1 (ATR normalised) rule still applies — forces score=0.0 regardless of calibration. T2 conflict reduces score to 0.40× but does not zero it — a conflict score of ±0.24 is valid.
-Multi-tier corroboration is only required for |score| > 0.65 — scores in 0.40–0.65 range should be used freely when evidence supports it.
-
-OUTPUT FORMAT (strict — no preamble):
-Begin your response IMMEDIATELY with the first ```json block. No analysis, no pre-processing text, no commentary before, between, or after the blocks.
-CRITICAL: ALL 20 pairs must have a JSON block every cycle — no exceptions. "Skip" means output score=0.0, bias=neutral, confidence=0.10. Count your blocks before finishing — if fewer than 20, add the missing pairs as neutral.
-Market-closed pairs: still generate signal from historical bars; confidence x0.5; entry/stop/target=null; market_closed:true.
-
-SIGNAL SCHEMA (all fields required):
-{{
-  "agent_name": "technical",
-  "instrument": "<PAIR>",
-  "signal_type": "price_action",
-  "score": <-1.0 to +1.0>,
-  "bias": "<bullish|bearish|neutral>",
-  "confidence": <0.0 to 1.0>,
-  "expires_at": "<ISO now+20min>",
-  "payload": {{
-    "reasoning": "<2 sentences max: key indicator confluence + timeframe alignment verdict>",
-    "timeframe_alignment": "<aligned|mixed|conflicted>",
-    "technical_analysis": {{
-      "current_price": 0,
-      "indicators": {{"atr_14": 0}}
-    }},
-    "risk_management": {{
-      "atr_stop_loss": null, "target_price": null, "rr_ratio": 0,
-      "expected_pips": 0, "current_spread": 0
-    }},
-    "market_closed": false,
-    "proposals": [{{"type": "<type>", "priority": "<high|medium|low>", "title": "<10 words max>", "reasoning": "<1 sentence>"}}]
-  }}
-}}
-"""
-
-    def call_anthropic_agent(self, conversation_context: List[Dict]) -> Dict:
-        """Call the Anthropic API (with MCP servers if any are configured)."""
-        try:
-            system_prompt = self.create_technical_system_prompt()
-
-            # Wrap the static system prompt in a cache_control block so Anthropic
-            # caches it across cycles. Only the user message (prices, indicators,
-            # Polygon data) changes per call — cache hit rate is high, reducing
-            # input token costs by ~90% on cached calls.
-            cached_system = [
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
-
-            _t0 = time.time()
-            try:
-                if self.mcp_servers:
-                    response = self.anthropic_client.beta.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=12000,
-                        mcp_servers=self.mcp_servers,
-                        system=cached_system,
-                        messages=conversation_context,
-                        extra_headers={"anthropic-beta": "mcp-client-2025-04-04"},
-                    )
-                else:
-                    # No MCP servers — stable messages endpoint.
-                    response = self.anthropic_client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=12000,
-                        system=cached_system,
-                        messages=conversation_context,
-                    )
-                log_api_call(self.db_conn, 'anthropic', '/v1/messages', 'technical',
-                             True, int((time.time() - _t0) * 1000))
-            except Exception as _api_err:
-                log_api_call(self.db_conn, 'anthropic', '/v1/messages', 'technical',
-                             False, int((time.time() - _t0) * 1000),
-                             error_type=type(_api_err).__name__)
-                raise
-
-            # Extract text response and any tool results
-            full_response = ""
-            tool_results = []
-
-            for content_block in response.content:
-                if hasattr(content_block, 'type'):
-                    if content_block.type == "text":
-                        full_response += content_block.text + "\n"
-                    elif content_block.type == "mcp_tool_result":
-                        tool_results.append(content_block.content)
-                elif hasattr(content_block, 'text'):
-                    full_response += content_block.text + "\n"
-
-            return {
-                "response": full_response.strip(),
-                "tool_results": tool_results,
-                "usage": getattr(response, 'usage', {})
-            }
-
-        except Exception as e:
-            logger.error(f"Anthropic API call failed: {e}")
-            raise
-
-    def build_conversation_context(self, live_prices: Optional[Dict[str, Dict]] = None) -> List[Dict]:
-        """Build the conversation context with all necessary technical data.
-        Accepts pre-fetched live_prices to avoid a duplicate TraderMade call when
-        run_cycle has already fetched prices for the LLM-skip threshold check.
+        Returns list of signal dicts compatible with write_signals_to_database.
         """
-        # Fetch Polygon cross-validation indicators once per cycle (all 20 pairs)
-        polygon_data = self.get_polygon_technical_indicators()
-
-        # Get current session and live prices (TraderMade → RDS fallback)
-        current_session = self.get_current_session()
-        if live_prices is None:
-            live_prices = self.get_live_prices()
-
-        # Detect market-closed state: all prices came from RDS historical fallback
-        market_closed = all(
-            v.get("market_closed", False) for v in live_prices.values()
-        ) if live_prices else True
-
-        # Validate prices and spreads (adversarial defense — only meaningful for live data)
-        price_validation = self.cross_validate_prices(live_prices)
-        spread_validation = self.validate_spreads(live_prices, current_session)
-
-        # Build technical analysis data for all pairs.
-        # When market is closed we still include each pair using historical bars so
-        # the LLM can produce a directional bias for orchestrator convergence.
-        # Pairs are only dropped if historical bar data is also unavailable.
-        pair_analysis = {}
+        session = self.get_current_session()
+        signals: List[Dict] = []
 
         for pair in self.PAIRS:
             try:
-                live_valid = (
-                    price_validation.get(pair, False)
-                    and spread_validation.get(pair, False)
-                )
-                pair_market_closed = (
-                    market_closed
-                    or live_prices.get(pair, {}).get("market_closed", False)
-                    or not live_valid
-                )
+                # ── fetch bars ───────────────────────────────────────────────
+                df = self.get_historical_bars(pair, '1H', 50)
+                if df is None or df.empty or len(df) < 20:
+                    raise ValueError(f"insufficient bars ({0 if df is None or df is False or (hasattr(df,'empty') and df.empty) else len(df)})")
 
-                if not live_valid:
-                    logger.warning(
-                        f"{pair}: live validation failed — "
-                        f"{'market closed, ' if market_closed else ''}"
-                        f"building from historical bars only"
-                    )
+                # ── compute indicators ───────────────────────────────────────
+                indicators = self.calculate_technical_indicators(df)
+                rsi = float(indicators.get('rsi') or 50.0)
+                adx = float(indicators.get('adx') or 15.0)
+                if pd.isna(rsi):
+                    rsi = 50.0
+                if pd.isna(adx):
+                    adx = 15.0
 
-                # Historical data is always needed (and available even when market closed)
-                df_1d = self.get_historical_bars(pair, "1D", 200)
-                df_1h = self.get_historical_bars(pair, "1H", 200)
-                df_15m = self.get_historical_bars(pair, "15M", 200)
+                # ── ATR: prefer price_metrics, fall back to computed ─────────
+                pm = self.get_price_metrics(pair, '1H', 5)
+                if not pm.empty and pm['atr_14'].iloc[-1] and float(pm['atr_14'].iloc[-1]) > 0:
+                    atr = float(pm['atr_14'].iloc[-1])
+                else:
+                    # compute ATR(14) from bars directly
+                    if len(df) >= 15:
+                        high_low = df['high'] - df['low']
+                        high_pc  = abs(df['high'] - df['close'].shift(1))
+                        low_pc   = abs(df['low']  - df['close'].shift(1))
+                        tr       = pd.concat([high_low, high_pc, low_pc], axis=1).max(axis=1)
+                        atr      = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+                    else:
+                        atr = 0.0
 
-                # Persist the most recently fetched bars so any non-DB source is captured
-                self._persist_price_bars(pair, "1D", df_1d)
-                self._persist_price_bars(pair, "1H", df_1h)
-                self._persist_price_bars(pair, "15M", df_15m)
+                pip_size = 0.01 if 'JPY' in pair else 0.0001
+                trending = adx > 20
 
-                # Skip only if we truly have no data at all
-                if df_1h.empty:
-                    logger.warning(f"Skipping {pair} — no historical bars available")
-                    continue
+                # ── RSI pullback direction & conviction ──────────────────────
+                if trending and 38.0 <= rsi <= 55.0:
+                    direction  =  1.0   # bullish pullback
+                    conviction = (55.0 - rsi) / (55.0 - 38.0)   # 1.0 @ RSI=38, 0.0 @ RSI=55
+                elif trending and 45.0 <= rsi <= 62.0:
+                    direction  = -1.0   # bearish rally into resistance
+                    conviction = (rsi - 45.0) / (62.0 - 45.0)   # 1.0 @ RSI=62, 0.0 @ RSI=45
+                else:
+                    direction  = 0.0
+                    conviction = 0.0
 
-                price_metrics = self.get_price_metrics(pair, "1H", 50)
-                indicators = self.calculate_technical_indicators(df_1h)
-                timeframe_alignment = self.analyze_timeframe_alignment(df_1d, df_1h, df_15m)
-                session_weight = self.get_session_pair_weight(pair, current_session)
+                session_weight = self.get_session_pair_weight(pair, session)
+                score          = direction * (adx / 100.0) * conviction * session_weight
+                score          = round(score, 4)
 
-                pair_analysis[pair] = {
-                    "live_price_data": live_prices.get(pair, {}),
-                    "indicators": indicators,
-                    "timeframe_alignment": timeframe_alignment,
-                    "session_weight": session_weight,
-                    "price_metrics_available": len(price_metrics) > 0,
-                    "market_closed": pair_market_closed,
-                    "data_quality": {
-                        "price_validated": price_validation.get(pair, False),
-                        "spread_validated": spread_validation.get(pair, False),
-                        "live_data_source": live_prices.get(pair, {}).get("source", "none"),
-                        "1d_bars": len(df_1d),
-                        "1h_bars": len(df_1h),
-                        "15m_bars": len(df_15m),
-                    }
-                }
+                bias = 'bullish' if score > 0.1 else ('bearish' if score < -0.1 else 'neutral')
+                confidence = round(min(0.90, max(0.10, abs(score) * 1.5)), 4)
+                stop_distance_pips = round((atr * 1.5 / pip_size), 1) if atr > 0 else 20.0
 
-            except Exception as e:
-                logger.error(f"Error building analysis for {pair}: {e}")
-                continue
-
-        # RSI divergence alert: internal 1H RSI vs Polygon 1H RSI
-        if polygon_data:
-            try:
-                with self.db_conn.cursor() as _cur:
-                    for pair, pdata in polygon_data.items():
-                        poly_rsi = pdata.get("rsi_14h")
-                        internal_rsi = pair_analysis.get(pair, {}).get("indicators", {}).get("rsi")
-                        if poly_rsi is None or internal_rsi is None:
-                            continue
-                        delta = abs(float(internal_rsi) - float(poly_rsi))
-                        if delta > 15:
-                            logger.warning(
-                                f"RSI divergence {pair}: internal={internal_rsi:.1f} "
-                                f"polygon={poly_rsi:.1f} delta={delta:.1f}pt"
-                            )
-                            _cur.execute("""
-                                INSERT INTO forex_network.audit_log
-                                  (user_id, event_type, description, metadata, source)
-                                VALUES (%s, %s, %s, %s, %s)
-                            """, (
-                                self.user_id,
-                                'indicator_divergence',
-                                (f"{pair}: internal RSI {internal_rsi:.1f} vs "
-                                 f"Polygon RSI {poly_rsi:.1f} (delta {delta:.1f}pt)"),
-                                json.dumps({
-                                    "pair": pair,
-                                    "internal_rsi_1h": round(float(internal_rsi), 2),
-                                    "polygon_rsi_14h": float(poly_rsi),
-                                    "delta": round(delta, 2),
-                                    "cycle": self.cycle_count,
-                                }),
-                                'technical_agent',
-                            ))
-                self.db_conn.commit()
-            except Exception as _div_err:
-                logger.error(f"Divergence alert write failed: {_div_err}")
-                try:
-                    self.db_conn.rollback()
-                except Exception as _e:
-                    logger.debug(f"Indicator calculation failed: {_e}")
-
-        # Build polygon cross-validation summary for the LLM prompt
-        polygon_cross_val_summary: Dict = {}
-        for pair, pdata in (polygon_data or {}).items():
-            row: Dict = {}
-            if pdata.get("rsi_14d") is not None:
-                row["rsi_14d"] = pdata["rsi_14d"]
-            if pdata.get("rsi_14h") is not None:
-                row["rsi_14h"] = pdata["rsi_14h"]
-            if pdata.get("ema_50d") is not None:
-                row["ema_50d"] = pdata["ema_50d"]
-            if pdata.get("sma_50d") is not None:
-                row["sma_50d"] = pdata["sma_50d"]
-            if pdata.get("macd_line") is not None:
-                row["macd_line"]   = pdata["macd_line"]
-                row["macd_signal"] = pdata["macd_signal"]
-                row["macd_hist"]   = pdata["macd_hist"]
-            if row:
-                polygon_cross_val_summary[pair] = row
-
-        # Classify pairs for the prompt
-        closed_pairs = [p for p, d in pair_analysis.items() if d.get("market_closed")]
-        live_pairs   = [p for p, d in pair_analysis.items() if not d.get("market_closed")]
-
-        market_closed_note = ""
-        if closed_pairs:
-            market_closed_note = f"""
-## MARKET STATUS — CLOSED / DEGRADED DATA
-The following pairs have NO live quote available (market closed or price feed down):
-  {', '.join(closed_pairs)}
-Price source: {live_prices.get(closed_pairs[0], {}).get('source', 'none') if closed_pairs else 'none'}
-
-For these pairs you MUST still generate a signal using the historical bar data provided.
-Apply these constraints:
-- Multiply your confidence by 0.5 (data quality penalty)
-- Set "entry_price", "stop_price", "target_price" to null — do not fabricate live levels
-- Set "market_closed": true in the payload
-- Bias and score based purely on multi-timeframe technical structure (indicators, alignment)
-- This gives the orchestrator valid technical input for convergence even when markets are closed
-"""
-
-        # Build comprehensive context message
-        context_message = f"""
-TECHNICAL AGENT CYCLE #{self.cycle_count + 1}
-Current Time: {datetime.now(timezone.utc).isoformat()}
-Session ID: {self.session_id}
-Current Session: {current_session}
-{market_closed_note}
-## MARKET DATA SUMMARY
-Live Prices Retrieved: {len(live_prices)} pairs  (source: {'tradermade' if not market_closed else 'rds_historical_fallback'})
-Price Validation Passed: {sum(price_validation.values())}/{len(price_validation)} pairs
-Spread Validation Passed: {sum(spread_validation.values())}/{len(spread_validation)} pairs
-Pairs With Live Data: {len(live_pairs)}  |  Pairs on Historical Fallback: {len(closed_pairs)}
-Pairs Ready for Analysis: {len(pair_analysis)}
-
-## TECHNICAL ANALYSIS DATA
-{json.dumps(pair_analysis, indent=2, default=str)}
-
-## POLYGON CROSS-VALIDATION (independent source)
-# Timeframe guide — keys ending _14h or macd_* are 1H bars (same timeframe as agent computation — flag divergences > 15pt).
-# Keys ending _14d / _50d are 1D bars (daily trend bias only — divergence from agent 1H values is EXPECTED; do NOT flag as a conflict).
-{json.dumps(polygon_cross_val_summary, indent=2, default=str) if polygon_cross_val_summary else "Polygon data unavailable this cycle."}
-
-## TASK
-Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals per schema. Pairs with market_closed:true — use historical structure only, confidence x0.5, null entry levels.
-"""
-
-        return [{"role": "user", "content": context_message}]
-
-    def parse_agent_response(self, agent_response: Dict) -> List[Dict]:
-        """Parse agent response and extract structured signals for each pair."""
-        signals = []
-
-        try:
-            response_text = agent_response.get("response", "")
-
-            # Extract every ```json … ``` fenced block (non-greedy, dotall).
-            # Falls back to brace-balanced top-level objects if no fences present.
-            logger.info(f"Response length: {len(response_text)} chars")
-            json_blocks = re.findall(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
-            logger.info(f"JSON blocks found: {len(json_blocks)}")
-            try:
-                with open("/tmp/neo_technical_response_debug.txt", "w") as _f:
-                    _f.write(response_text)
-            except Exception as _e:
-                logger.debug(f"Indicator calculation failed: {_e}")
-            if not json_blocks:
-                # Best-effort: match top-level {...} groups by brace-balancing
-                depth = 0
-                start = -1
-                for i, ch in enumerate(response_text):
-                    if ch == '{':
-                        if depth == 0:
-                            start = i
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0 and start >= 0:
-                            json_blocks.append(response_text[start:i + 1])
-                            start = -1
-
-            # Parse structured JSON blocks
-            for block in json_blocks:
-                try:
-                    signal_data = json.loads(block)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(signal_data, dict) and 'instrument' in signal_data:
-                    signals.append(signal_data)
-
-            # Gap-fill: ensure every pair has a signal even if the LLM omitted some.
-            # Runs before the 'no signals at all' fallback so partial results
-            # (e.g. 7/20) are topped up rather than left missing.
-            _parsed_instruments = {s.get('instrument') for s in signals}
-            _missing_pairs = [p for p in self.PAIRS if p not in _parsed_instruments]
-            if _missing_pairs:
-                logger.warning(
-                    f'LLM returned technical signals for {len(_parsed_instruments)}/{len(self.PAIRS)} '
-                    f'pairs -- inserting neutral fallback for: {_missing_pairs}'
-                )
-                warn("technical_agent", "GAP_FILL", "LLM missing pairs",
-                     missing=str(_missing_pairs), returned=len(_parsed_instruments))
-                for _gap_pair in _missing_pairs:
-                    signals.append({
-                        'agent_name': self.AGENT_NAME,
-                        'instrument': _gap_pair,
-                        'signal_type': 'price_action',
-                        'score': 0.0,
-                        'bias': 'neutral',
-                        'confidence': 0.1,
-                        'payload': {
-                            'reasoning': 'Signal not returned by LLM this cycle -- neutral gap-fill',
-                            'timeframe_alignment': 'insufficient',
-                            'technical_analysis': {'current_price': None, 'indicators': {'atr_14': None}},
-                            'risk_management': {'atr_stop_loss': None, 'target_price': None, 'rr_ratio': 0, 'expected_pips': 0, 'current_spread': 0},
-                            'market_closed': False,
-                            'proposals': [],
-                        }
-                    })
-
-            # Create fallback signals if parsing failed
-            if not signals:
-                logger.warning("No structured signals found in agent response, creating degraded signals")
-                logger.warning(f"Response length: {len(response_text)} chars")
-                logger.warning(f"Response text (first 1000 chars): {response_text[:1000]!r}")
-                try:
-                    with open("/tmp/neo_technical_response_debug.txt", "w") as _f:
-                        _f.write(response_text)
-                    logger.warning("Full response written to /tmp/neo_technical_response_debug.txt")
-                except Exception as _e:
-                    logger.debug(f"Indicator calculation failed: {_e}")
-                for pair in self.PAIRS:
-                    signals.append({
-                        "agent_name": self.AGENT_NAME,
-                        "instrument": pair,
-                        "signal_type": "price_action",
-                        "score": 0.0,
-                        "bias": "neutral",
-                        "confidence": 0.2,
-                        "payload": {
-                            "reasoning": "Technical agent response parsing failed - fallback signal",
-                            "technical_analysis": {},
-                            "risk_management": {},
-                            "session_context": {"current_session": self.get_current_session()},
-                            "data_quality": {"parsing_failed": True},
-                            "proposals": [{
-                                "type": "parameter_suggestion",
-                                "priority": "high",
-                                "title": "Technical agent response parsing failed",
-                                "reasoning": "Could not extract structured signals from agent response",
-                                "data_supporting": "JSON parsing error",
-                                "suggested_action": "Review agent prompt and response format",
-                                "expected_impact": "Critical - signals may be unreliable"
-                            }]
-                        }
-                    })
-
-        except Exception as e:
-            logger.error(f"Failed to parse technical agent response: {e}")
-            # Return error signals for all pairs
-            for pair in self.PAIRS:
                 signals.append({
-                    "agent_name": self.AGENT_NAME,
-                    "instrument": pair,
-                    "signal_type": "price_action",
-                    "score": 0.0,
-                    "bias": "neutral",
-                    "confidence": 0.1,
-                    "payload": {
-                        "reasoning": f"Technical signal parsing error: {str(e)}",
-                        "error": str(e),
-                        "proposals": []
+                    'agent_name':   self.AGENT_NAME,
+                    'instrument':   pair,
+                    'signal_type':  'price_action',
+                    'score':        score,
+                    'bias':         bias,
+                    'confidence':   confidence,
+                    'payload': {
+                        'rsi_14':             round(rsi, 2),
+                        'adx_14':             round(adx, 2),
+                        'atr_14':             round(atr, 6),
+                        'stop_distance_pips': stop_distance_pips,
+                        'trending':           trending,
+                        'session':            session,
+                        'session_weight':     session_weight,
+                        'proposals':          [],
                     }
                 })
 
+            except Exception as _e:
+                logger.warning(f"generate_signals failed for {pair}: {_e}")
+                signals.append({
+                    'agent_name':  self.AGENT_NAME,
+                    'instrument':  pair,
+                    'signal_type': 'price_action',
+                    'score':       0.0,
+                    'bias':        'neutral',
+                    'confidence':  0.10,
+                    'payload':     {'error': str(_e), 'proposals': []},
+                })
+
+        logger.info(
+            f"generate_signals: {sum(1 for s in signals if s['bias'] != 'neutral')} "
+            f"directional / {len(signals)} total | session={session}"
+        )
         return signals
 
     def write_signals_to_database(self, signals: List[Dict]) -> bool:
@@ -1965,30 +1394,18 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
                 self.update_heartbeat()
                 return True
 
-            logger.info(f"LLM analysis cycle #{self.cycle_count} — price movement detected, calling Claude")
+            logger.info(f"Analysis cycle #{self.cycle_count} — price movement detected, computing RSI/ADX signals")
 
-            # Build conversation context with technical data (passes pre-fetched prices)
-            conversation_context = self.build_conversation_context(live_prices=live_prices)
+            # Deterministic RSI/ADX signal generation
+            signals = self.generate_signals(live_prices)
 
-            # Call Anthropic API for technical analysis
-            agent_response = self.call_anthropic_agent(conversation_context)
-
-            # Parse structured signals
-            signals = self.parse_agent_response(agent_response)
-
-            # Apply confidence floor — clamp sub-gate confidence to 0.20.
-            # Uses confidence value directly (no dependency on timeframe_alignment field).
-            for sig in signals:
-                if 0.10 <= sig.get('confidence', 0.0) < 0.20:
-                    sig['confidence'] = 0.20
-
-            # Apply trajectory-based confidence modifiers (post-LLM, score unchanged)
+            # Apply trajectory-based confidence modifiers (score unchanged)
             self._apply_trajectory_modifiers(signals)
 
             # Inject Python-computed structure targets (nearest swing high/low from 15M bars)
             self._inject_structure_targets(signals, live_prices)
 
-            # Store mid prices at LLM call time for next cycle's skip check
+            # Store mid prices for next cycle's skip check
             self._last_llm_prices = {
                 p: float(d["last"]) for p, d in live_prices.items() if d.get("last") is not None
             }
@@ -2191,23 +1608,16 @@ def main():
                             agent._reuse_existing_signals()
                             agent.update_heartbeat()
                     else:
-                        logger.info(f"LLM analysis cycle #{primary.cycle_count} — price movement detected, calling Claude")
-                        conversation_context = primary.build_conversation_context(live_prices=live_prices)
-                        agent_response = primary.call_anthropic_agent(conversation_context)
-                        signals = primary.parse_agent_response(agent_response)
+                        logger.info(f"Analysis cycle #{primary.cycle_count} — price movement detected, computing RSI/ADX signals")
+                        signals = primary.generate_signals(live_prices)
 
-                        # Apply confidence floor — clamp [0.10, 0.20) to 0.20 (continuous mode path)
-                        for sig in signals:
-                            if 0.10 <= sig.get('confidence', 0.0) < 0.20:
-                                sig['confidence'] = 0.20
-
-                        # Apply trajectory-based confidence modifiers (post-LLM, score unchanged)
+                        # Apply trajectory-based confidence modifiers (score unchanged)
                         primary._apply_trajectory_modifiers(signals)
 
                         # Inject Python-computed structure targets (nearest swing high/low from 15M bars)
                         primary._inject_structure_targets(signals, live_prices)
 
-                        # Store mid prices at LLM call time for next cycle's skip check
+                        # Store mid prices for next cycle's skip check
                         primary._last_llm_prices = {
                             p: float(d["last"]) for p, d in live_prices.items() if d.get("last") is not None
                         }
