@@ -972,6 +972,16 @@ class TechnicalAgent:
                         'session':            session,
                         'session_weight':     session_weight,
                         'proposals':          [],
+                        # signal_contract stubs — required by shared/signal_validator.py
+                        'risk_management': {
+                            'stop_distance_pips': stop_distance_pips,
+                            'current_spread':     0.0,
+                        },
+                        'technical_analysis': {
+                            'indicators': {'atr_14': round(atr, 6)},
+                            'rsi_14':     round(rsi, 2),
+                            'adx_14':     round(adx, 2),
+                        },
                     }
                 })
 

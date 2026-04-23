@@ -280,6 +280,11 @@ class MacroAgent:
                 'base_signal_date':     str(base_row.get('signal_date', '')),
                 'quote_signal_date':    str(quote_row.get('signal_date', '')),
                 'method':               'deterministic_macro_v2',
+                # signal_contract stubs — required by shared/signal_validator.py
+                'reasoning':            (
+                    f'Deterministic macro: pair_score={score:.3f} '
+                    f'(base={b_comp:.3f}, quote={q_comp:.3f})'
+                ),
             }
 
             signals.append({
