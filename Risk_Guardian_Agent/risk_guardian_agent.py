@@ -121,18 +121,6 @@ CURRENCY_EXPOSURE_MAP = {
     "CADJPY": ("CAD", "JPY"), "NZDJPY": ("NZD", "JPY"),
 }
 
-# Max times any single currency can appear across all open positions (base or quote leg)
-MAX_CURRENCY_EXPOSURE = {
-    # Usernames (kept for self-tests / CLI invocation)
-    "neo_user_001": 2,  # Conservative
-    "neo_user_002": 3,  # Balanced
-    "neo_user_003": 4,  # Aggressive
-    # UUIDs (production path)
-    "e61202e4-30d1-70f8-9927-30b8a439e042": 2,  # Conservative
-    "76829264-20e1-7023-1e31-37b7a37a1274": 3,  # Balanced
-    "d6c272e4-a031-7053-af8e-ade000f0d0d5": 4,  # Aggressive
-}
-
 # Slippage thresholds by pair (pips)
 SLIPPAGE_THRESHOLDS = {
     "EURUSD": 3, "USDJPY": 3,
@@ -309,7 +297,7 @@ class RiskDataReader:
                        min_risk_pct, max_risk_pct, curve_exponent,
                        stress_multiplier, stress_threshold_score,
                        max_convergence_reference, min_risk_reward_ratio,
-                max_portfolio_risk_pct
+                       max_portfolio_risk_pct, max_usd_units
                 FROM forex_network.risk_parameters
                 WHERE user_id = %s
             """, (self.user_id,))
@@ -992,8 +980,8 @@ class RiskGuardian:
             self._write_decision(decision)
             return decision
 
-        # Per-currency cap — defined once here, shared by pre-check and CHECK 4.5.
-        _curr_cap = MAX_CURRENCY_EXPOSURE.get(self.user_id, 3)
+        # Per-currency cap — read from DB max_usd_units, shared by pre-check and CHECK 4.5.
+        _curr_cap = int(risk_params.get("max_usd_units", 3))
 
         # -----------------------------------------------------------------
         # CHECK 4 pre-check: shared-currency directional concentration
