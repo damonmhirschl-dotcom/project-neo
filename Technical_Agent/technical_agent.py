@@ -1825,10 +1825,12 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
         """Post-process signals: add Python-computed structure targets where target_price is null.
 
         Algorithm (per non-neutral signal):
-          - Fetch last 20 bars of 15M data; use the 10 most recent for structure.
-          - LONG/bullish → target_price = max(highs)  [nearest swing resistance]
-          - SHORT/bearish → target_price = min(lows)  [nearest swing support]
-          - Validation: target must be beyond current_price in signal direction.
+          - Fetch last 100 bars of 15M data; use the 50 most recent for structure (~12.5 hours).
+          - True swing detection: bar i qualifies if its high/low beats both neighbours ±2 bars.
+          - LONG/bullish → nearest swing HIGH above current_price (lowest qualifying high).
+          - SHORT/bearish → nearest swing LOW below current_price (highest qualifying low).
+          - If no qualifying swing exists in the window: skip — do not set a target.
+          - Minimum distance gate: target must be at least 1.5× stop_distance from entry.
           - If LLM already filled target_price (non-null), preserve it.
         Never raises — failures log and skip silently.
         """
@@ -1852,36 +1854,64 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
                 if lp.get('last'):
                     current_price = float(lp['last'])
 
-                # Fetch last 20 candles; use the 10 most recent for structure
-                bars = self.get_historical_bars(pair, '15M', 20)
+                # Fetch last 100 candles; use the 50 most recent for structure (~12.5 hours)
+                bars = self.get_historical_bars(pair, '15M', 100)
                 if bars is None or bars.empty or len(bars) < 5:
                     logger.warning(f"Structure target: insufficient 15M bars for {pair}")
                     continue
-                recent = bars.tail(10)
-                recent_high = float(recent['high'].max())
-                recent_low  = float(recent['low'].min())
+                recent = bars.tail(50)
 
                 if bias == 'bullish':
-                    target = round(recent_high, 5)
-                    if current_price is not None and target <= current_price:
-                        logger.debug(
-                            f"Structure target skipped {pair} bullish: "
-                            f"recent_high {target} <= current {current_price}"
-                        )
+                    # True swing high: bar i high beats both neighbours ±2 bars
+                    highs = recent['high'].values
+                    swing_highs = []
+                    for i in range(2, len(highs) - 2):
+                        if (highs[i] > highs[i-1] and highs[i] > highs[i-2]
+                                and highs[i] > highs[i+1] and highs[i] > highs[i+2]):
+                            swing_highs.append(highs[i])
+                    if not swing_highs:
+                        logger.debug(f"Structure target: no swing high found for {pair} bullish")
                         continue
+                    candidates = [sh for sh in swing_highs if current_price is None or sh > current_price]
+                    if not candidates:
+                        logger.debug(f"Structure target: no swing high above price for {pair} bullish")
+                        continue
+                    target = round(min(candidates), 5)  # nearest (lowest) swing high above price
                 else:  # bearish
-                    target = round(recent_low, 5)
-                    if current_price is not None and target >= current_price:
-                        logger.debug(
-                            f"Structure target skipped {pair} bearish: "
-                            f"recent_low {target} >= current {current_price}"
+                    # True swing low: bar i low beats both neighbours ±2 bars
+                    lows = recent['low'].values
+                    swing_lows = []
+                    for i in range(2, len(lows) - 2):
+                        if (lows[i] < lows[i-1] and lows[i] < lows[i-2]
+                                and lows[i] < lows[i+1] and lows[i] < lows[i+2]):
+                            swing_lows.append(lows[i])
+                    if not swing_lows:
+                        logger.debug(f"Structure target: no swing low found for {pair} bearish")
+                        continue
+                    candidates = [sl for sl in swing_lows if current_price is None or sl < current_price]
+                    if not candidates:
+                        logger.debug(f"Structure target: no swing low below price for {pair} bearish")
+                        continue
+                    target = round(max(candidates), 5)  # nearest (highest) swing low below price
+
+                # Minimum distance gate: target must be >= 1.5× stop_distance from entry (1.5:1 R:R floor)
+                stop_distance = (rm.get('stop_distance')
+                                 or payload.get('stop_distance'))
+                if stop_distance and float(stop_distance) > 0 and current_price is not None:
+                    min_target_distance = float(stop_distance) * 1.5
+                    actual_distance = abs(target - current_price)
+                    if actual_distance < min_target_distance:
+                        logger.warning(
+                            f"Structure target {target:.5f} too close to entry for {pair} "
+                            f"({bias}) — distance {actual_distance:.5f} < min {min_target_distance:.5f} "
+                            f"(stop_distance={stop_distance})"
                         )
                         continue
 
                 rm['target_price'] = target
                 logger.info(
                     f"Structure target set {pair} ({bias}): {target:.5f} "
-                    f"[high={recent_high:.5f} low={recent_low:.5f}]"
+                    f"[current={current_price} stop_dist={stop_distance}]"
                 )
             except Exception as exc:
                 logger.warning(f"Structure target injection failed for {sig.get('instrument')}: {exc}")
