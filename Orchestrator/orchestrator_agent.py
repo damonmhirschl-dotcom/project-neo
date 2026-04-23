@@ -1584,6 +1584,64 @@ class OrchestratorAgent:
             logger.warning(f"UUID resolution failed: {e}")
         return user_id
 
+    def _write_rejected_signal(
+        self, pair: str, reason: str, convergence: float, threshold: float,
+        bias: str = None, macro_score: float = None, tech_score: float = None,
+        regime_score: float = None, current_price: float = None,
+        payload: dict = None,
+    ) -> None:
+        """Persist one row to forex_network.rejected_signals."""
+        if not self.db or not pair:
+            return
+        r_lower = reason.lower()
+        if "missing_signal" in r_lower:
+            stage = "signal_gate"
+        elif "consensus" in r_lower or "directional" in r_lower or "conflict" in r_lower:
+            stage = "directional"
+        elif "threshold" in r_lower or "below" in r_lower:
+            stage = "threshold"
+        elif "session" in r_lower or "ny_close" in r_lower or "friday" in r_lower:
+            stage = "session_gate"
+        elif "spread" in r_lower:
+            stage = "spread_gate"
+        elif "rr" in r_lower or "risk_reward" in r_lower:
+            stage = "rr_gate"
+        elif "daily_loss" in r_lower or "drawdown" in r_lower or "circuit" in r_lower or "kill" in r_lower:
+            stage = "risk_gate"
+        elif "portfolio" in r_lower or "max_position" in r_lower:
+            stage = "capacity"
+        else:
+            stage = "other"
+        try:
+            cur = self.db.cursor()
+            cur.execute(
+                """
+                INSERT INTO forex_network.rejected_signals
+                    (user_id, instrument, direction, rejection_stage, rejection_reason,
+                     macro_score, technical_score, regime_score,
+                     convergence_score, convergence_threshold,
+                     price_at_rejection, payload)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    str(self.user_id), pair, (bias or "")[:5], stage, reason[:200],
+                    float(macro_score) if macro_score is not None else None,
+                    float(tech_score) if tech_score is not None else None,
+                    float(regime_score) if regime_score is not None else None,
+                    float(convergence), float(threshold),
+                    float(current_price) if current_price is not None else None,
+                    json.dumps(payload) if payload else None,
+                ),
+            )
+            cur.close()
+            self.db.commit()
+        except Exception as _e:
+            logger.warning(f"rejected_signals insert failed for {pair}: {_e}")
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
     def build_entry_context(self, instrument: str, convergence_score: float,
                              bias: str, market_context: Dict[str, Any],
                              signals: Dict[str, Any]) -> Dict[str, Any]:
@@ -2114,6 +2172,15 @@ class OrchestratorAgent:
                     "checks": {"directional_gate": "FAIL"},
                     "convergence_detail": detail,
                 })
+                self._write_rejected_signal(
+                    pair=pair, reason=dc_reason,
+                    convergence=final_convergence, threshold=effective_threshold,
+                    bias=bias,
+                    macro_score=float(macro_sig.get("score") or 0) if macro_sig else None,
+                    tech_score=float(tech_sig.get("score") or 0) if tech_sig else None,
+                    regime_score=detail.get("regime_score"),
+                    payload={"rejection_reasons": [dc_reason]},
+                )
                 continue
 
             direction, should_proceed, dc_reason = self.convergence_calc.check_directional_consensus(
@@ -2154,6 +2221,16 @@ class OrchestratorAgent:
                     "checks": {"directional_gate": "FAIL"},
                     "convergence_detail": detail,
                 })
+                self._write_rejected_signal(
+                    pair=pair, reason=dc_reason,
+                    convergence=final_convergence, threshold=effective_threshold,
+                    bias=bias,
+                    macro_score=float(macro_sig.get("score") or 0),
+                    tech_score=float(tech_sig.get("score") or 0),
+                    regime_score=detail.get("regime_score"),
+                    payload={"rejection_reasons": [dc_reason],
+                             "conflict_category": conflict_category},
+                )
                 continue
 
             logger.info(f"{pair}: {dc_reason} (convergence={final_convergence:.3f})")
@@ -2249,6 +2326,19 @@ class OrchestratorAgent:
                     category='REJECTION', agent='orchestrator', user_id=str(self.user_id), instrument=pair,
                     payload={'reason': reasons, 'convergence': round(final_convergence, 4),
                              'threshold': round(decision.get('effective_threshold', 0), 4)})
+                self._write_rejected_signal(
+                    pair=pair,
+                    reason=decision["rejection_reasons"][0] if decision["rejection_reasons"] else "unknown",
+                    convergence=final_convergence,
+                    threshold=decision.get("effective_threshold", effective_threshold),
+                    bias=decision.get("bias") or bias,
+                    macro_score=detail.get("macro_score"),
+                    tech_score=detail.get("technical_score"),
+                    regime_score=detail.get("regime_score"),
+                    current_price=decision.get("current_price"),
+                    payload={"rejection_reasons": decision.get("rejection_reasons", []),
+                             "checks": decision.get("checks", {})},
+                )
 
         # A. Convergence collapse / spike alert
         _current_conv_scores = {d["pair"]: d["convergence"] for d in decisions}
