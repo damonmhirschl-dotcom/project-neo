@@ -1444,6 +1444,8 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                     else:
                         raw_score -= cad_oil_adj
 
+                # AUD adjustment: iron ore data unavailable via EODHD — using sentiment-only for AUD scoring
+
                 # Soft clamp via tanh(raw × 1.2) — asymptotically approaches ±1.0,
                 # preserves differentiation at high values. No separate cross-pair amplifier.
                 pair_score = math.tanh(raw_score * 1.2)

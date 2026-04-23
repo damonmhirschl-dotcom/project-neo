@@ -1036,31 +1036,35 @@ class ConvergenceCalculator:
                 logger.warning(f"No signal from {agent_name} for {pair}")
                 continue
 
-            # Staleness decay: signals past their TTL have reduced weight in convergence.
-            # Bracket decay (minutes past expires_at):
-            #   0-10 min past TTL  → 0.85   (signal is recent, probably just lagged)
-            #   10-20 min past TTL → 0.65   (noticeably stale)
-            #   >20 min past TTL   → 0.0    (effectively expired, drop from convergence)
-            #   not yet expired    → 1.0    (full weight)
+            # Staleness decay: exponential step-down based on signal age vs per-agent TTL.
+            # TTL comes from SIGNAL_MAX_AGE_MINUTES[market_state][agent_name].
+            # Within TTL            → 1.0   (full weight)
+            # TTL + 0-10 min        → 0.85  (recently stale, probably just lagged)
+            # TTL + 10-20 min       → 0.65  (noticeably stale)
+            # > TTL + 20 min        → 0.0   (drop from convergence)
             stale_decay = 1.0
             signal_age_min = float(pair_signal.get("signal_age_min") or 0)
             if signal_age_min > 0:
                 detail[f"{agent_name}_signal_age_min"] = round(signal_age_min, 1)
-            _sig_expires = pair_signal.get("expires_at")
-            if _sig_expires is not None:
-                _now_for_decay = datetime.datetime.now(datetime.timezone.utc)
-                _mins_past_expiry = max(
-                    0.0, (_now_for_decay - _sig_expires).total_seconds() / 60
+            _sig_created_at = pair_signal.get("created_at")
+            if _sig_created_at is not None:
+                _now_decay = datetime.datetime.now(datetime.timezone.utc)
+                _mkt_st = get_market_state().get('state', 'active')
+                _ttl = SIGNAL_MAX_AGE_MINUTES.get(_mkt_st, _SIGNAL_MAX_AGE_DEFAULT).get(
+                    agent_name, 20
                 )
-                if _mins_past_expiry > 20:
-                    stale_decay = 0.0
-                elif _mins_past_expiry > 10:
-                    stale_decay = 0.65
-                elif _mins_past_expiry > 0:
+                signal_age_minutes = (_now_decay - _sig_created_at).total_seconds() / 60
+                if signal_age_minutes <= _ttl:
+                    stale_decay = 1.0
+                elif signal_age_minutes <= _ttl + 10:
                     stale_decay = 0.85
+                elif signal_age_minutes <= _ttl + 20:
+                    stale_decay = 0.65
+                else:
+                    stale_decay = 0.0
                 if stale_decay < 1.0:
                     detail[f"{agent_name}_stale_decay"] = stale_decay
-                    detail[f"{agent_name}_mins_past_expiry"] = round(_mins_past_expiry, 1)
+                    detail[f"{agent_name}_signal_age_min"] = round(signal_age_minutes, 1)
 
             score = float(pair_signal["score"] or 0) * stale_decay
             confidence = float(pair_signal["confidence"] or 0)
