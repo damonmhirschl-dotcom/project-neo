@@ -55,6 +55,7 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary,
 from shared.score_trajectory import get_recent_trajectory, analyse_trajectory, format_trajectory_for_prompt
 from shared.schema_validator import validate_schema
 from shared.system_events import log_event
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":     ["agent_name", "instrument", "signal_type", "score",
@@ -1374,7 +1375,9 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
             for block in json_blocks:
                 try:
                     data = json.loads(block)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as _jde:
+                    warn("macro_agent", "PARSE_FAIL", "Currency block JSON decode failed",
+                         error=str(_jde)[:120])
                     continue
                 # Handle both a single object {"currency":...} and an array [{...},{...}]
                 items = data if isinstance(data, list) else [data]
@@ -1403,6 +1406,8 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
             _missing_ccys = [c for c in self.CURRENCIES if c not in currency_scores]
             if _missing_ccys:
                 logger.warning(f"parse_agent_response: gap-filling missing currencies: {_missing_ccys}")
+                warn("macro_agent", "GAP_FILL", "LLM missing currencies",
+                     missing=str(_missing_ccys), returned=len(currency_scores))
                 log_event('GAP_FILL',
                           f'LLM scored {len(currency_scores)}/8 currencies — gap-filled: {_missing_ccys}',
                           category='DATA', agent='macro',

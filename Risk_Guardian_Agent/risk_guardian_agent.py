@@ -34,6 +34,7 @@ import psycopg2.extras
 from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
 from shared.system_events import log_event
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.risk_parameters":      ["user_id", "convergence_threshold", "max_risk_pct",
@@ -1050,6 +1051,9 @@ class RiskGuardian:
             log_event('CAP_BLOCK', f'{instrument} {direction} blocked — shared_currency_concentration cap={_curr_cap}',
                 category='RISK', agent='risk_guardian', user_id=str(self.user_id), instrument=instrument,
                 payload={'breaches': _conc_breaches, 'cap': _curr_cap, 'direction': direction})
+            warn("risk_guardian", "CAP_BLOCK", "Currency concentration cap breach",
+                 pair=instrument, direction=direction, cap=_curr_cap,
+                 breaches=str(_conc_breaches)[:120])
         else:
             decision["risk_details"]["shared_currency_concentration"] = "PASS"
 
@@ -1063,6 +1067,8 @@ class RiskGuardian:
         if not corr_passed:
             decision["rejection_reasons"].extend(corr_reasons)
             decision["checks"]["correlation"] = "FAIL"
+            warn("risk_guardian", "CORRELATION_SKIP", "Correlation block",
+                 pair=instrument, reasons=str(corr_reasons)[:120])
         else:
             decision["checks"]["correlation"] = "PASS"
 

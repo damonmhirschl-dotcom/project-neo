@@ -37,6 +37,7 @@ from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
 from shared.market_hours import get_market_state
 from shared.system_events import log_event
+from shared.warn_log import warn
 from shared.broker_interface import BrokerInterface
 
 EXPECTED_TABLES = {
@@ -2373,6 +2374,8 @@ class ExecutionAgent:
             log_event('SNAPSHOT_MISS', f'{instrument} closed with no snapshot — exit_price will be NULL',
                 category='TRADE', agent='execution', severity='WARN', instrument=instrument,
                 payload={'trade_id': trade_id})
+            warn("execution_agent", "SNAPSHOT_MISS", "No snapshot at close — exit_price NULL",
+                 trade_id=trade_id, instrument=instrument)
 
         # ── P&L — primary: IG transaction history (confirmed account currency) ──
         # _compute_pnl cannot be used here: position_size_usd stores the IG deal

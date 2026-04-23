@@ -43,6 +43,7 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
 from shared.system_events import log_event
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":        ["agent_name", "instrument", "signal_type", "score",
@@ -592,6 +593,7 @@ def fetch_fred_yield_data(conn) -> Optional[dict]:
             return None
     except Exception as e:
         logger.warning(f"FRED yield fetch failed: {e}")
+        warn("regime_agent", "API_FAIL", "FRED fetch failed", source="FRED", error=str(e)[:120])
         try:
             conn.rollback()
         except:
@@ -1252,6 +1254,8 @@ class StressScoreEngine:
         # Priority: medium — only matters if VIX spikes during a combined outage + restart event.
         # Data is null — increment stale counter
         component.stale_cycles += 1
+        warn("regime_agent", "STALE_DATA", f"{component.name} stale — using substituted value",
+             stale_cycles=component.stale_cycles, component=component.name)
 
         if component.stale_cycles <= R5_STALE_CYCLE_THRESHOLD_1:
             # Cycles 1-2: use last known value

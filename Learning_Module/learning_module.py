@@ -36,6 +36,7 @@ import boto3
 import psycopg2
 import psycopg2.extras
 from shared.schema_validator import validate_schema
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.trades":           ["user_id", "instrument", "direction", "entry_price",
@@ -387,6 +388,7 @@ class TradeAutopsyEngine:
 
         except Exception as e:
             logger.error(f"Autopsy write failed: {e}")
+            warn("learning_module", "DB_FAIL", "Autopsy write failed", error=str(e)[:120])
             self.db.rollback()
             return None
         finally:
@@ -837,6 +839,7 @@ class PatternMemoryManager:
             )
         except Exception as e:
             logger.error(f"Pattern write failed: {e}")
+            warn("learning_module", "DB_FAIL", "Pattern write failed", error=str(e)[:120])
             self.db.rollback()
         finally:
             cur.close()

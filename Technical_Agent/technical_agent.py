@@ -60,6 +60,7 @@ from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":    ["agent_name", "instrument", "signal_type", "score",
@@ -853,6 +854,8 @@ class TechnicalAgent:
         """Calculate ATR-based stop loss and target levels."""
         try:
             if price_metrics.empty:
+                warn("technical_agent", "NULL_DATA", "No price metrics for pair",
+                     pair=pair, timeframe="1H")
                 return None, None, None
 
             current_atr = float(price_metrics['atr_14'].iloc[-1])
@@ -1479,6 +1482,8 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
                     f'LLM returned technical signals for {len(_parsed_instruments)}/{len(self.PAIRS)} '
                     f'pairs -- inserting neutral fallback for: {_missing_pairs}'
                 )
+                warn("technical_agent", "GAP_FILL", "LLM missing pairs",
+                     missing=str(_missing_pairs), returned=len(_parsed_instruments))
                 for _gap_pair in _missing_pairs:
                     signals.append({
                         'agent_name': self.AGENT_NAME,

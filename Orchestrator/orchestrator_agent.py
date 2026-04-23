@@ -38,6 +38,7 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary,
 from shared.system_events import log_event
 from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
+from shared.warn_log import warn
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":        ["agent_name", "instrument", "signal_type", "score",
@@ -1144,6 +1145,9 @@ class ConvergenceCalculator:
                 f"O1: Convergence {abs(convergence):.4f} below threshold {effective_threshold:.4f}"
             )
             decision["checks"]["convergence"] = "FAIL"
+            warn("orchestrator_agent", "THRESHOLD", "Pair below convergence threshold",
+                 pair=decision.get("pair", "unknown"), score=round(abs(convergence), 4),
+                 threshold=round(effective_threshold, 4))
         else:
             decision["checks"]["convergence"] = "PASS"
 
@@ -2096,6 +2100,9 @@ class OrchestratorAgent:
             if not macro_sig or not tech_sig:
                 dc_reason = f"missing_signal: macro={'present' if macro_sig else 'absent'}, technical={'present' if tech_sig else 'absent'}"
                 logger.info(f"{pair}: REJECTED — {dc_reason}")
+                warn("orchestrator_agent", "MISSING_SIGNAL", "Pair rejected — signal absent",
+                     pair=pair, macro="present" if macro_sig else "absent",
+                     technical="present" if tech_sig else "absent")
                 decisions.append({
                     "pair": pair,
                     "convergence": round(final_convergence, 4),
