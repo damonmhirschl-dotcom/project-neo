@@ -627,6 +627,7 @@ class PositionSizer:
         size_multiplier_from_orchestrator: float = 1.0,
         convergence_score: float = 0.0,
         stress_score: float = 0.0,
+        current_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Calculate position size using conviction-scaled risk curve."""
 
@@ -658,10 +659,22 @@ class PositionSizer:
         # ATR-based stop distance
         stop_distance = atr_14 * atr_stop_mult if atr_14 else None
 
-        # Position size: risk_amount / stop_distance
+        # Currency-aware stop distance for sizing.
+        # stop_distance is in the pair's price units (e.g. JPY for GBPJPY/EURJPY).
+        # risk_amount is in GBP (account currency).  Dividing directly gives
+        # a ~100× undersize for JPY-quoted pairs because 1 JPY ≪ 1 GBP.
+        # Fix: for JPY-quoted pairs divide by current_price to convert to GBP units.
+        # stop_distance itself is kept in raw price units — execution agent uses it
+        # to compute stop_price from entry_price, so it must not be modified.
+        stop_distance_for_sizing = stop_distance
+        if stop_distance and current_price and current_price > 0:
+            if instrument.upper().endswith('JPY'):
+                stop_distance_for_sizing = stop_distance / current_price
+
+        # Position size: risk_amount / stop_distance_for_sizing
         position_size = None
-        if stop_distance and stop_distance > 0 and risk_amount > 0:
-            position_size = risk_amount / stop_distance
+        if stop_distance_for_sizing and stop_distance_for_sizing > 0 and risk_amount > 0:
+            position_size = risk_amount / stop_distance_for_sizing
 
         return {
             "account_value": account_value,
@@ -1148,6 +1161,7 @@ class RiskGuardian:
             size_multiplier_from_orchestrator=orch_size_mult,
             convergence_score=conv_score_for_sizing,
             stress_score=stress_score_for_sizing,
+            current_price=payload.get("current_price"),
         )
         decision["risk_details"]["sizing"] = sizing
 
@@ -1280,8 +1294,9 @@ class RiskGuardian:
                 f"{'; '.join(decision['rejection_reasons'][:2])}"
             )
 
-        # Propagate target_price from orchestrator technical signal payload
+        # Propagate target_price and entry_rank_position from orchestrator payload
         decision["target_price"] = payload.get("target_price")
+        decision["entry_rank_position"] = payload.get("entry_rank_position")
 
         # Write decision
         self._write_decision(decision)
