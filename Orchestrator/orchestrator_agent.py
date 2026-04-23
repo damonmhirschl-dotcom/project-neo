@@ -370,7 +370,8 @@ class SignalReader:
                        max_open_positions, daily_loss_limit_pct,
                        trailing_stop_pct, pre_event_size_reduction,
                        circuit_breaker_active, paper_mode,
-                       size_multiplier, drawdown_step_level
+                       size_multiplier, drawdown_step_level,
+                       allowed_instruments
                 FROM forex_network.risk_parameters
                 WHERE user_id = %s
             """, (self.user_id,))
@@ -2145,8 +2146,11 @@ class OrchestratorAgent:
 
         # ── Pass 1: score every pair ──────────────────────────────────────────
         # Convergence history writes happen here, in original FX_PAIRS order.
+        _allowed = risk_params.get("allowed_instruments")  # None = all pairs
         _scored = []
         for pair in FX_PAIRS:
+            if _allowed is not None and pair not in _allowed:
+                continue  # instrument filtered by risk_parameters.allowed_instruments
             base_convergence, bias, confidence, detail = self.convergence_calc.compute_pair_convergence(
                 pair=pair,
                 signals=signals,
