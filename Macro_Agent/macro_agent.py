@@ -1308,22 +1308,66 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                 pass
 
             # ── Phase 1: extract currency blocks ──────────────────────────────
-            json_blocks = re.findall(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+            # Robust bracket-balance extraction anchored on ```json fence.
+            # Simple regex (.*?) breaks when reasoning fields contain embedded
+            # triple-backtick sequences — it prematurely closes the match,
+            # producing a truncated block that fails json.loads silently.
+            json_blocks: list = []
+            for _fence in re.finditer(r'```json\s*', response_text):
+                _jstart = _fence.end()
+                _ws = re.match(r'\s*', response_text[_jstart:])
+                if _ws:
+                    _jstart += _ws.end()
+                if _jstart >= len(response_text) or response_text[_jstart] not in ('{', '['):
+                    continue
+                _depth, _in_str, _esc = 0, False, False
+                for _i, _ch in enumerate(response_text[_jstart:], _jstart):
+                    if _esc:
+                        _esc = False
+                        continue
+                    if _ch == '\\' and _in_str:
+                        _esc = True
+                        continue
+                    if _ch == '"':
+                        _in_str = not _in_str
+                        continue
+                    if not _in_str:
+                        if _ch in ('{', '['):
+                            _depth += 1
+                        elif _ch in ('}', ']'):
+                            _depth -= 1
+                            if _depth == 0:
+                                json_blocks.append(response_text[_jstart:_i + 1])
+                                break
             logger.info(f"parse_agent_response: {len(json_blocks)} JSON blocks found")
 
             if not json_blocks:
-                # Brace-balance fallback
-                depth, start = 0, -1
-                for i, ch in enumerate(response_text):
-                    if ch == '{':
-                        if depth == 0:
-                            start = i
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0 and start >= 0:
-                            json_blocks.append(response_text[start:i + 1])
-                            start = -1
+                # Bracket/brace-balance fallback — no ```json fence found.
+                # Handles both array [...] and object {...} top-level responses.
+                for _opener, _closer in ('[', ']'), ('{', '}'):
+                    _depth, _start_idx, _in_str, _esc = 0, -1, False, False
+                    for _i, _ch in enumerate(response_text):
+                        if _esc:
+                            _esc = False
+                            continue
+                        if _ch == '\\' and _in_str:
+                            _esc = True
+                            continue
+                        if _ch == '"':
+                            _in_str = not _in_str
+                            continue
+                        if not _in_str:
+                            if _ch == _opener:
+                                if _depth == 0:
+                                    _start_idx = _i
+                                _depth += 1
+                            elif _ch == _closer:
+                                _depth -= 1
+                                if _depth == 0 and _start_idx >= 0:
+                                    json_blocks.append(response_text[_start_idx:_i + 1])
+                                    _start_idx = -1
+                    if json_blocks:
+                        break
 
             currency_scores: dict = {}
             for block in json_blocks:
