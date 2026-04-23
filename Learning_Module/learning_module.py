@@ -1424,6 +1424,9 @@ class LearningModule:
             # Per-source contrarian accuracy (MyFXBook / IG)
             self.compute_per_source_accuracy()
 
+            # Macro gate conviction-tier accuracy (high/medium/low)
+            self.compute_macro_direction_accuracy()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
@@ -2209,6 +2212,114 @@ class LearningModule:
                 time.sleep(POLL_INTERVAL_SECONDS)
 
         self.db.close()
+
+
+    def compute_macro_direction_accuracy(self) -> int:
+        """
+        Group closed trades by conviction tier based on macro_score vs p75 threshold,
+        then compute direction accuracy per tier. Writes a learning_review proposal
+        if win_rate < 50%% on the medium tier (≥10 trades).
+
+        Conviction tiers:
+          high   — abs(macro_score) >= p75
+          medium — abs(macro_score) >= p50 and < p75
+          low    — abs(macro_score) < p50
+        """
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT
+                    t.id,
+                    t.instrument,
+                    t.direction,
+                    t.pnl_pips,
+                    t.entry_time,
+                    (t.trade_parameters->>'macro_score')::float   AS macro_score,
+                    (t.trade_parameters->>'pair_score_p75')::float AS pair_score_p75
+                FROM forex_network.trades t
+                WHERE t.user_id = %s
+                  AND t.exit_time IS NOT NULL
+                  AND t.entry_time >= %s
+                  AND t.trade_parameters IS NOT NULL
+                  AND t.trade_parameters->>'macro_score' IS NOT NULL
+                ORDER BY t.entry_time
+            """, (self.user_id, DATA_QUALITY_CUTOFF))
+            trades = cur.fetchall()
+        except Exception as e:
+            logger.error(f"compute_macro_direction_accuracy query failed: {e}")
+            cur.close()
+            return 0
+
+        if not trades:
+            logger.debug("compute_macro_direction_accuracy: no trades with macro_score yet")
+            cur.close()
+            return 0
+
+        # Load p50/p75 thresholds per pair
+        p50_map: dict = {}
+        p75_map: dict = {}
+        try:
+            cur.execute("""
+                SELECT pair, p50, p75
+                FROM forex_network.macro_percentile_thresholds
+            """)
+            for row in cur.fetchall():
+                p50_map[row['pair']] = float(row['p50'])
+                p75_map[row['pair']] = float(row['p75'])
+        except Exception as e:
+            logger.warning(f"compute_macro_direction_accuracy: failed to load percentile thresholds: {e}")
+
+        # Bucket each trade into a conviction tier
+        tiers: dict = {}  # tier -> {'wins': int, 'total': int}
+        for t in trades:
+            ms = t.get('macro_score')
+            pair = t.get('instrument')
+            if ms is None:
+                continue
+            abs_ms = abs(float(ms))
+            p50 = p50_map.get(pair, 0.25)
+            p75 = p75_map.get(pair, t.get('pair_score_p75') or 0.30)
+            if abs_ms >= p75:
+                tier = 'high'
+            elif abs_ms >= p50:
+                tier = 'medium'
+            else:
+                tier = 'low'
+            bucket = tiers.setdefault(tier, {'wins': 0, 'total': 0})
+            bucket['total'] += 1
+            pnl = t.get('pnl_pips')
+            if pnl is not None and float(pnl) > 0:
+                bucket['wins'] += 1
+
+        proposals = []
+        for tier, stats in tiers.items():
+            total = stats['total']
+            wins  = stats['wins']
+            if total < 10:
+                continue
+            win_rate = wins / total
+            logger.info(
+                f"compute_macro_direction_accuracy: {tier} tier — "
+                f"{wins}/{total} = {win_rate:.1%%}"
+            )
+            if tier == 'medium' and win_rate < 0.50:
+                proposals.append({
+                    'type': 'macro_conviction_review',
+                    'tier': 'medium',
+                    'win_rate': round(win_rate, 4),
+                    'trade_count': total,
+                    'message': (
+                        f"Medium-conviction trades (p50≤macro<p75) have a {win_rate:.0%%} win rate "
+                        f"over {total} trades. Consider raising the macro gate threshold to p75 "
+                        f"or tightening the medium tier definition."
+                    ),
+                })
+
+        if proposals and not self.dry_run:
+            self._write_proposals(proposals)
+
+        cur.close()
+        return len(tiers)
 
 
 # =============================================================================

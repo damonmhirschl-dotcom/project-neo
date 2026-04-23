@@ -1656,6 +1656,10 @@ class OrchestratorAgent:
         r_lower = reason.lower()
         if "missing_signal" in r_lower:
             stage = "signal_gate"
+        elif "macro_gate_fail" in r_lower:
+            stage = "macro_gate"
+        elif "technical_too_weak" in r_lower:
+            stage = "technical_gate"
         elif "consensus" in r_lower or "directional" in r_lower or "conflict" in r_lower:
             stage = "directional"
         elif "threshold" in r_lower or "below" in r_lower:
@@ -2610,6 +2614,10 @@ class OrchestratorAgent:
                         decision["pair"], decision["convergence"],
                         decision["bias"], market_context, signals,
                     )
+                    # Propagate p75 threshold into entry_context for downstream trade_parameters persistence
+                    _p75_val = (decision.get("convergence_detail") or {}).get("p75_macro_threshold")
+                    if _p75_val is not None:
+                        decision["entry_context"]["pair_score_p75"] = _p75_val
 
             self.signal_writer.write_orchestrator_signal(full_payload)
 

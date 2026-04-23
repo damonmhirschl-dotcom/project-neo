@@ -1336,9 +1336,14 @@ class TradeExecutor:
         _sizing = (payload.get("risk_details") or {}).get("sizing") or {}
         _swap   = (payload.get("risk_details") or {}).get("swap") or {}
         _ectx   = payload.get("entry_context") or {}
+        _macro_raw = _ectx.get("macro_score")
         return {
             "convergence_threshold": payload.get("effective_threshold"),
             "convergence_score":     payload.get("convergence"),
+            "conviction_score":      round(abs(float(_macro_raw)), 4) if _macro_raw is not None else None,
+            "macro_score":           _macro_raw,
+            "tech_score":            _ectx.get("tech_score"),
+            "pair_score_p75":        _ectx.get("pair_score_p75"),
             "stress_score":          payload.get("stress_score") or _ectx.get("stress_score"),
             "stress_band":           payload.get("stress_band"),
             "stress_multiplier":     payload.get("stress_size_multiplier"),
