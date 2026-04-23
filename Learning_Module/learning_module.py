@@ -110,7 +110,7 @@ WEEKLY_REPORT_DAY = 0   # Monday (0=Monday in weekday())
 WEEKLY_REPORT_HOUR = 6  # 06:00 UTC
 
 # First IG trade — reject any signal data predating the broker migration
-DATA_QUALITY_CUTOFF = '2026-04-21 18:15:00+00'
+DATA_QUALITY_CUTOFF = '2026-04-23 21:55:00+00'
 
 
 # =============================================================================
