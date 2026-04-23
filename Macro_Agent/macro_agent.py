@@ -119,6 +119,27 @@ class MacroAgent:
     "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
 ]
+
+    # Per-currency scoring — 8 currencies scored independently, 20 pairs derived
+    CURRENCIES = ['EUR', 'GBP', 'USD', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD']
+
+    PAIR_DERIVATION = {
+        'EURUSD': ('EUR', 'USD'), 'GBPUSD': ('GBP', 'USD'),
+        'USDJPY': ('USD', 'JPY'), 'USDCHF': ('USD', 'CHF'),
+        'AUDUSD': ('AUD', 'USD'), 'USDCAD': ('USD', 'CAD'),
+        'NZDUSD': ('NZD', 'USD'),
+        'EURGBP': ('EUR', 'GBP'), 'EURJPY': ('EUR', 'JPY'),
+        'GBPJPY': ('GBP', 'JPY'), 'EURCHF': ('EUR', 'CHF'),
+        'GBPCHF': ('GBP', 'CHF'), 'EURAUD': ('EUR', 'AUD'),
+        'GBPAUD': ('GBP', 'AUD'), 'EURCAD': ('EUR', 'CAD'),
+        'GBPCAD': ('GBP', 'CAD'), 'AUDNZD': ('AUD', 'NZD'),
+        'AUDJPY': ('AUD', 'JPY'), 'CADJPY': ('CAD', 'JPY'),
+        'NZDJPY': ('NZD', 'JPY'),
+    }
+
+    USD_PAIRS = {
+        'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD', 'NZDUSD',
+    }
     
     CENTRAL_BANK_HIERARCHY = {
         "EURUSD": {"primary_cbs": ["Fed", "ECB"], "key_releases": ["US NFP", "US CPI", "US GDP", "ECB rate decision", "HICP", "PMI"]},
@@ -668,47 +689,37 @@ class MacroAgent:
             return None
 
     def create_agent_system_prompt(self) -> str:
-        """Condensed system prompt — static rules only. Cycle data goes in the user message."""
-        return """You are the MACRO AGENT for Project Neo, an autonomous FX trading system. Analyze macro conditions, news sentiment, and CB policy to generate directional bias signals for 20 FX pairs: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY.
+        """System prompt v2 — per-currency scoring. Cycle data goes in the user message.
+        The engine derives all 20 pair signals mathematically from 8 currency scores.
+        """
+        return """You are the MACRO AGENT for Project Neo, an autonomous FX trading system.
+Score 8 major currencies independently against the basket of all others.
+Pair signals are derived mathematically from your scores — focus on currencies, not pairs.
 
-OBJECTIVE: Maximize risk-adjusted returns (Sortino). ACTIVE profit-seeking agent — recommend deployment when strong setups exist within risk constraints.
+CURRENCIES TO SCORE: EUR  GBP  USD  JPY  CHF  AUD  CAD  NZD
+
+OBJECTIVE: Maximize risk-adjusted returns (Sortino). ACTIVE profit-seeking agent — use the full score range when evidence is strong.
 
 DATA TIERS:
 Tier1 (every cycle): EODHD sentiment aggregates, economic calendar (RDS), system stress score
 Tier2 (agent decision): EODHD full articles/word-weights, Alpha Vantage cross-check, Finnhub calendar
-Tier3 (conditional): EODHD macro indicators (country context), GDELT (geopolitical tension >60 min from Tier1 event)
+Tier3 (conditional): EODHD macro indicators, GDELT (geopolitical tension >60 min from Tier1 event)
 
-CENTRAL BANK HIERARCHY (primary->secondary, key releases):
-EURUSD: ECB+Fed | US NFP/CPI/GDP, ECB rate, HICP, PMI
-GBPUSD: BOE+Fed | US NFP/CPI, UK CPI/employment, BOE rate
-USDJPY: Fed+BOJ | US data dominant, BOJ intervention risk above 155, yield differential
-USDCHF: Fed+SNB | US data dominant, SNB rarely acts but moves sharply
-AUDUSD: RBA+Fed | AU employment/CPI/RBA, Chinese PMI, trade data
-USDCAD: Fed+BOC | CA employment/CPI, crude oil direction
-NZDUSD: RBNZ+Fed | NZ CPI/employment/RBNZ rate; ~0.88 corr with AUDUSD — rarely trade both
-EURGBP: ECB+BOE | ECB vs BOE policy divergence, UK/EU macro data
-EURJPY: ECB+BOJ | ECB vs BOJ policy, yield differential, risk sentiment
-GBPJPY: BOE+BOJ | BOE vs BOJ policy, risk sentiment, volatile pair
-EURCHF: ECB+SNB | ECB vs SNB policy, safe-haven demand, EUR/CHF floor history
-GBPCHF: BOE+SNB | BOE vs SNB policy, safe-haven demand
-EURAUD: ECB+RBA | ECB vs RBA policy, Chinese PMI, iron ore/commodity prices
-GBPAUD: BOE+RBA | BOE vs RBA policy, commodity prices
-EURCAD: ECB+BOC | ECB vs BOC policy, crude oil direction
-GBPCAD: BOE+BOC | BOE vs BOC policy, crude oil direction
-AUDNZD: RBA+RBNZ | RBA vs RBNZ divergence, AU vs NZ macro; correlated pair
-AUDJPY: RBA+BOJ | risk-on/risk-off proxy, carry trade, commodity prices
-CADJPY: BOC+BOJ | crude oil, carry trade, risk sentiment
-NZDJPY: RBNZ+BOJ | risk sentiment, NZ macro data, carry trade
+CURRENCY FUNDAMENTALS:
+USD: Fed policy, DXY direction, US yield curve (10Y-2Y slope), NFP/CPI/GDP releases, COT speculator positioning
+EUR: ECB policy + forward guidance, EZ composite PMI (sub-50 = contractionary), HICP inflation, EODHD EUR sentiment
+GBP: BoE policy, UK composite PMI, UK CPI/employment, UK100 equity direction
+JPY: BoJ policy (YCC, rate expectations), JP 10Y yield level, intervention risk (USDJPY >155), safe-haven demand (VIX, stress score)
+CHF: SNB policy, safe-haven demand (VIX, stress score), EUR/CHF floor history; SNB rarely acts but moves are sharp
+AUD: RBA policy, AU employment/CPI, Chinese PMI sensitivity, iron ore direction — AUD is a China/commodity proxy
+CAD: BoC policy, CA employment/CPI, crude oil direction (UKOIL) — oil-CAD correlation ~0.70
+NZD: RBNZ policy, NZ CPI/employment, dairy prices, NZ-AU spread; ~0.88 correlation with AUD — rarely diverge strongly
 
-SESSION RULES:
-London 07:00-09:00 UTC: highest priority, weight signals heavily
-London-NY overlap 12:00-16:00 UTC: peak volume, most reliable convergence
-Asian 00:00-07:00 UTC: thin liquidity, lower trend signal confidence
-NY close 20:00-22:00 UTC: no new entry recommendations
-Primary: London=EURUSD,GBPUSD,USDCHF | NY=EURUSD,GBPUSD,USDCAD,USDJPY | Asian=AUDUSD,NZDUSD,USDJPY | Overlap=EURUSD,GBPUSD,USDJPY
-Secondary: USDJPY,AUDUSD,USDCAD in London; AUDUSD in NY; USDCAD in Asian; all others in overlap
-Session alignment is METADATA only — record it in session_context.session_alignment. Do NOT multiply score by session weight. Score is determined solely by the calibration table above.
-GBPUSD spreads widen in thin sessions. USDJPY tracks US Treasury yields. USDCHF ~-0.91 corr with EURUSD.
+SESSION RULES (metadata only — do not adjust score magnitude for session):
+London 07:00-09:00 UTC: highest priority session
+London-NY overlap 12:00-16:00 UTC: peak volume, most reliable signals
+Asian 00:00-07:00 UTC: thin liquidity, note in reasoning
+NY close 20:00-22:00 UTC: note pre-close conditions but score on fundamentals
 
 SOURCE AUTHORITY:
 Tier1 (1.0x): reuters, bloomberg, afp, socgen, rabobank, ing, jpmorgan, goldman, fed, ecb, boe, boj, snb, rba, boc, rbnz
@@ -717,123 +728,81 @@ Tier3 (0.4x): retail brokerage commentary, unrecognized domains
 New domain (0.3x): first 30 days in EODHD feed
 
 ADVERSARIAL RULES (mandatory):
-- |bias| > 0.6 requires: 2 independent tiers agreeing, OR technical alignment, OR same-direction economic release
-- Temporal clustering: 3+ articles same pair within 30 min, no Tier1 event -> coordinated_narrative_flag:true, confidence -0.20
-- Sentiment velocity: >0.4 point move in one cycle, no Tier1 event -> sentiment_velocity_flag:true, confidence -0.20
+- |score| > 0.6 requires: 2 independent tiers agreeing, OR calendar event, OR same-direction economic release
+- Temporal clustering: 3+ articles same currency within 30 min, no Tier1 event -> confidence -0.20
+- Sentiment velocity: >0.4 point move in one cycle, no Tier1 event -> confidence -0.20
 - Content fingerprinting: 2+ articles >70% lexically similar -> count as single data point
-- Tier3-only bias -> low_tier_only:true, confidence -0.25
-- Always reason counter-argument before any directional bias
+- Tier3-only signal -> confidence -0.25
+- Always reason the counter-argument before committing to a direction
 
-DECISION RULES (apply exactly):
-M1: Sentiment null 1-2 cycles -> 0.80x confidence, sentiment_degraded:true. 3+ cycles -> 0.60x, sentiment_unavailable:true. Never halt a pair.
-M2: Velocity flag fires with no calendar event -> apply -0.20 and proceed. Trust the filter.
-M3: Tier1 event in calendar but FRED not yet updated -> use EODHD sentiment as primary, 0.85x confidence. Trade now, not in 4 hours.
-M4: Macro vs technical diverge >0.6 on 5+ pairs -> cap all confidence at 0.50x, write HIGH proposal flagging regime transition risk. (Confidence cap is the protection — do NOT suppress entry signals entirely.)
-M5: COT pct_signed_52w_adj >= 90 (speculators near 52w long extreme) -> reduce bullish signal weight to 0.5x. pct_signed_52w_adj <= 10 (near 52w short extreme) -> reduce bearish signal weight to 0.5x. NEVER overridden by single macro release.
-M6: Fed+ECB decisions within 48h -> apply pre_event_size_reduction independently; overlapping windows use the larger reduction, not the sum.
-M7: |bias| > 0.65 requires 2 independent tiers OR technical alignment. Log single_source_cap_applied:true.
+DECISION RULES:
+M1: Sentiment null 1-2 cycles -> 0.80x confidence, note degraded. 3+ cycles -> 0.60x confidence. Never score 0.0 solely due to thin data.
+M2: Velocity flag fires with no calendar event -> apply -0.20 and proceed.
+M3: Tier1 event in calendar but FRED not yet updated -> use EODHD as primary, 0.85x confidence.
+M4: Macro vs technical diverge on 5+ pairs -> cap confidence at 0.50x, note regime transition risk.
+M5: COT pct_signed_52w_adj >= 90 for a currency -> reduce bullish weight 0.5x. <= 10 -> reduce bearish weight 0.5x.
+M6: Fed+ECB decisions within 48h -> note pre-event uncertainty; overlapping windows use larger effect, not sum.
+M7: |score| > 0.65 requires 2 independent tiers OR calendar event alignment.
+
+SAFE-HAVEN CURRENCIES — JPY and CHF only:
+Score on TWO independent axes:
+1. score: fundamental strength based on BoJ/SNB policy, yield, and macro data (same scale as all currencies)
+2. safe_haven_demand: 0.0 to 1.0 — risk-off demand INDEPENDENT of fundamentals, driven by VIX and stress score
+   VIX < 15  -> safe_haven_demand <= 0.2
+   VIX 15-20 -> safe_haven_demand 0.2-0.4
+   VIX 20-25 -> safe_haven_demand 0.4-0.6
+   VIX 25-30 -> safe_haven_demand 0.6-0.8
+   VIX > 30  -> safe_haven_demand >= 0.8
+The derivation engine applies safe_haven_demand to strengthen JPY/CHF pair scores independently.
+All other currencies: set safe_haven_demand to null.
 
 RETAIL SENTIMENT — STRUCTURAL CONTEXT & INTERPRETATION
 
 BACKGROUND:
-
 1. MARKET STRUCTURE
-   - The FX market trades $9.6 trillion/day (BIS 2025)
-   - Retail traders represent approximately 2.5% of this volume ($242B/day)
-   - The remaining 97.5% is institutional (banks, hedge funds, asset managers, corporates)
-   - Regulated brokers disclose that 70-80% of retail accounts lose money over time
+   - The FX market trades $9.6 trillion/day (BIS 2025). Retail = ~2.5% of volume.
+   - 70-80% of retail accounts lose money over time (regulated broker disclosures).
 
-2. WHY RETAIL LOSES (structural factors)
-   - Excessive leverage amplifies small moves into account-destroying losses
-   - Behavioural bias: retail cuts winning trades early and holds losing trades too long
-   - Predictable stop-loss placement at obvious technical levels (just below support, above resistance)
-   - Late entry: retail tends to pile in after moves have already extended
-   - Overtrading: the 24hr market creates pressure to always be positioned
+2. WHY RETAIL LOSES
+   - Excessive leverage. Behavioural bias (cut winners, hold losers).
+   - Predictable stop placement at obvious technical levels. Late entry.
 
 3. STOP-HUNT DYNAMICS
-   - When retail is heavily positioned one way, their stop-losses cluster at predictable levels
-   - Larger participants can push price through those levels, triggering forced liquidations
-   - Price often reverses after the stops are cleared — retail may have been DIRECTIONALLY CORRECT
-     but lost money due to positioning mechanics (tight stops, high leverage)
-   - Sweeps are most common at London open (07:00-08:00 UTC) and NY open (12:00-13:00 UTC)
-
-WHAT RETAIL SENTIMENT DATA TELLS YOU:
-
-The SSI and IG percentages do NOT directly tell you:
-- Which direction price will move (retail can be directionally correct)
-- Where institutional capital is positioned (not directly observable)
-
-They DO tell you:
-- Where retail liquidity pools (stop clusters) are concentrated
-- How vulnerable the market is to a liquidity sweep
-- The degree of crowd consensus (which historically correlates with losing outcomes)
+   - Retail stops cluster at key levels -> larger participants sweep them -> price reverses
+   - Sweeps most common: London open (07:00-08:00 UTC), NY open (12:00-13:00 UTC)
 
 INTERPRETATION FRAMEWORK:
-
 A. POSITIONING EXTREMITY
-   - 50-60% one-sided: No meaningful signal
-   - 60-70% one-sided: Weak signal — note but do not weight heavily
-   - 70-80% one-sided: Moderate signal — factor into directional bias
-   - 80-90% one-sided: Strong signal — give significant weight
-   - 90%+ one-sided: Extreme signal — very high weight
-
+   50-60%: No signal | 60-70%: Weak | 70-80%: Moderate | 80-90%: Strong | 90%+: Extreme
 B. MULTI-BROKER CONSENSUS
-   - Both MyFXBook AND IG agree >75% same side: HIGH confidence
-   - Both agree >60% same side: MODERATE confidence
-   - Sources disagree on direction: LOW confidence — reduce or neutralise
-   - Only one source available: STANDARD confidence
-
-C. COT INSTITUTIONAL CROSS-REFERENCE
-   - COT institutions positioned OPPOSITE to retail: STRONGEST signal
-   - COT institutions positioned SAME as retail: WEAKENS the contrarian signal
-   - COT neutral/flat: Standard contrarian weighting applies
-
-D. CONTEXT OVERRIDES (use your judgement)
-   - If a Tier 1 event could justify extreme positioning, reduce contrarian weight
-   - If retail is fighting an established trend, contrarian signal is stronger
-   - If a liquidity sweep appears to have just occurred (price spiked through
-     a key level then reversed), the post-sweep direction is often the true intent
-   - These are directional bias inputs, not trade triggers — do not override
-     strong opposing technical or fundamental evidence
-   - When fundamental data is absent or degraded (EODHD sentiment_degraded: true,
-     article count < 5, or no corroborating news/economic data), contrarian sentiment
-     is a SUPPORTING factor only — it cannot be the primary driver of directional bias.
-     Reduce confidence proportionally when fundamental corroboration is missing.
-
-OUTPUT FORMAT (strict — no preamble):
-Begin your response IMMEDIATELY with the first ```json block. No analysis, no pre-processing text, no commentary before, between, or after the blocks.
-CRITICAL: ALL 20 pairs must have a JSON block every cycle — no exceptions. "Skip" means score=0.0, bias=neutral, confidence=0.10. Count before finishing — if fewer than 20, add missing pairs as neutral.
-Pairs in order: EURUSD GBPUSD USDJPY USDCHF AUDUSD USDCAD NZDUSD EURGBP EURJPY GBPJPY EURCHF GBPCHF EURAUD GBPAUD EURCAD GBPCAD AUDNZD AUDJPY CADJPY NZDJPY
-If a pair has insufficient data: output it with neutral score, low confidence, and set sentiment_degraded:true.
+   Both >75% same side: HIGH confidence | Both >60%: MODERATE | Disagree: LOW confidence
+C. COT CROSS-REFERENCE
+   COT institutions OPPOSITE to retail: STRONGEST signal | Same as retail: WEAKENS signal
+D. CONTEXT OVERRIDES
+   - Tier1 event justifies extreme positioning -> reduce contrarian weight
+   - Post-sweep direction is often true institutional intent
+   - When fundamental data is degraded, contrarian sentiment is supporting factor only
 
 SCORE CALIBRATION (use the full range — do not anchor conservatively):
-±0.80 to ±1.00: Extreme conviction — multiple independent fundamental drivers strongly aligned
-                 (e.g., surprise rate cut + deteriorating employment + dovish forward guidance)
-±0.60 to ±0.79: Strong conviction — clear fundamental case with at least 2 supporting data points
-±0.40 to ±0.59: Moderate conviction — fundamental lean with some supporting evidence
-±0.20 to ±0.39: Weak conviction — marginal fundamental signal, mixed or stale data
-±0.00 to ±0.19: Neutral/no conviction — no clear fundamental direction
-Scores must reflect actual evidence strength. A 0.14 when 5 days of consistently bullish
-sentiment exist is under-scored. A 0.42 when data strongly aligns is under-scored.
-M7 (multi-tier requirement for |score| > 0.65) guards extreme scores — scores in the
-0.40–0.65 range do not require multi-tier corroboration and should be used freely.
+±0.80 to ±1.00: Extreme conviction — multiple independent drivers strongly aligned
+±0.60 to ±0.79: Strong conviction — clear case with 2+ supporting data points
+±0.40 to ±0.59: Moderate conviction — clear lean with some evidence
+±0.20 to ±0.39: Weak conviction — marginal signal, mixed data
+±0.00 to ±0.19: Neutral — no clear direction
 
-SIGNAL SCHEMA (all fields required):
+OUTPUT FORMAT (strict — no preamble):
+Begin your response IMMEDIATELY with the first ```json block. No analysis or commentary before, between, or after the blocks.
+ALL 8 currencies must be scored every cycle — no exceptions. Missing currency = gap-filled as neutral 0.0 by the engine.
+Order: EUR  GBP  USD  JPY  CHF  AUD  CAD  NZD
+
+CURRENCY SIGNAL SCHEMA (all fields required):
 {
-  "agent_name": "macro",
-  "instrument": "<PAIR>",
-  "signal_type": "macro_bias",
-  "score": <-1.0 to +1.0>,
-  "bias": "<bullish|bearish|neutral>",
+  "currency": "<EUR|GBP|USD|JPY|CHF|AUD|CAD|NZD>",
+  "score": <-1.0 to +1.0, currency strength vs basket>,
   "confidence": <0.0 to 1.0>,
-  "expires_at": "<ISO now+20min>",
-  "payload": {
-    "reasoning": "<2 sentences max: primary macro driver + key evidence>",
-    "sentiment_velocity_flag": <bool>,
-    "cot_extreme": <bool>,
-    "sentiment_degraded": <bool>,
-    "proposals": [{"type": "<type>", "priority": "<high|medium|low>", "title": "<10 words max>", "reasoning": "<1 sentence>"}]
-  }
+  "reasoning": "<2-3 sentences: primary driver + key evidence + counter-argument considered>",
+  "key_drivers": ["<driver1>", "<driver2>", "<driver3 max>"],
+  "safe_haven_demand": <0.0 to 1.0 for JPY and CHF only, null for all others>
 }
 """
 
@@ -976,6 +945,32 @@ SIGNAL SCHEMA (all fields required):
             logger.warning(f"Finnhub news fetch failed: {e}")
             return []
 
+    def get_vix_from_stress_components(self, stress_components: dict) -> float:
+        """Extract VIX value cleanly from stress_components dict. Returns 18.0 as neutral default."""
+        try:
+            return float(stress_components.get('vix_level_trend', {}).get('raw_value', 18.0))
+        except Exception:
+            return 18.0
+
+    def get_ukoil_30d_momentum(self) -> float:
+        """Returns (current_close - 30d_avg_close) / 30d_avg_close for UKOIL. Returns 0.0 on failure."""
+        try:
+            cur = self.db_conn.cursor()
+            cur.execute("""
+                SELECT close FROM forex_network.cross_asset_prices
+                WHERE instrument = 'UKOIL' AND timeframe = '1D'
+                ORDER BY bar_time DESC LIMIT 30
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            if len(rows) < 2:
+                return 0.0
+            current = float(rows[0][0])
+            avg_30d = sum(float(r[0]) for r in rows) / len(rows)
+            return (current - avg_30d) / avg_30d if avg_30d > 0 else 0.0
+        except Exception:
+            return 0.0
+
     def build_conversation_context(self) -> List[Dict]:
         """Build the conversation context with all necessary data for the agent."""
 
@@ -1114,12 +1109,41 @@ SIGNAL SCHEMA (all fields required):
             logger.info(f"Macro trajectory for {_pair}: {_features}")
             trajectory_section_lines.append(format_trajectory_for_prompt(_traj, _pair))
         trajectory_section = "\n\n".join(trajectory_section_lines)
+
+        # Named market context values for currency scoring
+        vix_val = self.get_vix_from_stress_components(stress_components or {})
+        _ukoil_close = _xauusd_close = None
+        try:
+            _mc = self.db_conn.cursor()
+            _mc.execute("""
+                SELECT instrument, close
+                FROM forex_network.cross_asset_prices
+                WHERE instrument IN ('UKOIL', 'XAUUSD') AND timeframe = '1D'
+                  AND (instrument, bar_time) IN (
+                      SELECT instrument, MAX(bar_time)
+                      FROM forex_network.cross_asset_prices
+                      WHERE instrument IN ('UKOIL', 'XAUUSD') AND timeframe = '1D'
+                      GROUP BY instrument
+                  )
+            """)
+            for _row in _mc.fetchall():
+                if _row[0] == 'UKOIL':
+                    _ukoil_close = float(_row[1])
+                elif _row[0] == 'XAUUSD':
+                    _xauusd_close = float(_row[1])
+            _mc.close()
+        except Exception as _e:
+            logger.warning(f"build_conversation_context: UKOIL/XAUUSD fetch failed: {_e}")
+        _ukoil_str  = f"{_ukoil_close:.2f}"  if _ukoil_close  is not None else "unavailable"
+        _xauusd_str = f"{_xauusd_close:.2f}" if _xauusd_close is not None else "unavailable"
+
         context_message = f"""
 MACRO AGENT CYCLE #{self.cycle_count + 1}
 Current Time: {datetime.now(timezone.utc).isoformat()}
 Session ID: {self.session_id}
 
 ## CURRENT MARKET CONTEXT
+VIX: {vix_val:.1f} | Crude Oil (UKOIL): {_ukoil_str} | Gold (XAUUSD): {_xauusd_str}
 System Stress Score: {stress_score} ({stress_state})
 Stress Components: {json.dumps(stress_components, default=str) if stress_components else 'N/A'}
 
@@ -1237,27 +1261,59 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
             return "## LEARNED CONTRARIAN ADJUSTMENTS\nUnavailable (query error)."
 
     def parse_agent_response(self, agent_response: Dict) -> List[Dict]:
-        """Parse the agent response and extract structured signals for each pair."""
-        signals = []
-        
-        try:
-            import re
-            response_text = agent_response.get("response", "")
+        """Parse 8 currency scores from the LLM response and derive 20 pair signals.
 
-            # Extract every ```json … ``` fenced block (non-greedy, dotall).
-            # Falls back to any {...}-balanced top-level object if no fences present.
-            logger.info(f"Response length: {len(response_text)} chars")
-            json_blocks = re.findall(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
-            logger.info(f"JSON blocks found: {len(json_blocks)}")
+        Phase 1: Extract currency JSON blocks (keyed on 'currency').
+                 Gap-fill any missing currencies as neutral.
+        Phase 2: Derive pair signals mathematically with safe-haven, crude-oil,
+                 and cross-pair amplifier adjustments.
+        """
+        import re
+
+        def _neutral_currency(ccy: str) -> dict:
+            return {
+                'currency': ccy,
+                'score': 0.0,
+                'confidence': 0.1,
+                'reasoning': 'Signal not returned by LLM this cycle — neutral gap-fill',
+                'key_drivers': [],
+                'safe_haven_demand': None,
+            }
+
+        def _neutral_pair_signal(pair: str, reason: str) -> dict:
+            return {
+                'agent_name': self.AGENT_NAME,
+                'instrument': pair,
+                'signal_type': 'macro_bias',
+                'score': 0.0,
+                'bias': 'neutral',
+                'confidence': 0.1,
+                'payload': {
+                    'reasoning': reason,
+                    'sentiment_velocity_flag': False,
+                    'cot_extreme': False,
+                    'sentiment_degraded': True,
+                    'proposals': [],
+                    'currency_scores': {},
+                },
+            }
+
+        try:
+            response_text = agent_response.get('response', '')
+            logger.info(f"parse_agent_response: response length={len(response_text)} chars")
             try:
-                with open("/tmp/neo_macro_response_debug.txt", "w") as _f:
+                with open('/tmp/neo_macro_response_debug.txt', 'w') as _f:
                     _f.write(response_text)
             except Exception:
                 pass
+
+            # ── Phase 1: extract currency blocks ──────────────────────────────
+            json_blocks = re.findall(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+            logger.info(f"parse_agent_response: {len(json_blocks)} JSON blocks found")
+
             if not json_blocks:
-                # Best-effort: match top-level {...} groups by brace-balancing
-                depth = 0
-                start = -1
+                # Brace-balance fallback
+                depth, start = 0, -1
                 for i, ch in enumerate(response_text):
                     if ch == '{':
                         if depth == 0:
@@ -1269,93 +1325,142 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                             json_blocks.append(response_text[start:i + 1])
                             start = -1
 
+            currency_scores: dict = {}
             for block in json_blocks:
                 try:
-                    signal_data = json.loads(block)
+                    data = json.loads(block)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(signal_data, dict) and 'instrument' in signal_data:
-                    signals.append(signal_data)
-            
+                # Handle both a single object {"currency":...} and an array [{...},{...}]
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if isinstance(item, dict) and 'currency' in item:
+                        ccy = str(item['currency']).upper().strip()
+                        if ccy in self.CURRENCIES:
+                            currency_scores[ccy] = item
 
-            # Gap-fill: ensure every pair has a signal even if the LLM omitted
-            # some. Runs before the 'no signals at all' fallback so partial
-            # results (e.g. 8/20) are topped up rather than left missing.
-            _parsed_instruments = {s.get('instrument') for s in signals}
-            _missing_pairs = [p for p in self.PAIRS if p not in _parsed_instruments]
-            if _missing_pairs:
+            logger.info(f"parse_agent_response: parsed {len(currency_scores)}/8 currency scores: "
+                        f"{sorted(currency_scores.keys())}")
+
+            # Total-failure fallback — no currency blocks at all
+            if not currency_scores:
                 logger.warning(
-                    f'LLM returned signals for {len(_parsed_instruments)}/{len(self.PAIRS)} '
-                    f'pairs -- inserting neutral fallback for: {_missing_pairs}'
+                    "parse_agent_response: no currency blocks found — returning 20 degraded signals"
                 )
-                log_event('GAP_FILL',
-                    f'LLM returned {len(_parsed_instruments)}/20 signals — gap-filled {len(_missing_pairs)} pairs',
-                    category='DATA', agent='macro',
-                    payload={'returned': len(_parsed_instruments), 'missing': _missing_pairs})
-                for _gap_pair in _missing_pairs:
-                    signals.append({
-                        'agent_name': self.AGENT_NAME,
-                        'instrument': _gap_pair,
-                        'signal_type': 'macro_bias',
-                        'score': 0.0,
-                        'bias': 'neutral',
-                        'confidence': 0.1,
-                        'payload': {
-                            'reasoning': 'Signal not returned by LLM this cycle -- neutral gap-fill',
-                            'sentiment_velocity_flag': False,
-                            'cot_extreme': False,
-                            'sentiment_degraded': True,
-                            'proposals': [],
-                        }
-                    })
-
-            # If no structured signals found, create default degraded signals
-            if not signals:
-                logger.warning("No structured signals found in agent response, creating degraded signals")
-                logger.warning(f"Response length: {len(response_text)} chars")
                 logger.warning(f"Response text (first 1000 chars): {response_text[:1000]!r}")
-                try:
-                    with open("/tmp/neo_macro_response_debug.txt", "w") as _f:
-                        _f.write(response_text)
-                    logger.warning("Full response written to /tmp/neo_macro_response_debug.txt")
-                except Exception:
-                    pass
-                for pair in self.PAIRS:
-                    signals.append({
-                        "agent_name": self.AGENT_NAME,
-                        "instrument": pair,
-                        "signal_type": "macro_bias",
-                        "score": 0.0,
-                        "bias": "neutral",
-                        "confidence": 0.1,
-                        "payload": {
-                            "reasoning": "Agent response parsing failed - degraded signal",
-                            "sentiment_velocity_flag": False,
-                            "cot_extreme": False,
-                            "sentiment_degraded": True,
-                            "proposals": []
-                        }
-                    })
-            
-        except Exception as e:
-            logger.error(f"Failed to parse agent response: {e}")
-            # Return error signals for all pairs
+                log_event('PARSE_FAILURE',
+                          'Macro LLM returned no parseable currency blocks — degraded signals emitted',
+                          category='DATA', agent='macro')
+                return [_neutral_pair_signal(p, 'Agent response parse failure — no currency blocks')
+                        for p in self.PAIRS]
+
+            # Gap-fill missing currencies
+            _missing_ccys = [c for c in self.CURRENCIES if c not in currency_scores]
+            if _missing_ccys:
+                logger.warning(f"parse_agent_response: gap-filling missing currencies: {_missing_ccys}")
+                log_event('GAP_FILL',
+                          f'LLM scored {len(currency_scores)}/8 currencies — gap-filled: {_missing_ccys}',
+                          category='DATA', agent='macro',
+                          payload={'scored': sorted(currency_scores.keys()), 'missing': _missing_ccys})
+                for _ccy in _missing_ccys:
+                    currency_scores[_ccy] = _neutral_currency(_ccy)
+
+            # ── Phase 2: derive pair signals ──────────────────────────────────
+            ukoil_momentum = self.get_ukoil_30d_momentum()
+            signals = []
+
             for pair in self.PAIRS:
+                base_ccy, quote_ccy = self.PAIR_DERIVATION[pair]
+                base_data  = currency_scores[base_ccy]
+                quote_data = currency_scores[quote_ccy]
+
+                base_score  = float(base_data.get('score',  0.0) or 0.0)
+                quote_score = float(quote_data.get('score', 0.0) or 0.0)
+                base_conf   = float(base_data.get('confidence',  0.1) or 0.1)
+                quote_conf  = float(quote_data.get('confidence', 0.1) or 0.1)
+
+                raw_score = base_score - quote_score
+
+                # Safe-haven adjustment: demand strengthens JPY/CHF on quote side
+                if quote_ccy in ('JPY', 'CHF'):
+                    safe_haven = float(quote_data.get('safe_haven_demand') or 0.0)
+                    raw_score -= safe_haven * 0.3
+
+                # Crude oil adjustment for CAD pairs
+                if base_ccy == 'CAD' or quote_ccy == 'CAD':
+                    cad_oil_adj = ukoil_momentum * 0.25
+                    if base_ccy == 'CAD':
+                        raw_score += cad_oil_adj
+                    else:
+                        raw_score -= cad_oil_adj
+
+                # Cross-pair amplifier (non-USD pairs have amplified relative moves)
+                if pair not in self.USD_PAIRS:
+                    raw_score *= 1.5
+
+                # Clamp to [-1.0, 1.0]
+                pair_score = max(-1.0, min(1.0, raw_score))
+
+                # Derive bias
+                if pair_score > 0.05:
+                    bias = 'bullish'
+                elif pair_score < -0.05:
+                    bias = 'bearish'
+                else:
+                    bias = 'neutral'
+
+                # Confidence: min of both currency confidences
+                pair_conf = min(base_conf, quote_conf)
+
+                # Build reasoning string from currency reasonings
+                base_reasoning  = base_data.get('reasoning',  '') or ''
+                quote_reasoning = quote_data.get('reasoning', '') or ''
+                pair_reasoning  = (
+                    f"{base_ccy}: {base_reasoning[:120].rstrip('.')}. "
+                    f"{quote_ccy}: {quote_reasoning[:120].rstrip('.')}."
+                )
+
                 signals.append({
-                    "agent_name": self.AGENT_NAME,
-                    "instrument": pair,
-                    "signal_type": "macro_bias",
-                    "score": 0.0,
-                    "bias": "neutral",
-                    "confidence": 0.1,
-                    "payload": {
-                        "reasoning": f"Signal parsing error: {str(e)}",
-                        "error": str(e),
-                        "proposals": []
-                    }
+                    'agent_name':  self.AGENT_NAME,
+                    'instrument':  pair,
+                    'signal_type': 'macro_bias',
+                    'score':       round(pair_score, 4),
+                    'bias':        bias,
+                    'confidence':  round(pair_conf, 4),
+                    'payload': {
+                        'reasoning':              pair_reasoning,
+                        'sentiment_velocity_flag': bool(
+                            base_data.get('sentiment_velocity_flag') or
+                            quote_data.get('sentiment_velocity_flag')
+                        ),
+                        'cot_extreme': bool(
+                            base_data.get('cot_extreme') or
+                            quote_data.get('cot_extreme')
+                        ),
+                        'sentiment_degraded': bool(
+                            base_data.get('sentiment_degraded') or
+                            quote_data.get('sentiment_degraded')
+                        ),
+                        'proposals': (
+                            list(base_data.get('proposals', []) or []) +
+                            list(quote_data.get('proposals', []) or [])
+                        ),
+                        'currency_scores': {
+                            base_ccy:  {'score': base_score,  'confidence': base_conf},
+                            quote_ccy: {'score': quote_score, 'confidence': quote_conf},
+                        },
+                        'ukoil_momentum': round(ukoil_momentum, 4),
+                    },
                 })
-        
-        return signals
+
+            logger.info(f"parse_agent_response: derived {len(signals)} pair signals from "
+                        f"{len(currency_scores)} currency scores")
+            return signals
+
+        except Exception as e:
+            logger.error(f"parse_agent_response failed: {e}", exc_info=True)
+            return [_neutral_pair_signal(p, f'parse_agent_response exception: {e}')
+                    for p in self.PAIRS]
     
     def write_signals_to_database(self, signals: List[Dict]) -> bool:
         """Write generated signals to the database."""
