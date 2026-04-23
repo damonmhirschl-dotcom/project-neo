@@ -680,27 +680,33 @@ class SwapCostChecker:
     @staticmethod
     def check(
         swap_rate_pips: Optional[float],
-        rr_ratio: float,
+        reward_pips: float,
+        risk_pips: float,
         min_rr: float,
         estimated_hold_days: float = 1.0,
     ) -> Tuple[bool, Dict[str, Any]]:
         """
         Check if swap costs would erode R:R below minimum.
+        swap_rate_pips is signed: negative = overnight cost, positive = carry income.
         Returns (passed, details_dict).
         """
+        original_rr = reward_pips / risk_pips if risk_pips > 0 else 0.0
         if swap_rate_pips is None:
-            return True, {"swap_check": "skipped", "reason": "no swap data available"}
+            return True, {"swap_check": "skipped", "reason": "no swap data available",
+                          "original_rr": round(original_rr, 2)}
 
-        total_swap_cost = abs(swap_rate_pips) * estimated_hold_days
-        # Approximate adjusted R:R (swap reduces the reward side)
-        # In production, calculate from actual pip distances
-        adjusted_rr = rr_ratio - (total_swap_cost * 0.1)  # rough adjustment
+        # signed: paying swap reduces reward; carry income increases reward
+        swap_net_pips = swap_rate_pips * estimated_hold_days
+        adjusted_reward_pips = reward_pips + swap_net_pips
+        adjusted_rr = adjusted_reward_pips / risk_pips if risk_pips > 0 else 0.0
 
         details = {
             "swap_rate_pips": swap_rate_pips,
             "estimated_hold_days": estimated_hold_days,
-            "total_swap_cost_pips": round(total_swap_cost, 2),
-            "original_rr": round(rr_ratio, 2),
+            "swap_net_pips": round(swap_net_pips, 2),
+            "reward_pips": round(reward_pips, 1),
+            "risk_pips": round(risk_pips, 1),
+            "original_rr": round(original_rr, 2),
             "adjusted_rr": round(adjusted_rr, 2),
             "min_rr": min_rr,
         }
@@ -1230,13 +1236,19 @@ class RiskGuardian:
                     decision["checks"]["swap_rr"] = "SKIP"
                 else:
                     decision["checks"]["rr"] = f"PASS ({_computed_rr:.2f}:1)"
-                    # Use payload rr_ratio if provided, else use computed value for swap check.
-                    rr_ratio = float(payload.get("rr_ratio", 0)) or _computed_rr
+                    # Convert price-unit distances to pips for accurate swap R:R math.
+                    _pip_size = 0.01 if 'JPY' in instrument else 0.0001
+                    _reward_pips = _rr_reward / _pip_size
+                    _risk_pips = _rr_risk / _pip_size
+                    # Estimate hold days from stress: high stress → shorter hold (2d), else 3d.
+                    _hold_days = 2.0 if stress_score_for_sizing > 50 else 3.0
                     swap_rate = self.reader.read_swap_rate(instrument, direction)
                     swap_passed, swap_details = SwapCostChecker.check(
                         swap_rate_pips=swap_rate,
-                        rr_ratio=rr_ratio,
+                        reward_pips=_reward_pips,
+                        risk_pips=_risk_pips,
                         min_rr=min_rr,
+                        estimated_hold_days=_hold_days,
                     )
                     decision["risk_details"]["swap"] = swap_details
                     if not swap_passed:
@@ -1810,27 +1822,33 @@ class RiskGuardianTester:
 
     def test_swap_cost_pass(self):
         logger.info("\n--- Test: Swap cost — passes ---")
+        # 100 reward pips, 40 risk pips (2.5:1), swap=-0.5 pips/day for 1 day
+        # adjusted_reward = 99.5, adj_rr = 99.5/40 = 2.49 — above 1.5
         passed, details = SwapCostChecker.check(
-            swap_rate_pips=-0.5, rr_ratio=2.5, min_rr=1.5)
+            swap_rate_pips=-0.5, reward_pips=100.0, risk_pips=40.0, min_rr=1.5)
         self._assert(passed, "Swap cost does not erode R:R below minimum")
 
     def test_swap_cost_fail(self):
         logger.info("\n--- Test: Swap cost — fails ---")
+        # 80 reward pips, 50 risk pips (1.6:1), swap=-5.0 for 3 days → -15 pips
+        # adjusted_reward = 65, adj_rr = 65/50 = 1.3 — below 1.5
         passed, details = SwapCostChecker.check(
-            swap_rate_pips=-5.0, rr_ratio=1.6, min_rr=1.5, estimated_hold_days=3.0)
+            swap_rate_pips=-5.0, reward_pips=80.0, risk_pips=50.0, min_rr=1.5, estimated_hold_days=3.0)
         self._assert(not passed, "Heavy swap cost erodes R:R below minimum")
 
     def test_swap_cost_negative_rr(self):
         logger.info("\n--- Test: Swap cost — negative adjusted R:R ---")
+        # 15 reward pips, 30 risk pips (0.5:1), swap=-10.0 for 2 days → -20 pips
+        # adjusted_reward = -5, adj_rr = -5/30 = -0.17 — negative
         passed, details = SwapCostChecker.check(
-            swap_rate_pips=-10.0, rr_ratio=0.5, min_rr=1.5, estimated_hold_days=2.0)
+            swap_rate_pips=-10.0, reward_pips=15.0, risk_pips=30.0, min_rr=1.5, estimated_hold_days=2.0)
         self._assert(not passed, "Negative adjusted R:R rejected")
         self._assert("negative" in details.get("reason", "").lower(), "Reason mentions negative R:R")
 
     def test_swap_no_data(self):
         logger.info("\n--- Test: Swap cost — no data ---")
         passed, details = SwapCostChecker.check(
-            swap_rate_pips=None, rr_ratio=2.0, min_rr=1.5)
+            swap_rate_pips=None, reward_pips=80.0, risk_pips=40.0, min_rr=1.5)
         self._assert(passed, "No swap data → skip check (pass)")
 
     def test_slippage_thresholds(self):
