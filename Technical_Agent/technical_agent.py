@@ -297,6 +297,22 @@ class TechnicalAgent:
                         self.historical_spreads[pair] = val
                 logger.info(f"Loaded historical spreads for {len(self.historical_spreads)} pairs")
 
+                # Guard against mis-scaled historical data for JPY pairs.
+                # Correct DB values are ~0.030–0.045 for JPY crosses; if earlier
+                # data was ingested at wrong price scale the query can return
+                # ~0.00020 (USD-pair scale), causing false spread warnings every
+                # cycle.  Floor at 0.008 (0.8 pip) — far below any real JPY
+                # average, well above the mis-scaled artefact.
+                _JPY_FLOOR = 0.008
+                for _p in list(self.historical_spreads.keys()):
+                    if _p.endswith('JPY') and self.historical_spreads[_p] < _JPY_FLOOR:
+                        logger.warning(
+                            f"JPY spread floor applied: {_p} "
+                            f"computed={self.historical_spreads[_p]:.5f} → {_JPY_FLOOR:.5f} "
+                            f"(stale/mis-scaled data in historical_prices)"
+                        )
+                        self.historical_spreads[_p] = _JPY_FLOOR
+
         except Exception as e:
             logger.error(f"Failed to load historical spreads: {e}")
             # Pair-aware fallback: JPY pairs quoted at 2dp vs 4dp for others

@@ -905,7 +905,13 @@ class PerformanceTracker:
                   AND exit_time IS NOT NULL
                   AND exit_time > %s
             """, (self.user_id, DATA_QUALITY_CUTOFF))
-            _closed_trades = _gate_cur.fetchone()['count']
+            _row = _gate_cur.fetchone()
+            _closed_trades = int(_row['count']) if _row else 0
+        except Exception as _gate_e:
+            logger.warning(
+                f"[{self.user_id}] Sortino gate query failed ({_gate_e}) — skipping proposals"
+            )
+            return proposals
         finally:
             _gate_cur.close()
         if _closed_trades < MIN_TRADES_FOR_PROPOSALS:
@@ -1567,7 +1573,13 @@ class LearningModule:
                   AND exit_time IS NOT NULL
                   AND exit_time > %s
             """, (self.user_id, DATA_QUALITY_CUTOFF))
-            _closed_trades = _gate_cur.fetchone()['count']
+            _row = _gate_cur.fetchone()
+            _closed_trades = int(_row['count']) if _row else 0
+        except Exception as _gate_e:
+            logger.warning(
+                f"[{self.user_id}] Proposals gate query failed ({_gate_e}) — skipping proposals"
+            )
+            return 0
         finally:
             _gate_cur.close()
         if _closed_trades < MIN_TRADES_FOR_PROPOSALS:
@@ -1742,7 +1754,7 @@ class LearningModule:
             self.write_heartbeat()
             return {"autopsies": count, "rejections": rej_count}
         except Exception as e:
-            logger.error(f"Cycle failed: {e}")
+            logger.error(f"Cycle failed: {e}", exc_info=True)
             return {"error": str(e)}
 
     def run_continuous(self):
