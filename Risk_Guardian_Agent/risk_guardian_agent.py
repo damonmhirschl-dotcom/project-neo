@@ -1155,7 +1155,7 @@ class RiskGuardian:
             if atr_14 is None:
                 logger.warning(f"atr_14 unavailable for {instrument} from both decision and price_metrics")
 
-        conv_score_for_sizing   = float(payload.get("convergence", 0.0))
+        conv_score_for_sizing   = float(payload.get("conviction_score", payload.get("convergence", 0.0)))
         stress_score_for_sizing = float((market_context or {}).get("stress_score", 0.0))
         sizing = PositionSizer.calculate(
             risk_params=risk_params,

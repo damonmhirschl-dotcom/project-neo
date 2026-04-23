@@ -2249,10 +2249,29 @@ class OrchestratorAgent:
             # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
             # Layer 1 — macro gate
             MACRO_THRESHOLD    = float(risk_params.get('convergence_threshold', 0.30))
-            TECH_MIN_THRESHOLD = 0.10
+            TECH_MIN_THRESHOLD = 0.20
 
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
+
+            # Percentile-based macro gate: avoid trading noise periods
+            _base_ccy  = pair[:3]
+            _quote_ccy = pair[3:]
+            try:
+                _pcur = self.db.cursor()
+                _pcur.execute("""
+                    SELECT PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(composite_score))
+                    FROM forex_network.macro_signals_history
+                    WHERE currency IN (%s, %s)
+                    AND signal_date >= NOW() - INTERVAL '2 years'
+                """, (_base_ccy, _quote_ccy))
+                _p90 = _pcur.fetchone()[0] or MACRO_THRESHOLD
+                _pcur.close()
+            except Exception:
+                _p90 = MACRO_THRESHOLD
+            _effective_macro_threshold = max(MACRO_THRESHOLD, float(_p90) * 0.5)
+            detail["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
+            detail["p90_macro_threshold"] = round(float(_p90), 4)
 
             def _gate_reject(_reason, _pair=pair, _ms=macro_sig, _ts=tech_sig):
                 _stress_val = float(market_context.get("stress_score", 0) or 0)
@@ -2288,9 +2307,10 @@ class OrchestratorAgent:
                     payload={"rejection_reasons": [_reason], "conflict_category": _cat},
                 )
 
-            if abs(_macro_score) < MACRO_THRESHOLD:
+            if abs(_macro_score) < _effective_macro_threshold:
                 _gate_reject(
-                    f"macro_gate_fail: abs({_macro_score:.3f}) < {MACRO_THRESHOLD:.3f}"
+                    f"macro_gate_fail: abs({_macro_score:.3f}) < {_effective_macro_threshold:.3f} "
+                    f"(fixed={MACRO_THRESHOLD:.3f}, p90\u00d70.5={float(_p90)*0.5:.3f})"
                 )
                 continue
 
@@ -2326,10 +2346,10 @@ class OrchestratorAgent:
                 "tech_gate":  round(_tech_score, 4),
             }
 
-            # Convergence for display — 40/40/20
+            # Convergence for display — 70/20/10 (macro dominates; tech = confirmation strength)
             _regime_s_display = float(detail.get("regime_score_used") or 0.50)
             detail["hierarchical_convergence"] = round(
-                abs(_macro_score) * 0.40 + abs(_tech_score) * 0.40 + _regime_s_display * 0.20, 4
+                abs(_macro_score) * 0.70 + abs(_tech_score) * 0.20 + _regime_s_display * 0.10, 4
             )
 
             logger.info(f"{pair}: {dc_reason} (convergence={final_convergence:.3f})")
@@ -2391,6 +2411,8 @@ class OrchestratorAgent:
                 technical_payload=tech_payload,
             )
             decision["convergence_detail"] = detail
+            decision["conviction_score"] = round(abs(_macro_score), 4)
+            decision["convergence_score"] = round(final_convergence, 4)  # display only
 
             # B. Bias-score inconsistency alert
             _bias_lower = (decision.get("bias") or "").lower()
