@@ -1142,6 +1142,7 @@ class TradeExecutor:
             session_at_entry=_session_at_entry,
             agents_agreed=_agents_agreed,
             entry_rank_position=payload.get("entry_rank_position"),
+            trade_parameters=self._build_trade_parameters_helper(payload),
         )
 
         if trade_id is None:
@@ -1314,6 +1315,25 @@ class TradeExecutor:
         self._handle_hard_rejection(instrument, direction, response)
         return False
 
+    @staticmethod
+    def _build_trade_parameters_helper(payload: Dict) -> Dict:
+        """Extract risk parameter snapshot from RG approval payload."""
+        _sizing = (payload.get("risk_details") or {}).get("sizing") or {}
+        _swap   = (payload.get("risk_details") or {}).get("swap") or {}
+        _ectx   = payload.get("entry_context") or {}
+        return {
+            "convergence_threshold": payload.get("effective_threshold"),
+            "convergence_score":     payload.get("convergence"),
+            "stress_score":          payload.get("stress_score") or _ectx.get("stress_score"),
+            "stress_band":           payload.get("stress_band"),
+            "stress_multiplier":     payload.get("stress_size_multiplier"),
+            "conviction_exponent":   payload.get("conviction_exponent"),
+            "atr_stop_multiplier":   payload.get("atr_stop_multiplier") or _sizing.get("atr_stop_multiplier"),
+            "min_rr":               payload.get("min_risk_reward_ratio") or _swap.get("min_rr"),
+            "risk_pct":             payload.get("effective_risk_pct") or _sizing.get("effective_risk_pct"),
+            "combined_multiplier":  payload.get("combined_mult") or _sizing.get("combined_multiplier"),
+        }
+
     def _write_trade(self, instrument: str, direction: str, entry_price: float,
                      position_size: float, stop_distance: Optional[float],
                      spread_at_entry: float, fill_pct: float,
@@ -1326,7 +1346,8 @@ class TradeExecutor:
                      requested_size: Optional[float] = None,
                      session_at_entry: Optional[str] = None,
                      agents_agreed: Optional[str] = None,
-                     entry_rank_position: Optional[int] = None) -> Optional[int]:
+                     entry_rank_position: Optional[int] = None,
+                     trade_parameters: Optional[Dict] = None) -> Optional[int]:
         """Write trade to RDS trades table."""
         cur = self.db.cursor()
         try:
@@ -1360,8 +1381,9 @@ class TradeExecutor:
                      requested_size, fill_pct, is_partial_fill,
                      slippage_pips, slippage_action, partial_fill_action,
                      fill_time_ms, entry_context, ibkr_order_id, convergence_score,
-                     target_price, session_at_entry, agents_agreed, entry_rank_position)
-                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     target_price, session_at_entry, agents_agreed, entry_rank_position,
+                     trade_parameters)
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 self.user_id, instrument, direction, entry_price, stop_price,
@@ -1375,6 +1397,7 @@ class TradeExecutor:
                 session_at_entry,
                 agents_agreed,
                 entry_rank_position,
+                json.dumps(trade_parameters) if trade_parameters else None,
             ))
             result = cur.fetchone()
             self.db.commit()
