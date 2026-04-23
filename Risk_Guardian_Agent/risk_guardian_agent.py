@@ -1334,6 +1334,19 @@ class RiskGuardian:
         decision["target_price"] = payload.get("target_price")
         decision["entry_rank_position"] = payload.get("entry_rank_position")
 
+        # Snapshot risk parameters into payload so execution agent can persist them
+        # in trade_parameters at entry (Gap 1).
+        _mc = market_context or {}
+        _stress_score_snap = float(_mc.get("stress_score", 0.0))
+        _stress_threshold  = float(risk_params.get("stress_threshold_score") or 60.0)
+        _stress_mult_cfg   = float(risk_params.get("stress_multiplier") or 0.70)
+        decision["effective_threshold"]  = risk_params.get("convergence_threshold")
+        decision["stress_band"]          = _mc.get("stress_state")
+        decision["stress_size_multiplier"] = (
+            _stress_mult_cfg if _stress_score_snap > _stress_threshold else 1.0
+        )
+        decision["conviction_exponent"]  = risk_params.get("curve_exponent", 2.0)
+
         # Write decision
         self._write_decision(decision)
         return decision
