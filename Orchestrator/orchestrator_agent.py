@@ -2187,6 +2187,23 @@ class OrchestratorAgent:
         # All gates, checks, and side-effects below are unchanged.
         _scored.sort(key=lambda x: abs(x[1]), reverse=True)
 
+        # Load p75 pair-spread thresholds once — replaces per-pair PERCENTILE_CONT queries.
+        # Populated weekly by scripts/compute_macro_percentiles.py.
+        # Key: pair (e.g. 'EURJPY'), value: p75 of abs(base.composite - quote.composite) over 25yr.
+        _macro_p75: Dict[str, float] = {}
+        try:
+            _pct_cur = self.db.cursor()
+            _pct_cur.execute(
+                "SELECT pair, p75 FROM forex_network.macro_percentile_thresholds"
+            )
+            for _row in _pct_cur.fetchall():
+                _macro_p75[_row['pair'].strip()] = float(_row['p75'])
+            _pct_cur.close()
+            if _macro_p75:
+                logger.debug(f"Loaded p75 macro thresholds for {len(_macro_p75)} pairs")
+        except Exception as _pct_e:
+            logger.warning(f"macro_percentile_thresholds unavailable: {_pct_e} — fixed threshold only")
+
         for pair, final_convergence, bias, confidence, detail in _scored:
             # >>> DIRECTIONAL GATE — runs BEFORE threshold comparison <<<
             macro_sig = next(
@@ -2254,24 +2271,14 @@ class OrchestratorAgent:
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
 
-            # Percentile-based macro gate: avoid trading noise periods
-            _base_ccy  = pair[:3]
-            _quote_ccy = pair[3:]
-            try:
-                _pcur = self.db.cursor()
-                _pcur.execute("""
-                    SELECT PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(composite_score))
-                    FROM forex_network.macro_signals_history
-                    WHERE currency IN (%s, %s)
-                    AND signal_date >= NOW() - INTERVAL '2 years'
-                """, (_base_ccy, _quote_ccy))
-                _p90 = _pcur.fetchone()[0] or MACRO_THRESHOLD
-                _pcur.close()
-            except Exception:
-                _p90 = MACRO_THRESHOLD
-            _effective_macro_threshold = max(MACRO_THRESHOLD, float(_p90) * 0.5)
+            # Percentile gate: p75 of abs(base - quote) spread from 25yr history.
+            # effective = max(fixed_threshold, p75) — tighter in rangy markets,
+            # never looser than convergence_threshold risk parameter.
+            # Falls back to fixed threshold if table not yet populated for this pair.
+            _p75 = _macro_p75.get(pair)
+            _effective_macro_threshold = max(MACRO_THRESHOLD, _p75) if _p75 else MACRO_THRESHOLD
             detail["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
-            detail["p90_macro_threshold"] = round(float(_p90), 4)
+            detail["p75_macro_threshold"]       = round(_p75, 4) if _p75 is not None else None
 
             def _gate_reject(_reason, _pair=pair, _ms=macro_sig, _ts=tech_sig):
                 _stress_val = float(market_context.get("stress_score", 0) or 0)
@@ -2308,9 +2315,10 @@ class OrchestratorAgent:
                 )
 
             if abs(_macro_score) < _effective_macro_threshold:
+                _p75_info = f"p75={_p75:.3f}" if _p75 is not None else "no p75 data"
                 _gate_reject(
                     f"macro_gate_fail: abs({_macro_score:.3f}) < {_effective_macro_threshold:.3f} "
-                    f"(fixed={MACRO_THRESHOLD:.3f}, p90\u00d70.5={float(_p90)*0.5:.3f})"
+                    f"(fixed={MACRO_THRESHOLD:.3f}, {_p75_info})"
                 )
                 continue
 
