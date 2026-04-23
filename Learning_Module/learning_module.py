@@ -1313,6 +1313,9 @@ class LearningModule:
             # Contrarian performance learning (runs when 50+ trades with context exist)
             self.analyse_contrarian_performance()
 
+            # Phase 1 accuracy tracking — per-agent, per-instrument, per-session
+            self.compute_per_agent_accuracy()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
@@ -1482,6 +1485,109 @@ class LearningModule:
 
         self._check_auto_reverts()
         logger.info(f"Contrarian analysis complete — {adjustments_made} adjustment(s) made")
+
+    def compute_per_agent_accuracy(self) -> int:
+        """
+        Phase 1 accuracy tracking.
+
+        For each closed trade, look up the most recent macro / technical / regime
+        signal before entry_time.  A signal is 'correct' when its direction
+        agreed with the eventual outcome: (score > 0 AND pnl > 0) OR
+        (score < 0 AND pnl < 0).  Groups with fewer than 5 samples are skipped
+        to avoid noise.  One snapshot row is written per qualifying group.
+        """
+        import math
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT
+                    a.agent_name,
+                    t.instrument,
+                    t.session_at_entry                                        AS session,
+                    COUNT(*)                                                  AS total_trades,
+                    SUM(CASE
+                            WHEN (s.score > 0 AND t.pnl > 0)
+                              OR (s.score < 0 AND t.pnl < 0)
+                            THEN 1 ELSE 0 END)                               AS correct_direction,
+                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)              AS wins,
+                    AVG(t.pnl)                                               AS avg_pnl
+                FROM forex_network.trades t
+                CROSS JOIN (VALUES ('macro'), ('technical'), ('regime')) AS a(agent_name)
+                JOIN LATERAL (
+                    SELECT score
+                    FROM forex_network.agent_signals
+                    WHERE instrument  = t.instrument
+                      AND agent_name  = a.agent_name
+                      AND created_at <= t.entry_time
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ) s ON TRUE
+                WHERE t.user_id  = %s
+                  AND t.exit_time IS NOT NULL
+                  AND t.pnl       IS NOT NULL
+                GROUP BY a.agent_name, t.instrument, t.session_at_entry
+                HAVING COUNT(*) >= 5
+            """, (self.user_id,))
+            rows = cur.fetchall()
+        except Exception as e:
+            logger.error(f'compute_per_agent_accuracy query failed: {e}')
+            try: self.db.rollback()
+            except Exception: pass
+            cur.close()
+            return 0
+
+        if not rows:
+            logger.debug('compute_per_agent_accuracy: no groups with >= 5 samples yet')
+            cur.close()
+            return 0
+
+        written = 0
+        for row in rows:
+            n         = int(row['total_trades'] or 0)
+            correct   = int(row['correct_direction'] or 0)
+            wins      = int(row['wins'] or 0)
+            avg_pnl   = float(row['avg_pnl'] or 0.0)
+            win_rate  = wins / n if n > 0 else None
+            # 95 % normal-approximation confidence interval half-width
+            ci = (1.96 * math.sqrt(win_rate * (1 - win_rate) / n)
+                  if win_rate is not None and n > 0 else None)
+            try:
+                cur.execute("""
+                    INSERT INTO forex_network.agent_accuracy_tracking
+                        (user_id, agent_name, instrument, session,
+                         sample_size, win_rate, avg_pnl,
+                         correct_direction, total_trades, confidence_interval)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    self.user_id,
+                    row['agent_name'],
+                    row['instrument'],
+                    row['session'],
+                    n,
+                    round(win_rate, 4) if win_rate is not None else None,
+                    round(avg_pnl, 4),
+                    correct,
+                    n,
+                    round(ci, 4) if ci is not None else None,
+                ))
+                written += 1
+            except Exception as e:
+                logger.warning(f'compute_per_agent_accuracy insert failed: {e}')
+                try: self.db.rollback()
+                except Exception: pass
+                continue
+
+        try:
+            self.db.commit()
+        except Exception as e:
+            logger.error(f'compute_per_agent_accuracy commit failed: {e}')
+            try: self.db.rollback()
+            except Exception: pass
+
+        cur.close()
+        if written:
+            logger.info(f'compute_per_agent_accuracy: wrote {written} accuracy snapshot(s)')
+        return written
 
     def _process_rejections(self) -> int:
         """Extract per-pair rejected decisions from orchestrator_decision signals and
