@@ -2425,6 +2425,12 @@ class OrchestratorAgent:
             decision["convergence_detail"] = detail
             decision["conviction_score"] = round(abs(_macro_score), 4)
             decision["convergence_score"] = round(final_convergence, 4)  # display only
+            decision["macro_score"]              = round(_macro_score, 4)
+            decision["tech_score"]               = round(_tech_score, 4)
+            decision["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
+            decision["p75_threshold"]             = round(_p75, 4) if _p75 is not None else None
+            decision["stress_score"]              = market_context.get("stress_score")
+            decision["stress_band"]               = market_context.get("stress_state")
 
             # B. Bias-score inconsistency alert
             _bias_lower = (decision.get("bias") or "").lower()
