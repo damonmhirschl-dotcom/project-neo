@@ -85,11 +85,11 @@ def load_yields(conn):
     cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     data = defaultdict(list)
 
-    # Primary — new FRED series stored as {CCY}10Y_YIELD
+    # Primary — FRED monthly + BOE daily for GBP
     cur.execute("""
         SELECT country, release_time::date AS d, actual
         FROM forex_network.economic_releases
-        WHERE source = 'FRED'
+        WHERE source IN ('FRED', 'BOE')
           AND indicator LIKE '%10Y_YIELD'
           AND actual IS NOT NULL
         ORDER BY country, release_time
