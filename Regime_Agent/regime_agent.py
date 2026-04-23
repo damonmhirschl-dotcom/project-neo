@@ -31,7 +31,6 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, Dict, List, Tuple, Any
 
-import anthropic
 import boto3
 import psycopg2
 import psycopg2.extras
@@ -2620,23 +2619,11 @@ def _fetch_cot_extremity_from_db() -> Optional[float]:
     return None
 
 
-def run_mcp_data_gathering(
-    anthropic_client: anthropic.Anthropic,
-    eodhd_key: str,
-    session_ctx: SessionContext,
-    conn=None,
-) -> dict:
+def run_mcp_data_gathering(conn=None) -> dict:
     """
-    Gather VIX + COT data.
-
-    EODHD MCP was decommissioned (Anthropic MCP connector 400s on their v2
-    OAuth). VIX is now fetched from FRED's VIXCLS series via REST; COT extremity
-    is read from shared.cot_positioning (populated weekly by
-    neo-ingest-cot-dev Lambda from the CFTC Legacy Financial Futures report).
-
-    Signature kept for caller compatibility; anthropic_client / eodhd_key /
+    Gather VIX (FRED VIXCLS REST) + COT (shared.cot_positioning DB) data.
+    No LLM or MCP calls.
     """
-    del anthropic_client, eodhd_key, session_ctx  # retained for caller API only
 
     cot_extremity = _fetch_cot_extremity_from_db()
     if cot_extremity is not None:
@@ -2773,8 +2760,6 @@ def get_degraded_agents(conn) -> List[str]:
 # ---------------------------------------------------------------------------
 def run_cycle(
     conn,
-    anthropic_client: anthropic.Anthropic,
-    eodhd_key: str,
     user_id: str,
     session_id: str,
     cycle_count: int,
@@ -2800,9 +2785,7 @@ def run_cycle(
     stress_engine.calibrate_neutral_midpoints()
 
     # 5. MCP data (VIX, COT)
-    mcp_data = run_mcp_data_gathering(
-        anthropic_client, eodhd_key, session_ctx, conn=conn
-    )
+    mcp_data = run_mcp_data_gathering(conn=conn)
     stress_engine.set_vix_data(
         mcp_data.get("vix_value"), mcp_data.get("vix_trend")
     )
@@ -3007,19 +2990,10 @@ def main():
         logger.info("Startup delay 600s (stagger vs macro/technical agents)")
         time.sleep(600)
     logger.info("=" * 60)
-    logger.info("Project Neo — Regime Agent v1.0")
+    logger.info("Project Neo — Regime Agent v2.0 (deterministic, no LLM)")
     logger.info("=" * 60)
     logger.info("Geopolitical stress: Finnhub news-based scoring (GDELT replaced)")
 
-    # Secrets
-    try:
-        eodhd_key = get_secret("platform/eodhd/api-key")["api_key"]
-        anthropic_key = get_secret("platform/anthropic/api-key")["api_key"]
-    except Exception as e:
-        logger.error(f"Failed to retrieve secrets: {e}")
-        sys.exit(1)
-
-    anthropic_client = anthropic.Anthropic(api_key=anthropic_key)
     conn = get_db_connection()
     validate_schema(conn, EXPECTED_TABLES)
     session_id = str(uuid.uuid4())
@@ -3080,8 +3054,7 @@ def main():
             try:
                 logger.info(f"--- {user_label} ({user_id}) ---")
                 run_cycle(
-                    conn, anthropic_client, eodhd_key,
-                    user_id, session_id, cycle_count,
+                    conn, user_id, session_id, cycle_count,
                 )
             except psycopg2.OperationalError as e:
                 logger.error(f"DB connection lost: {e}")
