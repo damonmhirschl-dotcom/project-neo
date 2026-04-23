@@ -1009,7 +1009,8 @@ class TechnicalAgent:
                 data["rsi_14d"] = round(vals[0]["value"], 2) if vals else None
                 log_api_call(self.db_conn, 'polygon', '/v1/indicators/rsi', 'technical',
                              bool(vals), int((time.time() - _t0) * 1000))
-            except Exception:
+            except Exception as _ind_e:
+                logger.debug(f"RSI-14d fetch failed: {_ind_e}")
                 data["rsi_14d"] = None
 
             # RSI 14-period hourly
@@ -1021,7 +1022,8 @@ class TechnicalAgent:
                 data["rsi_14h"] = round(vals[0]["value"], 2) if vals else None
                 log_api_call(self.db_conn, 'polygon', '/v1/indicators/rsi', 'technical',
                              bool(vals), int((time.time() - _t0) * 1000))
-            except Exception:
+            except Exception as _ind_e:
+                logger.debug(f"RSI-14h fetch failed: {_ind_e}")
                 data["rsi_14h"] = None
 
             # EMA 50-period daily
@@ -1033,7 +1035,8 @@ class TechnicalAgent:
                 data["ema_50d"] = round(vals[0]["value"], 5) if vals else None
                 log_api_call(self.db_conn, 'polygon', '/v1/indicators/ema', 'technical',
                              bool(vals), int((time.time() - _t0) * 1000))
-            except Exception:
+            except Exception as _ind_e:
+                logger.debug(f"EMA-50d fetch failed: {_ind_e}")
                 data["ema_50d"] = None
 
             # SMA 50-period daily
@@ -1045,7 +1048,8 @@ class TechnicalAgent:
                 data["sma_50d"] = round(vals[0]["value"], 5) if vals else None
                 log_api_call(self.db_conn, 'polygon', '/v1/indicators/sma', 'technical',
                              bool(vals), int((time.time() - _t0) * 1000))
-            except Exception:
+            except Exception as _ind_e:
+                logger.debug(f"SMA-50d fetch failed: {_ind_e}")
                 data["sma_50d"] = None
 
             # MACD 1H (12, 26, 9) — timespan=hour matches agent's df_1h computation
@@ -1063,7 +1067,8 @@ class TechnicalAgent:
                     data["macd_line"] = data["macd_signal"] = data["macd_hist"] = None
                 log_api_call(self.db_conn, 'polygon', '/v1/indicators/macd', 'technical',
                              bool(vals), int((time.time() - _t0) * 1000))
-            except Exception:
+            except Exception as _ind_e:
+                logger.debug(f"MACD fetch failed: {_ind_e}")
                 data["macd_line"] = data["macd_signal"] = data["macd_hist"] = None
 
             results[pair] = data

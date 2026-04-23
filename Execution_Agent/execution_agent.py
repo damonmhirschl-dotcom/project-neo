@@ -1626,6 +1626,7 @@ class TradeExecutor:
                         float(_trade_row["entry_price"]),
                         em_exit_price,
                         float(_trade_row.get("position_size_usd") or 0),
+                        conversion_rate=self._fetch_gbp_rate(instrument),
                     )
             except Exception as e:
                 logger.warning(f"Emergency close P&L calc failed: {e}")
@@ -2314,6 +2315,59 @@ class ExecutionAgent:
         'AUDJPY': 'JPY', 'CADJPY': 'JPY', 'NZDJPY': 'JPY',
     }
 
+    def _fetch_gbp_rate(self, instrument: str) -> 'float | None':
+        """Return quote_ccy→GBP conversion rate for cross-pair P&L.
+
+        Looks up the most recent 1H close for GBP{quote_ccy} in historical_prices.
+        For NZD (no GBPNZD in universe): derives via GBPUSD / NZDUSD.
+        Returns 1.0 for EURGBP (already in GBP). Returns None if unavailable.
+        """
+        quote_ccy = self._QUOTE_CURRENCIES.get(instrument.upper(), 'USD')
+        if quote_ccy == 'GBP':
+            return 1.0
+        _CONV_PAIR = {
+            'USD': 'GBPUSD', 'JPY': 'GBPJPY', 'CHF': 'GBPCHF',
+            'AUD': 'GBPAUD', 'CAD': 'GBPCAD',
+        }
+        cur = self.db.cursor()
+        try:
+            pair = _CONV_PAIR.get(quote_ccy)
+            if pair:
+                cur.execute(
+                    "SELECT close FROM forex_network.historical_prices "
+                    "WHERE instrument = %s AND timeframe = '1H' "
+                    "ORDER BY ts DESC LIMIT 1",
+                    (pair,),
+                )
+                row = cur.fetchone()
+                if row:
+                    rate = float(row['close'] if isinstance(row, dict) else row[0])
+                    return 1.0 / rate  # GBP/{quote_ccy} → {quote_ccy}/GBP
+            elif quote_ccy == 'NZD':
+                # Derive GBPNZD = GBPUSD / NZDUSD (no GBPNZD in the 20-pair universe)
+                cur.execute(
+                    "SELECT instrument, close FROM forex_network.historical_prices "
+                    "WHERE instrument IN ('GBPUSD','NZDUSD') AND timeframe = '1H' "
+                    "ORDER BY ts DESC LIMIT 2",
+                )
+                rows = {}
+                for r in cur.fetchall():
+                    k = r['instrument'] if isinstance(r, dict) else r[0]
+                    v = r['close']      if isinstance(r, dict) else r[1]
+                    rows[k] = float(v)
+                gbpusd = rows.get('GBPUSD')
+                nzdusd = rows.get('NZDUSD')
+                if gbpusd and nzdusd and nzdusd > 0:
+                    gbpnzd = gbpusd / nzdusd
+                    return 1.0 / gbpnzd
+            logger.warning(f'_fetch_gbp_rate: no rate for {instrument} (quote={quote_ccy})')
+            return None
+        except Exception as _e:
+            logger.warning(f'_fetch_gbp_rate({instrument}) failed: {_e}')
+            return None
+        finally:
+            cur.close()
+
     @staticmethod
     def _compute_pnl(instrument: str, direction: str, entry_price: float,
                      exit_price: float, position_size_usd: float,
@@ -2727,6 +2781,7 @@ class ExecutionAgent:
                             trade["instrument"], trade["direction"],
                             float(trade["entry_price"]), _cb_exit_price,
                             float(trade.get("position_size_usd") or 0),
+                            conversion_rate=self._fetch_gbp_rate(trade["instrument"]),
                         )
                     except Exception:
                         pass
@@ -2837,6 +2892,7 @@ class ExecutionAgent:
                                 trade["instrument"], trade["direction"],
                                 float(trade["entry_price"]), _cbw_exit_price,
                                 float(trade.get("position_size_usd") or 0),
+                                conversion_rate=self._fetch_gbp_rate(trade["instrument"]),
                             )
                         except Exception:
                             pass
