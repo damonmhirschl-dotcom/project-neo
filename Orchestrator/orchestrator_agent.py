@@ -1712,10 +1712,10 @@ class OrchestratorAgent:
 
         cur = self.db.cursor()
         try:
-            # MyFXBook SSI
+            # MyFXBook SSI (sentiment_ssi columns: long_pct, short_pct)
             try:
                 cur.execute("""
-                    SELECT long_percentage, short_percentage
+                    SELECT long_pct, short_pct
                     FROM forex_network.sentiment_ssi
                     WHERE instrument = %s AND ts >= NOW() - INTERVAL '26 hours'
                     ORDER BY ts DESC LIMIT 1
@@ -1723,8 +1723,8 @@ class OrchestratorAgent:
                 row = cur.fetchone()
                 if row:
                     context['ssi_myfxbook'] = {
-                        'long_pct': float(row['long_percentage']),
-                        'short_pct': float(row['short_percentage']),
+                        'long_pct':  float(row['long_pct']),
+                        'short_pct': float(row['short_pct']),
                     }
             except Exception:
                 pass

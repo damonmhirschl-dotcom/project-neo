@@ -1412,6 +1412,9 @@ class LearningModule:
             # Phase 1 accuracy tracking — per-agent, per-instrument, per-session
             self.compute_per_agent_accuracy()
 
+            # Per-source contrarian accuracy (MyFXBook / IG)
+            self.compute_per_source_accuracy()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
@@ -1664,6 +1667,114 @@ class LearningModule:
 
         self._check_auto_reverts()
         logger.info(f"Contrarian analysis complete — {adjustments_made} adjustment(s) made")
+
+    def compute_per_source_accuracy(self) -> int:
+        """
+        Compute contrarian accuracy per sentiment source (myfxbook / ig_sentiment)
+        per instrument.
+
+        For each closed trade that has ssi_myfxbook or ssi_ig in entry_context:
+          contrarian direction = 'buy' if short_pct >= 60, 'sell' if short_pct <= 40
+          correct = contrarian direction matched trade direction AND pnl > 0
+
+        Groups with < 10 trades are skipped. Writes to agent_accuracy_tracking.
+        """
+        import math as _math
+        from collections import defaultdict as _dd
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT
+                    t.instrument,
+                    t.direction,
+                    t.pnl,
+                    (t.entry_context->'ssi_ig'->>'short_pct')::float      AS ig_short_pct,
+                    (t.entry_context->'ssi_myfxbook'->>'short_pct')::float AS mfx_short_pct
+                FROM forex_network.trades t
+                WHERE t.user_id   = %s
+                  AND t.exit_time IS NOT NULL
+                  AND t.pnl       IS NOT NULL
+                  AND (
+                      t.entry_context->'ssi_ig'       IS NOT NULL
+                   OR t.entry_context->'ssi_myfxbook' IS NOT NULL
+                  )
+            """, (self.user_id,))
+            rows = cur.fetchall()
+        except Exception as e:
+            logger.error(f"compute_per_source_accuracy query: {e}")
+            try: self.db.rollback()
+            except Exception: pass
+            cur.close()
+            return 0
+
+        if not rows:
+            logger.debug("compute_per_source_accuracy: no trades with SSI data yet")
+            cur.close()
+            return 0
+
+        stats: dict = _dd(lambda: _dd(lambda: {"total": 0, "correct": 0, "wins": 0, "pnl_sum": 0.0}))
+
+        for row in rows:
+            instrument = row['instrument']
+            direction  = (row['direction'] or '').lower()
+            pnl        = float(row['pnl'] or 0)
+
+            for source, short_pct in [
+                ('ig_sentiment', row['ig_short_pct']),
+                ('myfxbook',     row['mfx_short_pct']),
+            ]:
+                if short_pct is None:
+                    continue
+                if short_pct >= 60:
+                    contrarian_dir = 'buy'
+                elif short_pct <= 40:
+                    contrarian_dir = 'sell'
+                else:
+                    continue  # no strong contrarian signal
+
+                s = stats[source][instrument]
+                s["total"]   += 1
+                s["pnl_sum"] += pnl
+                if pnl > 0:
+                    s["wins"] += 1
+                if contrarian_dir == direction and pnl > 0:
+                    s["correct"] += 1
+
+        written = 0
+        for source, instr_stats in stats.items():
+            for instrument, s in instr_stats.items():
+                n = s["total"]
+                if n < 10:
+                    continue
+                win_rate = s["wins"] / n if n > 0 else 0.0
+                ci = 1.96 * _math.sqrt(win_rate * (1 - win_rate) / n) if n > 0 else None
+                try:
+                    cur.execute("""
+                        INSERT INTO forex_network.agent_accuracy_tracking
+                            (user_id, agent_name, instrument, session,
+                             sample_size, win_rate, avg_pnl,
+                             correct_direction, total_trades, confidence_interval)
+                        VALUES (%s, %s, %s, NULL, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        self.user_id, source, instrument, n,
+                        round(win_rate, 4),
+                        round(s["pnl_sum"] / n, 4),
+                        s["correct"], n,
+                        round(ci, 4) if ci else None,
+                    ))
+                    written += 1
+                except Exception as e:
+                    logger.warning(f"compute_per_source_accuracy insert: {e}")
+                    try: self.db.rollback()
+                    except Exception: pass
+
+        if written:
+            self.db.commit()
+            logger.info(f"compute_per_source_accuracy: wrote {written} accuracy snapshot(s)")
+        else:
+            logger.debug("compute_per_source_accuracy: no groups with >=10 trades yet")
+        cur.close()
+        return written
 
     def compute_per_agent_accuracy(self) -> int:
         """
