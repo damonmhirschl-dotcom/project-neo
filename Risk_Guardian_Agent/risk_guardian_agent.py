@@ -96,17 +96,7 @@ STATIC_CORRELATIONS = {
     ("USDCHF", "USDJPY"):  0.76,
 }
 
-# Per-profile correlation block thresholds
-CORRELATION_THRESHOLDS = {
-    # Usernames (kept for self-tests / CLI invocation)
-    "neo_user_001": 0.70,  # Conservative
-    "neo_user_002": 0.75,  # Balanced
-    "neo_user_003": 0.80,  # Aggressive
-    # UUIDs (production path)
-    "e61202e4-30d1-70f8-9927-30b8a439e042": 0.70,  # Conservative
-    "76829264-20e1-7023-1e31-37b7a37a1274": 0.75,  # Balanced
-    "d6c272e4-a031-7053-af8e-ade000f0d0d5": 0.80,  # Aggressive
-}
+# correlation_threshold is read from forex_network.risk_parameters per user (see DB migration patch)
 
 # Currency exposure per pair (base, quote) — used for per-currency cap check
 CURRENCY_EXPOSURE_MAP = {
@@ -299,7 +289,7 @@ class RiskDataReader:
                        min_risk_pct, max_risk_pct, curve_exponent,
                        stress_multiplier, stress_threshold_score,
                        max_convergence_reference, min_risk_reward_ratio,
-                       max_portfolio_risk_pct, max_usd_units
+                       max_portfolio_risk_pct, max_usd_units, correlation_threshold
                 FROM forex_network.risk_parameters
                 WHERE user_id = %s
             """, (self.user_id,))
@@ -496,9 +486,9 @@ class RiskDataReader:
 class CorrelationChecker:
     """Enforces correlation-based position blocking."""
 
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, threshold: float = 0.75):
         self.user_id = user_id
-        self.threshold = CORRELATION_THRESHOLDS.get(user_id, 0.75)
+        self.threshold = threshold
 
     def check(
         self,
@@ -743,7 +733,9 @@ class RiskGuardian:
         validate_schema(self.db.conn, EXPECTED_TABLES)
         self.reader = RiskDataReader(self.db, user_id)
         self._validator = SignalValidator()
-        self.correlation_checker = CorrelationChecker(user_id)
+        _rp = self.reader.read_risk_parameters() or {}
+        _corr_thresh = _rp.get("correlation_threshold", 0.75) or 0.75
+        self.correlation_checker = CorrelationChecker(user_id, threshold=float(_corr_thresh))
         self.session_id = str(uuid.uuid4())
         self.cycle_count = 0
         self.processed_count = 0

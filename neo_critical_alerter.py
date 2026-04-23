@@ -334,18 +334,18 @@ def build_ibkr_lost_email(alert: dict) -> tuple[str, str]:
     detail = alert.get("detail", "")
     ts     = alert.get("created_at", datetime.now(timezone.utc))
 
-    subject = "🔴 Project Neo — IBKR Connection Lost"
-    body = f"""Project Neo — IBKR Connection Lost
+    subject = "🔴 Project Neo — Broker Connection Lost"
+    body = f"""Project Neo — Broker Connection Lost
 =====================================
 
-IB Gateway has been unreachable for 2 or more consecutive cycles.
+Broker connection has been unreachable for 2 or more consecutive cycles.
 No new orders can be submitted. Open positions cannot be managed.
 
 Detail: {detail}
 Time:   {ts.strftime('%d %B %Y, %H:%M UTC') if hasattr(ts, 'strftime') else ts}
 
-Check ECS cluster dev-ibgateway-cluster.
-Restart IB Gateway task if needed.
+Check broker connection and execution agent logs.
+Restart neo-execution-agent if needed.
 
 Review dashboard: {DASHBOARD_URL}
 

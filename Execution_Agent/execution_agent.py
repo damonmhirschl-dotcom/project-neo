@@ -2304,16 +2304,31 @@ class ExecutionAgent:
 
         return fill_price, source
 
+    # Quote currency for every traded pair — used to convert cross-pair P&L to GBP.
+    _QUOTE_CURRENCIES = {
+        'EURUSD': 'USD', 'GBPUSD': 'USD', 'AUDUSD': 'USD', 'NZDUSD': 'USD',
+        'USDCHF': 'CHF', 'USDCAD': 'CAD', 'USDJPY': 'JPY',
+        'EURGBP': 'GBP', 'EURJPY': 'JPY', 'GBPJPY': 'JPY',
+        'EURCHF': 'CHF', 'GBPCHF': 'CHF', 'EURAUD': 'AUD', 'GBPAUD': 'AUD',
+        'EURCAD': 'CAD', 'GBPCAD': 'CAD', 'AUDNZD': 'NZD',
+        'AUDJPY': 'JPY', 'CADJPY': 'JPY', 'NZDJPY': 'JPY',
+    }
+
     @staticmethod
     def _compute_pnl(instrument: str, direction: str, entry_price: float,
-                     exit_price: float, position_size_usd: float):
+                     exit_price: float, position_size_usd: float,
+                     conversion_rate: float = None):
         """
-        Compute (pnl_pips, pnl_usd) for a closed FX trade.
+        Compute (pnl_pips, pnl_gbp) for a closed FX trade.
 
-        Pair families handled:
-          XXX/USD (EURUSD, GBPUSD, AUDUSD, NZDUSD) — quote is USD
-          USD/XXX (USDJPY, USDCHF, USDCAD)          — base is USD
+        Pair families:
+          XXX/USD  (EURUSD, GBPUSD, AUDUSD, NZDUSD) — quote is USD
+          USD/XXX  (USDJPY, USDCHF, USDCAD)          — base is USD
+          XXX/GBP  (EURGBP)                           — quote is GBP
+          Cross    (EURCAD, GBPJPY, etc.)              — requires conversion_rate (quote→GBP)
 
+        conversion_rate: rate to convert quote currency to account currency (GBP).
+          Pass from a DB lookup for cross pairs; None returns None for pnl_gbp.
         Returns (None, None) if any required input is missing/zero.
         """
         if not entry_price or not exit_price or not position_size_usd:
@@ -2330,15 +2345,25 @@ class ExecutionAgent:
         ep   = float(entry_price)
         xp   = float(exit_price)
 
-        if instrument.upper().endswith('USD'):
-            # Quote is USD: pip value = pip_size * (size / entry_price) USD
+        quote_ccy = ExecutionAgent._QUOTE_CURRENCIES.get(instrument.upper(), 'USD')
+
+        if quote_ccy == 'USD':
+            # P&L in USD; size / ep converts lot-notional to USD P&L
+            pnl_usd = signed_move * (size / ep)
+        elif quote_ccy == 'GBP':
+            # Quote is GBP — P&L directly in GBP (e.g. EURGBP)
             pnl_usd = signed_move * (size / ep)
         elif instrument.upper().startswith('USD'):
-            # Base is USD: P&L accrues in quote currency, convert back via exit_price
+            # Base is USD (USDCHF, USDCAD, USDJPY): P&L in quote ccy, convert via exit_price
             pnl_usd = signed_move * size / xp
         else:
-            # Cross pair — not currently traded; return None for pnl_usd
-            pnl_usd = None
+            # Cross pair: P&L in quote currency; conversion_rate converts quote→GBP.
+            # Callers that have DB access should pass conversion_rate for accuracy.
+            # If unavailable (static call sites), return None rather than a wrong value.
+            if conversion_rate is not None and conversion_rate > 0:
+                pnl_usd = signed_move * (size / ep) * conversion_rate
+            else:
+                pnl_usd = None
 
         return pnl_pips, (round(pnl_usd, 2) if pnl_usd is not None else None)
 

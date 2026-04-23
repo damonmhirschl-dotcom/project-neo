@@ -98,8 +98,8 @@ def log_api_call(db_conn, provider, endpoint, agent_name, success,
     except Exception:
         try:
             db_conn.rollback()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"Indicator calculation failed: {_e}")
 
 
 class TechnicalAgent:
@@ -581,8 +581,8 @@ class TechnicalAgent:
                 f"TraderMade fallback DB write failed for {pair} {timeframe}: {_ie}")
             try:
                 self.db_conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"Indicator calculation failed: {_e}")
         return inserted
 
     def get_historical_bars(self, pair: str, timeframe: str = "1H", limit: int = 200) -> pd.DataFrame:
@@ -674,8 +674,8 @@ class TechnicalAgent:
             logger.warning(f"_persist_price_bars failed for {instrument} {timeframe}: {e}")
             try:
                 self.db_conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"Indicator calculation failed: {_e}")
         return inserted
 
     def get_price_metrics(self, pair: str, timeframe: str = "1H", limit: int = 50) -> pd.DataFrame:
@@ -1360,8 +1360,8 @@ SIGNAL SCHEMA (all fields required):
                 logger.error(f"Divergence alert write failed: {_div_err}")
                 try:
                     self.db_conn.rollback()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"Indicator calculation failed: {_e}")
 
         # Build polygon cross-validation summary for the LLM prompt
         polygon_cross_val_summary: Dict = {}
@@ -1446,8 +1446,8 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
             try:
                 with open("/tmp/neo_technical_response_debug.txt", "w") as _f:
                     _f.write(response_text)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"Indicator calculation failed: {_e}")
             if not json_blocks:
                 # Best-effort: match top-level {...} groups by brace-balancing
                 depth = 0
@@ -1511,8 +1511,8 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
                     with open("/tmp/neo_technical_response_debug.txt", "w") as _f:
                         _f.write(response_text)
                     logger.warning("Full response written to /tmp/neo_technical_response_debug.txt")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"Indicator calculation failed: {_e}")
                 for pair in self.PAIRS:
                     signals.append({
                         "agent_name": self.AGENT_NAME,
@@ -1753,8 +1753,8 @@ Apply T1, T2 rules and adversarial defenses to the data above. Output 20 signals
             logger.error(f"_reuse_existing_signals failed: {e}")
             try:
                 self.db_conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"Indicator calculation failed: {_e}")
             return False
 
     def should_call_llm(self, live_prices: Dict[str, Dict]) -> bool:
@@ -2146,8 +2146,8 @@ def main():
                     for agent in agent_list:
                         try:
                             agent.update_heartbeat()
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"Indicator calculation failed: {_e}")
                     time.sleep(300)  # re-check every 5 min
                     continue
 
@@ -2230,8 +2230,8 @@ def main():
                         for agent in agent_list:
                             try:
                                 agent.update_heartbeat()
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                logger.debug(f"Indicator calculation failed: {_e}")
                         # Check for pre-open wake (20 min before London/NY open)
                         import datetime as _dt
                         _now = _dt.datetime.now(_dt.timezone.utc)
@@ -2255,8 +2255,8 @@ def main():
                                     f"breaking sleep early"
                                 )
                                 break
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"Indicator calculation failed: {_e}")
                 else:
                     time.sleep(primary.CYCLE_INTERVAL_MINUTES * 60 if hasattr(primary, "CYCLE_INTERVAL_MINUTES") else 300)
 
@@ -2267,8 +2267,8 @@ def main():
             try:
                 if hasattr(agent, "close"):
                     agent.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"Indicator calculation failed: {_e}")
 
 
 if __name__ == "__main__":

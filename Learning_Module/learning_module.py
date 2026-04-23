@@ -379,8 +379,17 @@ class TradeAutopsyEngine:
     def write_autopsy(self, trade: Dict[str, Any]) -> Optional[int]:
         """Analyse a closed trade and write the autopsy."""
         trade_id = trade["id"]
-        pnl = float(trade["pnl"] or 0)
-        is_win = pnl > 0
+        # Use pnl (GBP monetary) as primary; fall back to pnl_pips for cross pairs
+        # where IG transaction matching failed and pnl column is NULL.
+        if trade.get("pnl") is not None:
+            pnl = float(trade["pnl"])
+            is_win = pnl > 0
+        elif trade.get("pnl_pips") is not None:
+            pnl = float(trade["pnl_pips"])
+            is_win = pnl > 0
+        else:
+            logger.warning(f"Autopsy skipped for trade {trade['id']}: no pnl or pnl_pips")
+            return None
 
         # Get stress score at entry time
         stress_at_entry = self._get_stress_at_time(trade["entry_time"])
