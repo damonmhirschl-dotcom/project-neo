@@ -194,6 +194,32 @@ def check_kill_switch(region: str = AWS_REGION) -> bool:
         return True
 
 
+
+def _fetch_atr_for_stop(db, instrument: str):
+    """Fetch ATR-14 for stop sizing, preferring 1D over 1H.
+    Returns (atr_value, timeframe_used) or (None, None) if unavailable.
+    """
+    try:
+        for tf in ('1D', '1H'):
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    "SELECT atr_14 FROM forex_network.price_metrics"
+                    " WHERE instrument = %s AND timeframe = %s"
+                    " ORDER BY ts DESC LIMIT 1",
+                    (instrument, tf),
+                )
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            if row and row.get("atr_14"):
+                atr = float(row["atr_14"])
+                logger.debug(f"{instrument} using {tf} ATR for stop: {atr:.5f}")
+                return atr, tf
+    except Exception as e:
+        logger.warning(f"_fetch_atr_for_stop({instrument}) failed: {e}")
+    return None, None
+
 # =============================================================================
 # DATABASE
 # =============================================================================
@@ -681,17 +707,9 @@ class KillSwitchHandler:
 
             for trade in open_trades:
                 # Get current ATR for the instrument
-                cur2 = self.db.cursor()
-                cur2.execute("""
-                    SELECT atr_14 FROM forex_network.price_metrics
-                    WHERE instrument = %s AND timeframe = '1H'
-                    ORDER BY ts DESC LIMIT 1
-                """, (trade["instrument"],))
-                atr_row = cur2.fetchone()
-                cur2.close()
-
-                if atr_row and atr_row["atr_14"]:
-                    atr = float(atr_row["atr_14"])
+                _ts_atr, _ts_tf = _fetch_atr_for_stop(self.db, trade["instrument"])
+                if _ts_atr:
+                    atr = _ts_atr
                     new_stop_distance = atr * stop_mult
 
                     if trade["direction"] == "long":
@@ -947,17 +965,24 @@ class TradeExecutor:
         result["details"]["varied_size"] = varied_size
 
         # Calculate stop with Rule 14 randomisation
-        atr = sizing.get("atr_14")
-        atr_mult = sizing.get("atr_stop_multiplier", 1.5)
+        # Prefer 1D ATR x2.0 for swing trade stops; fall back to 1H ATR x1.5
+        _entry_atr, _atr_tf = _fetch_atr_for_stop(self.db, instrument)
+        if _entry_atr is None:
+            _entry_atr = sizing.get("atr_14")
+            _atr_tf = "sizing"
+        atr_mult = 2.0 if _atr_tf == "1D" else 1.5
         stop_price = None
-        if atr:
-            base_stop_distance = atr * atr_mult
+        base_stop_distance = None
+        if _entry_atr:
+            base_stop_distance = round(_entry_atr * atr_mult, 5)
             # Rule 14: Randomise
             randomised_stop_distance = base_stop_distance + random.uniform(
-                -STOP_RANDOMISATION_RANGE * atr, STOP_RANDOMISATION_RANGE * atr
+                -STOP_RANDOMISATION_RANGE * _entry_atr, STOP_RANDOMISATION_RANGE * _entry_atr
             )
-            result["details"]["stop_distance_base"] = round(base_stop_distance, 5)
+            result["details"]["stop_distance_base"] = base_stop_distance
             result["details"]["stop_distance_randomised"] = round(randomised_stop_distance, 5)
+            result["details"]["atr_timeframe"] = _atr_tf
+            result["details"]["atr_multiplier"] = atr_mult
 
         # Rule 17: Determine order type
         spread_pips = payload.get("risk_management", {}).get("current_spread", 1.0)
@@ -970,6 +995,9 @@ class TradeExecutor:
         _current_price: Optional[float] = None
         _stop_price_for_order: Optional[float] = None
         _stop_dist = _sizing.get("stop_distance")
+        # Override broker stop distance with ATR-based value if resolved
+        if base_stop_distance:
+            _stop_dist = base_stop_distance
         _risk_amount_gbp = float(_sizing.get("risk_amount_gbp") or
                                  (float(_sizing.get("account_value", 10000)) *
                                   float(_sizing.get("effective_risk_pct", 1.0)) / 100.0))
