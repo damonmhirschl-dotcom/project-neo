@@ -922,6 +922,96 @@ function PairGroup({ group, expanded, onToggle }) {
   );
 }
 
+function PortfolioExposurePanel({ portfolio_exposure }) {
+  if (!portfolio_exposure) return (
+    <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>
+  );
+  const { profiles = [], portfolio = {} } = portfolio_exposure;
+  const { top_currencies = [], total_open = 0 } = portfolio;
+
+  function BarRow({ label, val, cap }) {
+    const pct = cap > 0 ? Math.min(val / cap, 1) * 100 : 0;
+    const color = pct >= 80 ? 'var(--bear)' : pct >= 60 ? '#f59e0b' : 'var(--bull)';
+    return (
+      <div style={{marginBottom:'7px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:'0.68rem',marginBottom:'2px'}}>
+          <span style={{color:'var(--text-2)'}}>{label}</span>
+          <span style={{fontWeight:600,fontFamily:'monospace',color}}>{val}<span style={{color:'var(--text-3)',fontWeight:400}}>/{cap}</span></span>
+        </div>
+        <div style={{background:'var(--bg-2)',borderRadius:'2px',height:'5px',overflow:'hidden'}}>
+          <div style={{width:`${pct}%`,height:'100%',background:color,borderRadius:'2px',transition:'width 0.4s'}} />
+        </div>
+      </div>
+    );
+  }
+
+  const DIR_COLORS = { long: 'var(--bull)', short: 'var(--bear)', neutral: 'var(--text-3)' };
+
+  return (
+    <div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px',marginBottom:'10px'}}>
+        {profiles.map(p => (
+          <div key={p.name} style={{background:'var(--bg-2)',borderRadius:'6px',padding:'10px 12px'}}>
+            <div style={{fontSize:'0.65rem',fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',color:'var(--text-3)',marginBottom:'8px'}}>{p.name}</div>
+            <BarRow label="USD units" val={p.usd_units_open} cap={p.usd_units_cap} />
+            <BarRow label="Positions"  val={p.positions_open}  cap={p.positions_cap}  />
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:'0.68rem',marginTop:'2px'}}>
+              <span style={{color:'var(--text-2)'}}>Port. risk</span>
+              <span style={{fontFamily:'monospace',color:'var(--text-2)'}}>{p.portfolio_risk_pct.toFixed(1)}%<span style={{color:'var(--text-3)'}}>/{p.portfolio_risk_cap}%</span></span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {top_currencies.length > 0 && (
+        <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
+          <span style={{fontSize:'0.62rem',color:'var(--text-3)',marginRight:'2px'}}>NET EXPOSURE:</span>
+          {top_currencies.slice(0,6).map(c => (
+            <span key={c.currency} style={{fontSize:'0.68rem',fontFamily:'monospace',padding:'2px 6px',borderRadius:'4px',background:'var(--bg-2)',color:DIR_COLORS[c.net_direction]||'var(--text-2)'}}>
+              {c.currency} {c.net_direction === 'long' ? '▲' : c.net_direction === 'short' ? '▼' : '–'}{Math.abs(c.net)}
+            </span>
+          ))}
+          <span style={{fontSize:'0.62rem',color:'var(--text-3)',marginLeft:'auto'}}>{total_open} open</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CurrencyStrengthPanel({ currency_strength }) {
+  if (!currency_strength) return (
+    <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>
+  );
+  if (currency_strength.length === 0) return (
+    <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>No macro signals yet</div>
+  );
+  const maxAbs = Math.max(...currency_strength.map(c => Math.abs(c.score)), 0.01);
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+      {currency_strength.map(c => {
+        const isPos = c.score >= 0;
+        const barW = Math.round(Math.abs(c.score) / maxAbs * 100);
+        const bias = c.score > 0.15 ? 'BULL' : c.score < -0.15 ? 'BEAR' : 'NEUT';
+        const biasColor = isPos ? 'var(--bull)' : c.score < -0.15 ? 'var(--bear)' : 'var(--text-3)';
+        return (
+          <div key={c.currency} style={{display:'grid',gridTemplateColumns:'30px 1fr 36px 42px',gap:'6px',alignItems:'center',fontSize:'0.72rem'}}>
+            <span style={{fontWeight:600,fontFamily:'monospace',color:'var(--text-1)'}}>{c.currency}</span>
+            <div style={{background:'var(--bg-2)',borderRadius:'2px',height:'6px',overflow:'hidden'}}>
+              <div style={{width:`${barW}%`,height:'100%',background:isPos?'var(--bull)':'var(--bear)',borderRadius:'2px',transition:'width 0.4s'}} />
+            </div>
+            <span style={{fontFamily:'monospace',fontWeight:600,color:biasColor,textAlign:'right'}}>{c.score > 0 ? '+' : ''}{c.score.toFixed(2)}</span>
+            <span style={{padding:'1px 4px',borderRadius:'3px',fontSize:'0.62rem',fontWeight:700,background:isPos?'rgba(74,222,128,0.15)':c.score<-0.15?'rgba(239,68,68,0.15)':'rgba(100,116,139,0.15)',color:biasColor,textAlign:'center'}}>{bias}</span>
+          </div>
+        );
+      })}
+      {currency_strength[0] && (
+        <div style={{marginTop:'6px',fontSize:'0.65rem',color:'var(--text-3)',borderTop:'1px solid var(--border)',paddingTop:'6px'}}>
+          {currency_strength[0].currency} leading · {currency_strength[currency_strength.length-1].currency} lagging · spread {(currency_strength[0].score - currency_strength[currency_strength.length-1].score).toFixed(2)} · {currency_strength.length} currencies
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SignalsPanel({ signals_full, pairGroup }) {
   const PAIR_ORDER = [
     'EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD',
@@ -1405,7 +1495,7 @@ function LearningModule({ learning }) {
             </div>
             <div className="acc-right">
               <div className="acc-bar">
-                <div className="acc-fill" style={{width:`${a.pct}%`, background: a.pct >= 60 ? '#2D6A4F' : a.pct >= 45 ? '#D97706' : '#DC2626'}} />
+                <div className="acc-fill" style={{width:`${Math.max(0, a.pct || 0)}%`, background: a.pct >= 60 ? '#2D6A4F' : a.pct >= 45 ? '#D97706' : '#DC2626'}} />
               </div>
               <span className={`acc-val ${a.pct >= 60 ? 'pos' : a.pct < 45 ? 'neg' : ''}`}>{a.pct}%</span>
             </div>
@@ -1473,8 +1563,8 @@ function OpenPositionsPanel({ openPositions }) {
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.78rem'}}>
           <thead>
             <tr style={{borderBottom:'1px solid var(--border)',background:'var(--bg-2)'}}>
-              {['Profile','Instrument','Dir','Size','Entry','Current','Pips','Stop','Target','Held'].map((h,i) => (
-                <th key={i} style={{padding:'0.4rem 0.6rem',textAlign:['Size','Entry','Current','Pips','Stop','Target','Held'].includes(h)?'right':'left',color:'var(--text-3)',fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>
+              {['Profile','Rank','Instrument','Dir','Size','Entry','Current','Pips','Stop','Target','Held'].map((h,i) => (
+                <th key={i} style={{padding:'0.4rem 0.6rem',textAlign:['Size','Entry','Current','Pips','Stop','Target','Held'].includes(h)?'right':h==='Rank'?'center':'left',color:'var(--text-3)',fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -1487,6 +1577,13 @@ function OpenPositionsPanel({ openPositions }) {
                 <tr key={p.id} style={{borderBottom:'1px solid var(--border)'}}>
                   <td style={{padding:'0.4rem 0.6rem'}}>
                     <span className={profileClass(p.profile)} style={{fontSize:'0.65rem',fontWeight:500,padding:'2px 7px',borderRadius:'10px'}}>{p.profile}</span>
+                  </td>
+                  <td style={{padding:'0.4rem 0.6rem',textAlign:'center'}}>
+                    {p.entry_rank_position != null
+                      ? <span style={{fontSize:'0.68rem',fontWeight:700,padding:'1px 5px',borderRadius:'4px',
+                          background: p.entry_rank_position===1?'#f59e0b':p.entry_rank_position===2?'#94a3b8':p.entry_rank_position===3?'#b45309':'var(--bg-2)',
+                          color: p.entry_rank_position<=3?'#fff':'var(--text-2)'}}>#{p.entry_rank_position}</span>
+                      : <span style={{color:'var(--text-3)',fontSize:'0.7rem'}}>—</span>}
                   </td>
                   <td style={{padding:'0.4rem 0.6rem',fontWeight:500}}>{p.instrument}</td>
                   <td style={{padding:'0.4rem 0.6rem',fontFamily:'var(--mono)',color:dirColor,fontSize:'0.72rem',fontWeight:600,textTransform:'uppercase'}}>{p.direction}</td>
@@ -1712,6 +1809,11 @@ function AdminPerformancePanel({ trades, onDownloadSummary, onDownloadAudit }) {
             : recentTrades.map((t,i) => (
               <div key={i} className="trade-row">
                 <span style={{fontSize:'0.65rem',fontFamily:'var(--mono)',color:'var(--text-3)',minWidth:'68px'}}>{t.user?.replace('neo_','')}</span>
+                {(t.entry_rank_position ?? t.rank_position) != null
+                  ? <span style={{fontSize:'0.65rem',fontWeight:700,padding:'1px 4px',borderRadius:'3px',minWidth:'24px',textAlign:'center',
+                      background:(t.entry_rank_position??t.rank_position)===1?'#f59e0b':(t.entry_rank_position??t.rank_position)===2?'#94a3b8':(t.entry_rank_position??t.rank_position)===3?'#b45309':'var(--bg-2)',
+                      color:(t.entry_rank_position??t.rank_position)<=3?'#fff':'var(--text-2)'}}>#{t.entry_rank_position??t.rank_position}</span>
+                  : <span style={{minWidth:'24px',display:'inline-block'}} />}
                 <span className="trade-pair">{t.instrument}</span>
                 <span className={`dir-badge dir-${t.direction}`}>{t.direction}</span>
                 <span className="trade-time">{t.exit_date?.slice(5)} {t.exit_time}</span>
@@ -1928,9 +2030,10 @@ function Dashboard({ onLogout }) {
   const [data, setData] = useState({
     stats:        null,
     agents:       null,
-    convergence:  null,
-    signals:      null,
-    signals_full: null,
+    convergence:        null,
+    signals:            null,
+    signals_full:       null,
+    currency_strength:  null,
     learning:     null,
     health:       null,
     providers:    null,
@@ -1939,7 +2042,8 @@ function Dashboard({ onLogout }) {
     alerts:       null,
     system:       null,
     drawdown:     null,
-    open_positions: null,
+    open_positions:     null,
+    portfolio_exposure: null,
   });
 
   const [darkMode, setDarkMode] = useState(() => {
@@ -1995,22 +2099,24 @@ function Dashboard({ onLogout }) {
 
   const refresh = useCallback(async () => {
     if (CONFIG.MOCK_MODE) return;
-    const endpoints = ['/system/stats','/agents','/signals','/learning','/health','/trades/admin','/audit','/alerts','/providers','/proposals','/open-positions'];
+    const endpoints = ['/system/stats','/agents','/signals','/learning','/health','/trades/admin','/audit','/alerts','/providers','/proposals','/open-positions','/portfolio-exposure'];
     const results = await Promise.allSettled(endpoints.map(p => apiFetch(p)));
     results.forEach((r, i) => { if (r.status === 'rejected') console.warn('fetch failed', endpoints[i], r.reason && r.reason.message); });
     const val = i => results[i].status === 'fulfilled' ? results[i].value : null;
     const [stats, agents, signals, learning, health, trades, audit, alerts, providers] = [val(0), val(1), val(2), val(3), val(4), val(5), val(6), val(7), val(8)];
     const proposalsRes = val(9);
     const openPositionsRes = val(10);
+    const portfolioExposureRes = val(11);
     if (proposalsRes) setProposals(proposalsRes);
     setData(d => ({
       ...d,
       stats:       stats    ?? d.stats,
       agents:      agents   ?? d.agents,
-      convergence:  signals?.convergence   ?? d.convergence,
-      signals:      signals?.signals       ?? d.signals,
-      signals_full: signals?.signals_full  ?? d.signals_full,
-      decisions:    signals?.decisions     ?? d.decisions,
+      convergence:       signals?.convergence        ?? d.convergence,
+      signals:           signals?.signals            ?? d.signals,
+      signals_full:      signals?.signals_full       ?? d.signals_full,
+      decisions:         signals?.decisions          ?? d.decisions,
+      currency_strength: signals?.currency_strength  ?? d.currency_strength,
       learning:    learning ?? d.learning,
       health:      health   ?? d.health,
       providers:   providers ?? d.providers,
@@ -2019,7 +2125,8 @@ function Dashboard({ onLogout }) {
       alerts:      alerts?.alerts   ?? d.alerts,
       system:      alerts?.system   ?? d.system,
       drawdown:    alerts?.drawdown ?? d.drawdown,
-      open_positions: openPositionsRes ?? d.open_positions,
+      open_positions:     openPositionsRes     ?? d.open_positions,
+      portfolio_exposure: portfolioExposureRes ?? d.portfolio_exposure,
     }));
     if (signals?.signals_full) setObsAllSignals(signals.signals_full);
     if (signals?.decisions)    setObsDecisions(signals.decisions);
@@ -2056,7 +2163,7 @@ function Dashboard({ onLogout }) {
     } catch(e) { alert('Download failed'); }
   };
 
-  const { stats, agents, convergence, signals, signals_full, learning, health, providers, trades, audit, alerts, system, drawdown } = data;
+  const { stats, agents, convergence, signals, signals_full, currency_strength, portfolio_exposure, learning, health, providers, trades, audit, alerts, system, drawdown } = data;
 
   const _regimeSig = (signals_full || []).find(s => s.agent_name === 'regime' && !s.pair);
   const _sessCtx = _regimeSig?.payload?.session_context || {};
@@ -2212,8 +2319,8 @@ function Dashboard({ onLogout }) {
         );
       })()}
 
-      {/* ROW 4 — Convergence + Learning Module */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
+      {/* ROW 4 — Convergence + Currency Strength + Learning Module */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'1.25rem',alignItems:'start'}}>
         <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Convergence scores</div>
           <div className="card" style={{position:'relative'}}>
@@ -2234,11 +2341,25 @@ function Dashboard({ onLogout }) {
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column'}}>
+          <div className="sec-label">Currency strength</div>
+          <div className="card">
+            <CurrencyStrengthPanel currency_strength={currency_strength} />
+          </div>
+        </div>
+        <div style={{display:'flex',flexDirection:'column'}}>
           <div className="sec-label">Learning module</div>
           {learning
             ? <LearningModule learning={learning} />
             : <div className="card" style={{flex:1,textAlign:'center',padding:'1.5rem',color:'var(--text-3)',fontSize:'0.82rem'}}>Loading…</div>
           }
+        </div>
+      </div>
+
+      {/* ROW 4b — Portfolio exposure */}
+      <div style={{marginBottom:'1.25rem'}}>
+        <div className="sec-label">Portfolio exposure</div>
+        <div className="card">
+          <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} />
         </div>
       </div>
 

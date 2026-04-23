@@ -283,14 +283,14 @@ def handler(event, context):
 
         # ── 1a. Most-recent signals per (agent, instrument, user) — used for overview aggregation.
         #        No TTL filter: most recent signal IS the current analysis until replaced.
+        #        DISTINCT ON ensures one row per (agent, instrument) — always the latest.
         #        Agent liveness shown separately via agent_heartbeats (neo-admin-agents-dev).
         cur.execute("""
             SELECT DISTINCT ON (agent_name, instrument)
                    id, agent_name, instrument, user_id, signal_type,
                    score, bias, confidence, payload, created_at, expires_at
             FROM forex_network.agent_signals
-            WHERE created_at > NOW() - INTERVAL '24 hours'
-              AND agent_name IN ('macro','technical','regime','orchestrator','risk_guardian','execution')
+            WHERE agent_name IN ('macro','technical','regime','orchestrator','risk_guardian','execution')
             ORDER BY agent_name, instrument, created_at DESC
         """)
         raw = cur.fetchall()
