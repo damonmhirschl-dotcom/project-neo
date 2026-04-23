@@ -416,7 +416,7 @@ class ReconciliationEngine:
         try:
             cur.execute("""
                 SELECT id, instrument, direction, entry_price, stop_price,
-                       position_size_usd, ibkr_stop_order_id, entry_time, user_id,
+                       position_size_usd, position_size, ibkr_stop_order_id, entry_time, user_id,
                        ibkr_order_id
                 FROM forex_network.trades
                 WHERE exit_time IS NULL
@@ -1852,7 +1852,7 @@ class ExecutionAgent:
             cur.execute("""
                 SELECT id, instrument, direction, entry_price, stop_price,
                        target_price, regime_at_entry, ibkr_order_id,
-                       position_size_usd, entry_time, ibkr_stop_order_id
+                       position_size_usd, position_size, entry_time, ibkr_stop_order_id
                 FROM forex_network.trades
                 WHERE user_id = %s AND exit_time IS NULL
             """, (self.user_id,))
