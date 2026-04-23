@@ -1608,7 +1608,7 @@ class OrchestratorAgent:
             stage = "rr_gate"
         elif "daily_loss" in r_lower or "drawdown" in r_lower or "circuit" in r_lower or "kill" in r_lower:
             stage = "risk_gate"
-        elif "portfolio" in r_lower or "max_position" in r_lower:
+        elif "portfolio" in r_lower or "max_position" in r_lower or "max positions" in r_lower:
             stage = "capacity"
         else:
             stage = "other"
