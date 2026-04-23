@@ -47,6 +47,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import boto3
 from botocore.exceptions import ClientError
 import anthropic
+import math
 
 sys.path.insert(0, '/root/Project_Neo_Damon')
 from shared.market_hours import get_market_state
@@ -1438,12 +1439,9 @@ EODHD sentiment is pre-fetched above — use it directly. Pairs with no rows are
                     else:
                         raw_score -= cad_oil_adj
 
-                # Cross-pair amplifier (non-USD pairs have amplified relative moves)
-                if pair not in self.USD_PAIRS:
-                    raw_score *= 1.5
-
-                # Clamp to [-1.0, 1.0]
-                pair_score = max(-1.0, min(1.0, raw_score))
+                # Soft clamp via tanh(raw × 1.2) — asymptotically approaches ±1.0,
+                # preserves differentiation at high values. No separate cross-pair amplifier.
+                pair_score = math.tanh(raw_score * 1.2)
 
                 # Derive bias
                 if pair_score > 0.05:
