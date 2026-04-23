@@ -20,6 +20,13 @@ PAIRS = {
     'EURGBP': ('EUR', 'GBP'),
     'EURJPY': ('EUR', 'JPY'),
     'GBPJPY': ('GBP', 'JPY'),
+    'EURAUD': ('EUR', 'AUD'),
+    'EURCAD': ('EUR', 'CAD'),
+    'GBPAUD': ('GBP', 'AUD'),
+    'GBPCAD': ('GBP', 'CAD'),
+    'AUDJPY': ('AUD', 'JPY'),
+    'CADJPY': ('CAD', 'JPY'),
+    'EURCHF': ('EUR', 'CHF'),
 }
 
 

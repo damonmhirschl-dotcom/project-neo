@@ -11,6 +11,13 @@ PAIRS = {
     'EURUSD': ('EUR','USD'),
     'GBPUSD': ('GBP','USD'),
     'AUDUSD': ('AUD','USD'),
+    'EURAUD': ('EUR','AUD'),
+    'EURCAD': ('EUR','CAD'),
+    'GBPAUD': ('GBP','AUD'),
+    'GBPCAD': ('GBP','CAD'),
+    'AUDJPY': ('AUD','JPY'),
+    'CADJPY': ('CAD','JPY'),
+    'EURCHF': ('EUR','CHF'),
 }
 
 def get_conn():
@@ -54,7 +61,9 @@ def run():
 
     ema_baseline = {
         'EURJPY': 50.6, 'GBPJPY': 48.5, 'USDJPY': 50.3,
-        'EURGBP': 51.5, 'EURUSD': 49.6, 'GBPUSD': 49.9, 'AUDUSD': None
+        'EURGBP': 51.5, 'EURUSD': 49.6, 'GBPUSD': 49.9, 'AUDUSD': None,
+        'EURAUD': None, 'EURCAD': None, 'GBPAUD': None, 'GBPCAD': None,
+        'AUDJPY': None, 'CADJPY': None, 'EURCHF': None
     }
 
     for pair, (base, quote) in PAIRS.items():
