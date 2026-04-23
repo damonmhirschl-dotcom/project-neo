@@ -395,7 +395,40 @@ class TechnicalAgent:
                          False, _ms, error_type=type(e).__name__)
             logger.warning(f"TraderMade live prices failed: {e} — falling back to RDS")
 
-        # ── 2. RDS last bar close (market closed / TraderMade down) ───────────
+        # ── 2. RDS LIVE prices (≤15 min stale — preferred over 1H bar) ─────────
+        try:
+            live_prices = {}
+            with self.db_conn.cursor(cursor_factory=__import__('psycopg2').extras.RealDictCursor) as _cur:
+                _cur.execute("""
+                    SELECT DISTINCT ON (instrument)
+                        instrument, close, open
+                    FROM forex_network.historical_prices
+                    WHERE timeframe = 'LIVE'
+                      AND ts > NOW() - INTERVAL '15 minutes'
+                    ORDER BY instrument, ts DESC
+                """)
+                for row in _cur.fetchall():
+                    pair = row['instrument']
+                    if pair in self.PAIRS:
+                        mid = float(row['close'])
+                        live_prices[pair] = {
+                            "bid":           None,
+                            "ask":           None,
+                            "last":          mid,
+                            "timestamp":     None,
+                            "source":        "rds_live",
+                            "market_closed": False,
+                        }
+            if len(live_prices) >= len(self.PAIRS) // 2:
+                logger.info(
+                    f"Live prices from RDS LIVE table: {len(live_prices)} pairs "
+                    f"(TraderMade unavailable, LIVE table fresh)"
+                )
+                return live_prices
+        except Exception as e:
+            logger.warning(f"RDS LIVE table fallback failed: {e}")
+
+        # ── 3. RDS last 1H bar close (market closed / TraderMade down) ────────
         try:
             live_prices = {}
             for pair in self.PAIRS:
