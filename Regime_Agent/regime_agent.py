@@ -2963,9 +2963,9 @@ def run_cycle(
                         "stress_score": round(stress_score, 2),
                         "confidence": stress_engine._stress_score_confidence,
                         "components": {
-                            k: {"value": v.value, "source": v.source}
+                            k: {"value": v.normalised_score, "source": v.source}
                             for k, v in stress_engine.components.items()
-                            if v.value is not None
+                            if v.raw_value is not None
                         },
                     },
                     user_id=user_id,

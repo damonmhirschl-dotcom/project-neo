@@ -1374,7 +1374,7 @@ class RiskGuardian:
                 signal_type,
                 decision.get("score", 0),
                 decision["bias"],
-                json.dumps(decision),
+                json.dumps(decision, default=float),
             ))
             self.db.commit()
             logger.info(f"Decision written: {signal_type} for {decision['instrument']}")
