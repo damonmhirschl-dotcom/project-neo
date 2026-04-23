@@ -1194,27 +1194,58 @@ class RiskGuardian:
 
 
         # =================================================================
-        # CHECK 7: RG2 — Swap cost R:R check
+        # CHECK 7: R:R validation + RG2 — Swap cost R:R check
         # =================================================================
-        rr_ratio = float(payload.get("rr_ratio", 0))
-        # min_risk_reward_ratio stored per-user in risk_parameters (added Stage 3 migration)
+        _target_price = payload.get("target_price")
+        _current_price_rr = payload.get("current_price")
+        _stop_distance_rr = decision.get("stop_distance")
         min_rr = float(risk_params.get('min_risk_reward_ratio', 1.5))
 
-        if rr_ratio > 0:
-            swap_rate = self.reader.read_swap_rate(instrument, direction)
-            swap_passed, swap_details = SwapCostChecker.check(
-                swap_rate_pips=swap_rate,
-                rr_ratio=rr_ratio,
-                min_rr=min_rr,
-            )
-            decision["risk_details"]["swap"] = swap_details
-            if not swap_passed:
-                decision["rejection_reasons"].append(swap_details.get("reason", "Swap cost check failed"))
-                decision["checks"]["swap_rr"] = "FAIL"
-            else:
-                decision["checks"]["swap_rr"] = "PASS"
-        else:
+        if _target_price is None:
+            decision["rejection_reasons"].append("no_target_price — cannot evaluate R:R")
+            decision["checks"]["rr"] = "FAIL"
             decision["checks"]["swap_rr"] = "SKIP"
+        elif not _stop_distance_rr or _stop_distance_rr <= 0 or not _current_price_rr or _current_price_rr <= 0:
+            decision["rejection_reasons"].append("no_stop_distance — cannot evaluate R:R")
+            decision["checks"]["rr"] = "FAIL"
+            decision["checks"]["swap_rr"] = "SKIP"
+        else:
+            if direction == "long":
+                _rr_reward = float(_target_price) - float(_current_price_rr)
+            else:
+                _rr_reward = float(_current_price_rr) - float(_target_price)
+            _rr_risk = float(_stop_distance_rr)
+            if _rr_reward <= 0:
+                decision["rejection_reasons"].append(
+                    f"target_price on wrong side of entry for {direction} "
+                    f"(entry={_current_price_rr}, target={_target_price})"
+                )
+                decision["checks"]["rr"] = "FAIL"
+                decision["checks"]["swap_rr"] = "SKIP"
+            else:
+                _computed_rr = _rr_reward / _rr_risk
+                if _computed_rr < min_rr:
+                    decision["rejection_reasons"].append(
+                        f"insufficient_rr: {_computed_rr:.2f}:1 < {min_rr:.1f}:1"
+                    )
+                    decision["checks"]["rr"] = f"FAIL ({_computed_rr:.2f}:1)"
+                    decision["checks"]["swap_rr"] = "SKIP"
+                else:
+                    decision["checks"]["rr"] = f"PASS ({_computed_rr:.2f}:1)"
+                    # Use payload rr_ratio if provided, else use computed value for swap check.
+                    rr_ratio = float(payload.get("rr_ratio", 0)) or _computed_rr
+                    swap_rate = self.reader.read_swap_rate(instrument, direction)
+                    swap_passed, swap_details = SwapCostChecker.check(
+                        swap_rate_pips=swap_rate,
+                        rr_ratio=rr_ratio,
+                        min_rr=min_rr,
+                    )
+                    decision["risk_details"]["swap"] = swap_details
+                    if not swap_passed:
+                        decision["rejection_reasons"].append(swap_details.get("reason", "Swap cost check failed"))
+                        decision["checks"]["swap_rr"] = "FAIL"
+                    else:
+                        decision["checks"]["swap_rr"] = "PASS"
 
         # =================================================================
         # CHECK 8: Drawdown step level + live drawdown from account value
