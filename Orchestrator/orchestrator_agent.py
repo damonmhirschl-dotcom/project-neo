@@ -2342,40 +2342,96 @@ class OrchestratorAgent:
 
         # A. Convergence collapse / spike alert
         _current_conv_scores = {d["pair"]: d["convergence"] for d in decisions}
+        _collapse_pairs = []
+        _spike_pairs    = []
         for _pair, _cur in _current_conv_scores.items():
             _prev = _prev_convergence_scores.get(_pair)
             if _prev is not None and abs(_prev) > 0.10:
                 _mac = next((s for s in signals.get("macro", []) if s.get("instrument") == _pair), {})
                 _tec = next((s for s in signals.get("technical", []) if s.get("instrument") == _pair), {})
-                _agent_payload = {
+                _pair_detail = {
                     'pair': _pair, 'previous': round(_prev, 4), 'current': round(_cur, 4),
                     'macro_score': float(_mac.get('score') or 0),
                     'macro_conf': float(_mac.get('confidence') or 0),
                     'tech_score': float(_tec.get('score') or 0),
                     'tech_conf': float(_tec.get('confidence') or 0),
                 }
-                _drop_pct = (_prev - _cur) / max(abs(_prev), 0.01)
+                _drop_pct  = (_prev - _cur) / max(abs(_prev), 0.01)
                 _spike_pct = (_cur - _prev) / max(abs(_prev), 0.01)
-                if _drop_pct > 0.60:
-                    send_alert(
-                        'CRITICAL',
-                        f'CONVERGENCE COLLAPSE — {_pair} dropped {_drop_pct:.0%}',
-                        _agent_payload,
-                        source_agent='orchestrator',
-                    )
+                if _drop_pct > 0.80:
+                    _collapse_pairs.append((_pair, _drop_pct, _pair_detail))
                 elif _spike_pct > 1.00:
-                    send_alert(
-                        'WARNING',
-                        f'CONVERGENCE SPIKE — {_pair} surged {_spike_pct:.0%}',
-                        _agent_payload,
-                        source_agent='orchestrator',
+                    _spike_pairs.append((_pair, _spike_pct, _pair_detail))
+
+        # Aggregate collapses → single email per cycle with 2-hour dedup
+        if _collapse_pairs:
+            _suppress_collapse = False
+            try:
+                _dedup_cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=2)
+                _dcur = self.db.cursor()
+                _dcur.execute(
+                    "SELECT 1 FROM forex_network.system_events "
+                    "WHERE event_type = 'CONVERGENCE_COLLAPSE' "
+                    "  AND event_time > %s LIMIT 1",
+                    (_dedup_cutoff,),
+                )
+                if _dcur.fetchone():
+                    _suppress_collapse = True
+                _dcur.close()
+            except Exception as _de:
+                logger.warning('Collapse dedup DB check failed: %s', _de)
+
+            if not _suppress_collapse:
+                _pairs_summary = ', '.join(
+                    f'{p} -{d:.0%}' for p, d, _ in _collapse_pairs
+                )
+                send_alert(
+                    'CRITICAL',
+                    f'CONVERGENCE COLLAPSE — {len(_collapse_pairs)} pair(s): {_pairs_summary}',
+                    {'collapses': [{**det, 'drop_pct': round(dp, 4)} for _, dp, det in _collapse_pairs]},
+                    source_agent='orchestrator',
+                )
+                # Record dedup sentinel
+                try:
+                    _scur = self.db.cursor()
+                    _scur.execute(
+                        "INSERT INTO forex_network.system_events "
+                        "  (event_type, severity, category, agent, message, payload) "
+                        "VALUES ('CONVERGENCE_COLLAPSE', 'CRITICAL', 'ALERT', 'orchestrator', %s, %s)",
+                        (
+                            f'Collapse: {_pairs_summary}',
+                            json.dumps({'pairs': [p for p, _, _ in _collapse_pairs]}),
+                        ),
                     )
+                    self.db.commit()
+                    _scur.close()
+                except Exception as _se:
+                    logger.warning('Collapse sentinel write failed: %s', _se)
+                    try: self.db.rollback()
+                    except Exception: pass
+            else:
+                warn('orchestrator', 'THRESHOLD',
+                     'Convergence collapse suppressed by 2-hour dedup',
+                     pairs=str([p for p, _, _ in _collapse_pairs]))
+
+        # Aggregate spikes → single WARNING per cycle
+        if _spike_pairs:
+            _spikes_summary = ', '.join(
+                f'{p} +{s:.0%}' for p, s, _ in _spike_pairs
+            )
+            send_alert(
+                'WARNING',
+                f'CONVERGENCE SPIKE — {len(_spike_pairs)} pair(s): {_spikes_summary}',
+                {'spikes': [{**det, 'spike_pct': round(sp, 4)} for _, sp, det in _spike_pairs]},
+                source_agent='orchestrator',
+            )
+
         _prev_convergence_scores.update(_current_conv_scores)
         _low_count = sum(1 for s in _current_conv_scores.values() if abs(s) < 0.05)
         if _low_count >= 5:
             send_alert(
                 'CRITICAL',
-                f'Systemic convergence collapse: {_low_count}/7 pairs near zero',
+                f'Systemic convergence collapse: {_low_count}/20 pairs near zero',
                 {'scores': {k: round(v, 4) for k, v in _current_conv_scores.items()}},
                 source_agent='orchestrator',
             )
