@@ -608,8 +608,13 @@ class PositionSizer:
         convergence_score: float = 0.0,
         stress_score: float = 0.0,
         current_price: Optional[float] = None,
+        pip_value_gbp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Calculate position size using conviction-scaled risk curve."""
+        """Calculate position size using conviction-scaled risk curve.
+
+        position_size is returned in standard lots (100,000 base units).
+        pip_value_gbp: pip value per standard lot in GBP (from _get_pip_value_gbp).
+        """
 
         drawdown_mult = float(risk_params.get("size_multiplier", 1.0))
         atr_stop_mult = float(risk_params.get("atr_stop_multiplier", 1.5))
@@ -630,31 +635,37 @@ class PositionSizer:
             )
             conviction_risk_pct = min_risk
 
-        # Effective risk in dollars: conviction × combined multipliers
+        # Effective risk in GBP: conviction × combined multipliers
         risk_amount = account_value * conviction_risk_pct * combined_mult
 
         # Store in percentage form (× 100) for execution_agent compatibility
         effective_risk_pct = conviction_risk_pct * combined_mult * 100.0
 
-        # ATR-based stop distance
+        # ATR-based stop distance (raw price units — execution agent uses this
+        # directly to compute stop_price; do NOT convert it)
         stop_distance = atr_14 * atr_stop_mult if atr_14 else None
 
-        # Currency-aware stop distance for sizing.
-        # stop_distance is in the pair's price units (e.g. JPY for GBPJPY/EURJPY).
-        # risk_amount is in GBP (account currency).  Dividing directly gives
-        # a ~100× undersize for JPY-quoted pairs because 1 JPY ≪ 1 GBP.
-        # Fix: for JPY-quoted pairs divide by current_price to convert to GBP units.
-        # stop_distance itself is kept in raw price units — execution agent uses it
-        # to compute stop_price from entry_price, so it must not be modified.
-        stop_distance_for_sizing = stop_distance
-        if stop_distance and current_price and current_price > 0:
-            if instrument.upper().endswith('JPY'):
-                stop_distance_for_sizing = stop_distance / current_price
-
-        # Position size: risk_amount / stop_distance_for_sizing
-        position_size = None
-        if stop_distance_for_sizing and stop_distance_for_sizing > 0 and risk_amount > 0:
-            position_size = risk_amount / stop_distance_for_sizing
+        # Position size in standard lots.
+        # Correct formula: lots = risk_amount_GBP / (stop_pips × pip_value_GBP_per_lot)
+        # pip_value_GBP_per_lot = pip_multiplier / GBP_quote_rate
+        #   where pip_multiplier = 1000 (JPY) or 10 (others)
+        #   and GBP_quote_rate = GBPXXX live rate for the pair's quote currency.
+        # This ensures equal GBP risk across all pairs regardless of quote currency.
+        pip_size = 0.01 if instrument.upper().endswith('JPY') else 0.0001
+        position_size = None  # standard lots
+        if stop_distance and stop_distance > 0 and risk_amount > 0:
+            stop_pips = stop_distance / pip_size
+            if pip_value_gbp and pip_value_gbp > 0:
+                position_size = risk_amount / (stop_pips * pip_value_gbp)
+            else:
+                # Legacy fallback — correct only for GBP-base pairs.
+                # Retained so sizing degrades gracefully if pip_value_gbp unavailable.
+                stop_for_legacy = stop_distance
+                if current_price and current_price > 0 and instrument.upper().endswith('JPY'):
+                    stop_for_legacy = stop_distance / current_price
+                if stop_for_legacy > 0:
+                    # Approximate lots: divide by 100,000 to convert from raw units
+                    position_size = risk_amount / stop_for_legacy / 100_000
 
         return {
             "account_value": account_value,
@@ -664,7 +675,8 @@ class PositionSizer:
             "combined_multiplier": round(combined_mult, 4),
             "effective_risk_pct": round(effective_risk_pct, 6),
             "risk_amount": round(risk_amount, 2),
-            "position_size": round(position_size, 2) if position_size else None,
+            "pip_value_gbp": round(pip_value_gbp, 6) if pip_value_gbp else None,
+            "position_size": round(position_size, 4) if position_size else None,
             "atr_14": atr_14,
             "atr_stop_multiplier": atr_stop_mult,
             "stop_distance": round(stop_distance, 5) if stop_distance else None,
@@ -769,6 +781,61 @@ class RiskGuardian:
             return None
         finally:
             cur.close()
+
+    def _get_pip_value_gbp(self, instrument: str, current_price: Optional[float] = None) -> Optional[float]:
+        """
+        Returns pip value per standard lot (100,000 base units) in GBP.
+
+        Formula: pip_value_gbp = pip_multiplier / GBP_quote_rate
+          pip_multiplier = 1000  for JPY-quoted pairs (100,000 × 0.01)
+          pip_multiplier =   10  for all others       (100,000 × 0.0001)
+          GBP_quote_rate = GBPXXX live rate (XXX = quote currency of the pair)
+
+        Lookup priority:
+          1. GBP-base pair (GBPUSD, GBPJPY, etc.) — current_price IS the GBPXXX rate
+          2. GBP-quote pair (EURGBP) — rate = 1.0, no lookup needed
+          3. Otherwise — fetch GBPXXX from forex_network.historical_prices
+          4. Fallback — use current_price with a warning (imprecise for non-GBP-base)
+        """
+        instr     = instrument.upper()
+        base_ccy  = instr[:3]
+        quote_ccy = instr[3:]
+        pip_mult  = 1000.0 if quote_ccy == 'JPY' else 10.0
+
+        if quote_ccy == 'GBP':
+            # e.g. EURGBP: quote is GBP, pip value = 10 GBP per lot directly
+            return pip_mult
+
+        if base_ccy == 'GBP' and current_price and current_price > 0:
+            # e.g. GBPUSD, GBPJPY — the pair itself is GBPXXX
+            return pip_mult / current_price
+
+        # Non-GBP-base pair: fetch GBPXXX from historical_prices
+        gbp_cross = f'GBP{quote_ccy}'
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT close FROM forex_network.historical_prices
+                WHERE instrument = %s
+                ORDER BY ts DESC LIMIT 1
+            """, (gbp_cross,))
+            row = cur.fetchone()
+            cur.close()
+            if row and row[0] and float(row[0]) > 0:
+                return pip_mult / float(row[0])
+        except Exception as e:
+            logger.warning(f"_get_pip_value_gbp: DB fetch for {gbp_cross} failed: {e}")
+
+        # Last resort: current_price as proxy (wrong scale for non-GBP-base but avoids None)
+        if current_price and current_price > 0:
+            logger.warning(
+                f"_get_pip_value_gbp({instrument}): using current_price={current_price:.5f} "
+                f"as proxy for {gbp_cross} — pip value will be inaccurate"
+            )
+            return pip_mult / current_price
+
+        logger.error(f"_get_pip_value_gbp({instrument}): no rate available, returning None")
+        return None
 
     def write_heartbeat(self):
         cur = self.db.cursor()
@@ -1157,6 +1224,8 @@ class RiskGuardian:
 
         conv_score_for_sizing   = float(payload.get("conviction_score", payload.get("convergence", 0.0)))
         stress_score_for_sizing = float((market_context or {}).get("stress_score", 0.0))
+        _current_price_for_sizing = payload.get("current_price")
+        pip_value_gbp = self._get_pip_value_gbp(instrument, _current_price_for_sizing)
         sizing = PositionSizer.calculate(
             risk_params=risk_params,
             atr_14=atr_14,
@@ -1164,7 +1233,8 @@ class RiskGuardian:
             size_multiplier_from_orchestrator=orch_size_mult,
             convergence_score=conv_score_for_sizing,
             stress_score=stress_score_for_sizing,
-            current_price=payload.get("current_price"),
+            current_price=_current_price_for_sizing,
+            pip_value_gbp=pip_value_gbp,
         )
         decision["risk_details"]["sizing"] = sizing
 
