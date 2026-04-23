@@ -288,6 +288,94 @@ class TradeAutopsyEngine:
             "cycles_inspected": len(rows),
         }
 
+    def _compute_entry_timing(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute entry-timing quality metrics for pattern_context.
+
+        Returns dict with:
+          entry_lag_minutes      — minutes after session open (capped 240)
+          entry_price_vs_open_pips — price move from session-open bar to entry
+          entry_atr_ratio        — above expressed as fraction of ATR
+        Returns empty dict on any data error.
+        """
+        result: Dict[str, Any] = {}
+        try:
+            entry_time = trade.get("entry_time")
+            entry_price = float(trade.get("entry_price") or 0)
+            instrument = trade.get("instrument", "")
+            direction = trade.get("direction", "buy")
+            if not entry_time or not entry_price or not instrument:
+                return result
+
+            # Session open times (UTC hour)
+            session_open_times = {
+                'london': 7, 'newyork': 13, 'asian': 22, 'overlap': 13
+            }
+            session_at_entry = self._get_session_at_time(entry_time)
+            session_open_hour = session_open_times.get(session_at_entry, 7)
+
+            # Build session-open timestamp (same date, except asian wraps to prev day)
+            session_open_utc = entry_time.replace(
+                hour=session_open_hour, minute=0, second=0, microsecond=0
+            )
+            if session_at_entry == 'asian' and session_open_hour >= entry_time.hour:
+                # asian opens at 22:00 previous day
+                from datetime import timedelta as _td
+                session_open_utc = session_open_utc - _td(days=1)
+
+            entry_lag_seconds = (entry_time - session_open_utc).total_seconds()
+            entry_lag_minutes = min(entry_lag_seconds / 60.0, 240.0)
+            result["entry_lag_minutes"] = round(entry_lag_minutes, 1)
+            result["session_at_entry"] = session_at_entry
+
+            # Session-open bar price from historical_prices
+            cur = self.db.cursor()
+            try:
+                cur.execute("""
+                    SELECT open FROM forex_network.historical_prices
+                    WHERE instrument = %s AND timeframe = '1H'
+                      AND ts = %s
+                    LIMIT 1
+                """, (instrument, session_open_utc))
+                row = cur.fetchone()
+            finally:
+                cur.close()
+
+            if row is None:
+                return result  # no bar — skip price metrics
+
+            open_price = float(row["open"])
+            pip_size = 0.01 if "JPY" in instrument else 0.0001
+            direction_mult = 1.0 if direction.lower() == "buy" else -1.0
+            entry_price_vs_open_pips = (
+                (entry_price - open_price) / pip_size * direction_mult
+            )
+            result["entry_price_vs_open_pips"] = round(entry_price_vs_open_pips, 1)
+
+            # ATR from price_metrics — nearest row at or before entry_time
+            cur2 = self.db.cursor()
+            try:
+                cur2.execute("""
+                    SELECT atr_14 FROM forex_network.price_metrics
+                    WHERE instrument = %s AND timeframe = '1H'
+                      AND ts <= %s
+                    ORDER BY ts DESC LIMIT 1
+                """, (instrument, entry_time))
+                atr_row = cur2.fetchone()
+            finally:
+                cur2.close()
+
+            if atr_row and atr_row["atr_14"]:
+                atr_pips = float(atr_row["atr_14"]) * 10000
+                if atr_pips > 0:
+                    result["entry_atr_ratio"] = round(
+                        entry_price_vs_open_pips / atr_pips, 3
+                    )
+
+        except Exception as _e:
+            logger.debug(f"_compute_entry_timing {trade.get('instrument')}: {_e}")
+
+        return result
+
     def write_autopsy(self, trade: Dict[str, Any]) -> Optional[int]:
         """Analyse a closed trade and write the autopsy."""
         trade_id = trade["id"]
@@ -340,6 +428,11 @@ class TradeAutopsyEngine:
         macro_lead = self._check_macro_lead(trade)
         if macro_lead is not None:
             pattern_context["macro_lead_analysis"] = macro_lead
+
+        # Entry timing quality metrics
+        entry_timing = self._compute_entry_timing(trade)
+        if entry_timing:
+            pattern_context["entry_timing"] = entry_timing
 
         cur = self.db.cursor()
         try:
@@ -1313,6 +1406,9 @@ class LearningModule:
             # Contrarian performance learning (runs when 50+ trades with context exist)
             self.analyse_contrarian_performance()
 
+            # Entry timing quality analysis
+            self.analyse_entry_timing()
+
             # Phase 1 accuracy tracking — per-agent, per-instrument, per-session
             self.compute_per_agent_accuracy()
 
@@ -1419,6 +1515,89 @@ class LearningModule:
                     f"{float(row['new_value'] or 1):.3f} -> {float(row['old_value'] or 1):.3f} "
                     f"(post-change win_rate={post_wr:.1%} over {total} trades)"
                 )
+
+    def analyse_entry_timing(self):
+        """
+        Analyse entry-timing quality by session + lag bucket.
+
+        Buckets: 0-15 min, 15-30, 30-60, 60+ after session open.
+        If any bucket has >=20 trades AND win_rate is >10 percentage points
+        lower than the 0-15 min bucket, write a proposal.
+        """
+        rows = self._query("""
+            SELECT
+                ta.pattern_context->'entry_timing'->>'session_at_entry'  AS session,
+                (ta.pattern_context->'entry_timing'->>'entry_lag_minutes')::float AS lag,
+                t.pnl
+            FROM forex_network.trade_autopsies ta
+            JOIN forex_network.trades t ON ta.trade_id = t.id
+            WHERE ta.user_id = %s
+              AND ta.pattern_context->'entry_timing' IS NOT NULL
+              AND t.exit_time IS NOT NULL
+              AND t.pnl IS NOT NULL
+        """, (self.user_id,))
+
+        if not rows:
+            return
+
+        # Bucket helper
+        def _bucket(lag):
+            if lag < 15:  return "0-15min"
+            if lag < 30:  return "15-30min"
+            if lag < 60:  return "30-60min"
+            return "60+min"
+
+        from collections import defaultdict
+        stats: dict = defaultdict(lambda: {"wins": 0, "total": 0, "pnl_sum": 0.0})
+        for row in rows:
+            if row["lag"] is None:
+                continue
+            key = f"{row['session'] or 'unknown'}|{_bucket(row['lag'])}"
+            stats[key]["total"] += 1
+            stats[key]["pnl_sum"] += float(row["pnl"] or 0)
+            if float(row["pnl"] or 0) > 0:
+                stats[key]["wins"] += 1
+
+        # Reference: win_rate of 0-15min bucket per session
+        proposals = []
+        sessions_seen = {k.split("|")[0] for k in stats}
+        for sess in sessions_seen:
+            ref_key = f"{sess}|0-15min"
+            ref = stats.get(ref_key)
+            if not ref or ref["total"] < 5:
+                continue
+            ref_wr = ref["wins"] / ref["total"]
+
+            for bucket in ("15-30min", "30-60min", "60+min"):
+                key = f"{sess}|{bucket}"
+                s = stats.get(key)
+                if not s or s["total"] < 20:
+                    continue
+                wr = s["wins"] / s["total"]
+                if ref_wr - wr > 0.10:
+                    proposals.append({
+                        "type": "entry_timing_quality",
+                        "session": sess,
+                        "lag_bucket": bucket,
+                        "win_rate": round(wr, 3),
+                        "reference_win_rate": round(ref_wr, 3),
+                        "win_rate_gap": round(ref_wr - wr, 3),
+                        "total_trades": s["total"],
+                        "avg_pnl": round(s["pnl_sum"] / s["total"], 2),
+                        "suggestion": (
+                            f"Entries in {sess} session at {bucket} after open have "
+                            f"{wr:.1%} win rate vs {ref_wr:.1%} for <15min entries "
+                            f"({s['total']} trades). Consider tightening entry lag filter."
+                        ),
+                    })
+
+        if proposals:
+            logger.info(
+                f"analyse_entry_timing: {len(proposals)} timing gap(s) found — writing proposals"
+            )
+            self._write_proposals(proposals)
+        else:
+            logger.debug("analyse_entry_timing: no actionable timing gaps")
 
     def analyse_contrarian_performance(self):
         """
