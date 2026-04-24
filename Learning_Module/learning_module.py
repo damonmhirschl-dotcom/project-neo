@@ -2134,6 +2134,190 @@ class LearningModule:
                             f"(sortino={sortino:.2f}, trades={trade_count})"
                         )
 
+            # ── DIRECTIONAL DISAGREEMENT ANALYSIS ────────────────────────────────
+            # When macro and technical disagree (rejection_stage='directional'),
+            # who was right next day?
+            # Derive macro direction from sign of macro_score (direction field is
+            # truncated in DB). Join to 1D historical_prices for next-day outcome.
+            # price_at_rejection is unpopulated — use same-day 1D close as reference.
+            cur.execute("""
+                SELECT
+                    r.instrument,
+                    COUNT(*) AS total,
+                    SUM(CASE
+                        WHEN r.macro_score > 0 AND next_d.close > ref_d.close THEN 1
+                        WHEN r.macro_score < 0 AND next_d.close < ref_d.close THEN 1
+                        ELSE 0 END) AS macro_correct,
+                    SUM(CASE
+                        WHEN r.macro_score > 0 AND next_d.close < ref_d.close THEN 1
+                        WHEN r.macro_score < 0 AND next_d.close > ref_d.close THEN 1
+                        ELSE 0 END) AS technical_correct
+                FROM forex_network.rejected_signals r
+                JOIN forex_network.historical_prices ref_d
+                    ON ref_d.instrument = r.instrument
+                    AND ref_d.timeframe  = '1D'
+                    AND ref_d.ts::date   = r.rejected_at::date
+                JOIN forex_network.historical_prices next_d
+                    ON next_d.instrument = r.instrument
+                    AND next_d.timeframe  = '1D'
+                    AND next_d.ts::date   = (r.rejected_at::date + 1)
+                WHERE r.rejection_stage = 'directional'
+                  AND r.rejected_at::date < CURRENT_DATE
+                  AND r.macro_score IS NOT NULL
+                  AND r.technical_score IS NOT NULL
+                  AND r.macro_score != 0
+                GROUP BY r.instrument
+                HAVING COUNT(*) >= 10
+            """)
+            dd_rows = cur.fetchall()
+            for row in dd_rows:
+                instrument     = row[0]
+                total          = int(row[1])
+                macro_correct  = int(row[2] or 0)
+                tech_correct   = int(row[3] or 0)
+                macro_rate     = macro_correct / total if total > 0 else 0.0
+                tech_rate      = tech_correct  / total if total > 0 else 0.0
+
+                if macro_rate > 0.60:
+                    # Macro was right when tech blocked it — tech gate may be too strict
+                    cur.execute("""
+                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
+                        WHERE user_id = %s AND proposal_type = 'tech_gate_too_strict'
+                          AND instrument = %s AND status = 'pending'
+                    """, (self.user_id, instrument))
+                    if int(cur.fetchone()[0]) == 0:
+                        cur.execute("""
+                            INSERT INTO forex_network.proposals
+                                (proposal_type, user_id, instrument, parameter,
+                                 current_value, proposed_value, direction,
+                                 n_trades, metric, metric_value, confidence, reasoning,
+                                 status, auto_revert_hours)
+                            VALUES ('tech_gate_too_strict', %s, %s, 'TECH_MIN_THRESHOLD',
+                                    NULL, NULL, 'decrease',
+                                    %s, 'macro_correct_rate', %s,
+                                    'medium', %s, 'pending', 72)
+                        """, (
+                            self.user_id, instrument, total,
+                            round(macro_rate, 4),
+                            (
+                                f"When macro and technical disagreed on {instrument}, "
+                                f"macro direction was correct {macro_rate:.0%} of the time "
+                                f"({total} rejections). Consider loosening TECH_MIN_THRESHOLD "
+                                f"or accepting directional disagreement on this pair."
+                            ),
+                        ))
+                        written += 1
+                        logger.info(
+                            f"Proposal: tech gate too strict on {instrument} — "
+                            f"macro right {macro_rate:.0%} when blocked ({total} samples)"
+                        )
+
+                elif tech_rate > 0.60:
+                    # Technical was right when it disagreed with macro
+                    cur.execute("""
+                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
+                        WHERE user_id = %s AND proposal_type = 'technical_catching_reversal'
+                          AND instrument = %s AND status = 'pending'
+                    """, (self.user_id, instrument))
+                    if int(cur.fetchone()[0]) == 0:
+                        cur.execute("""
+                            INSERT INTO forex_network.proposals
+                                (proposal_type, user_id, instrument, parameter,
+                                 current_value, proposed_value, direction,
+                                 n_trades, metric, metric_value, confidence, reasoning,
+                                 status, auto_revert_hours)
+                            VALUES ('technical_catching_reversal', %s, %s, NULL,
+                                    NULL, NULL, NULL,
+                                    %s, 'tech_correct_rate', %s,
+                                    'medium', %s, 'pending', 72)
+                        """, (
+                            self.user_id, instrument, total,
+                            round(tech_rate, 4),
+                            (
+                                f"When technical disagreed with macro on {instrument}, "
+                                f"technical direction was correct {tech_rate:.0%} of the time "
+                                f"({total} samples). Technical may be catching short-term "
+                                f"reversals that macro misses."
+                            ),
+                        ))
+                        written += 1
+                        logger.info(
+                            f"Proposal: technical catching reversal on {instrument} — "
+                            f"tech right {tech_rate:.0%} when conflicting ({total} samples)"
+                        )
+
+            # ── MACRO GATE ANALYSIS ───────────────────────────────────────────────
+            # When macro was blocked by the p75 gate (rejection_stage='macro_gate'),
+            # did price move in the macro direction anyway?
+            cur.execute("""
+                SELECT
+                    r.instrument,
+                    COUNT(*) AS total,
+                    SUM(CASE
+                        WHEN r.macro_score > 0 AND next_d.close > ref_d.close THEN 1
+                        WHEN r.macro_score < 0 AND next_d.close < ref_d.close THEN 1
+                        ELSE 0 END) AS macro_correct,
+                    AVG(ABS(r.macro_score)) AS avg_macro_magnitude
+                FROM forex_network.rejected_signals r
+                JOIN forex_network.historical_prices ref_d
+                    ON ref_d.instrument = r.instrument
+                    AND ref_d.timeframe  = '1D'
+                    AND ref_d.ts::date   = r.rejected_at::date
+                JOIN forex_network.historical_prices next_d
+                    ON next_d.instrument = r.instrument
+                    AND next_d.timeframe  = '1D'
+                    AND next_d.ts::date   = (r.rejected_at::date + 1)
+                WHERE r.rejection_stage = 'macro_gate'
+                  AND r.rejected_at::date < CURRENT_DATE
+                  AND r.macro_score IS NOT NULL
+                  AND r.macro_score != 0
+                GROUP BY r.instrument
+                HAVING COUNT(*) >= 10
+            """)
+            mg_rows = cur.fetchall()
+            for row in mg_rows:
+                instrument      = row[0]
+                total           = int(row[1])
+                macro_correct   = int(row[2] or 0)
+                avg_magnitude   = float(row[3] or 0)
+                macro_rate      = macro_correct / total if total > 0 else 0.0
+
+                if macro_rate > 0.60:
+                    # Macro direction was right even though signal was too weak to pass gate
+                    cur.execute("""
+                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
+                        WHERE user_id = %s AND proposal_type = 'macro_gate_too_strict'
+                          AND instrument = %s AND status = 'pending'
+                    """, (self.user_id, instrument))
+                    if int(cur.fetchone()[0]) == 0:
+                        cur.execute("""
+                            INSERT INTO forex_network.proposals
+                                (proposal_type, user_id, instrument, parameter,
+                                 current_value, proposed_value, direction,
+                                 n_trades, metric, metric_value, confidence, reasoning,
+                                 status, auto_revert_hours)
+                            VALUES ('macro_gate_too_strict', %s, %s, 'MACRO_THRESHOLD',
+                                    NULL, NULL, 'decrease',
+                                    %s, 'macro_correct_rate', %s,
+                                    'medium', %s, 'pending', 72)
+                        """, (
+                            self.user_id, instrument, total,
+                            round(macro_rate, 4),
+                            (
+                                f"When macro was blocked by the p75 gate on {instrument}, "
+                                f"macro direction was still correct {macro_rate:.0%} of the time "
+                                f"({total} rejections, avg |macro_score|={avg_magnitude:.3f}). "
+                                f"The p75 threshold may be overfitted or too conservative for "
+                                f"this pair."
+                            ),
+                        ))
+                        written += 1
+                        logger.info(
+                            f"Proposal: macro gate too strict on {instrument} — "
+                            f"macro right {macro_rate:.0%} when gated ({total} samples, "
+                            f"avg_magnitude={avg_magnitude:.3f})"
+                        )
+
             self.db.commit()
             return written
 
