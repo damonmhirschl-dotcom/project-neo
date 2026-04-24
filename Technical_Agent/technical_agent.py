@@ -113,6 +113,8 @@ class TechnicalAgent:
     AGENT_NAME = "technical"
     CYCLE_INTERVAL_MINUTES = 5   # 5-minute polling; LLM call gated by price-change threshold
     PRICE_CHANGE_THRESHOLD_PIPS = 6  # minimum pip move across any pair to justify a new LLM call
+    PRICE_METRICS_MAX_AGE_HOURS = 2        # alert + skip if price_metrics 1H older than this
+    FORCE_RECALC_INTERVAL_CYCLES = 12     # force full recalc every 12 cycles (~60 min at 5-min cadence)
     SIGNAL_EXPIRY_MINUTES = 120  # 2h TTL so quiet-market price-skip cycles do not blank the observation panel
     AWS_REGION = "eu-west-2"
 
@@ -181,6 +183,7 @@ class TechnicalAgent:
         self.dry_run = dry_run
         # Price-skip state: mid prices at the last LLM call, keyed by pair
         self._last_llm_prices: Dict[str, float] = {}
+        self._last_forced_recalc_cycle = 0    # tracks last cycle where recalc was forced
 
         # Initialize AWS clients
         self.ssm_client = boto3.client('ssm', region_name=self.AWS_REGION)
@@ -1579,6 +1582,13 @@ class TechnicalAgent:
         self.cycle_count += 1
 
         logger.info(f"Starting technical agent cycle #{self.cycle_count}")
+
+        # ── FORCED RECALCULATION TIMER ────────────────────────────────────────
+        _cycles_since_forced = self.cycle_count - self._last_forced_recalc_cycle
+        if _cycles_since_forced >= self.FORCE_RECALC_INTERVAL_CYCLES:
+            logger.info(f"Forced recalculation at cycle {self.cycle_count} ({_cycles_since_forced} cycles since last)")
+            self._last_llm_prices = {}   # clear price memory → should_call_llm returns True
+            self._last_forced_recalc_cycle = self.cycle_count
 
         try:
             # Check kill switch
