@@ -346,8 +346,29 @@ class RiskDataReader:
             return None
         cur = self.db.cursor()
         try:
+            # pnl (GBP-denominated) is NULL for cross pairs (GBPJPY, EURJPY etc.)
+            # when execution agent cannot resolve the quote→GBP conversion rate.
+            # Fallback: approximate from pnl_pips using:
+            #   pnl_approx_gbp = pnl_pips × pip_size × lots × 100000 / exit_price
+            # This is exact for GBP-base pairs (GBPJPY, GBPUSD) and a close
+            # approximation for other crosses (EUR/JPY off by EUR/GBP rate ≈ ±15%).
+            # Safe direction: under-estimates losses for EUR pairs — acceptable for
+            # a fail-safe gate because NULL pnl would count as 0 otherwise.
             cur.execute("""
-                SELECT COALESCE(SUM(pnl), 0) AS total_pnl
+                SELECT COALESCE(SUM(
+                    CASE
+                        WHEN pnl IS NOT NULL THEN pnl
+                        WHEN pnl_pips IS NOT NULL
+                             AND position_size IS NOT NULL
+                             AND exit_price IS NOT NULL
+                             AND exit_price > 0
+                        THEN pnl_pips
+                             * CASE WHEN instrument LIKE '%%JPY' THEN 0.01 ELSE 0.0001 END
+                             * position_size * 100000.0
+                             / exit_price
+                        ELSE 0
+                    END
+                ), 0) AS total_pnl
                 FROM forex_network.trades
                 WHERE user_id = %s
                   AND exit_time IS NOT NULL
@@ -381,7 +402,20 @@ class RiskDataReader:
         cur = self.db.cursor()
         try:
             cur.execute("""
-                SELECT COALESCE(SUM(pnl), 0) AS weekly_pnl
+                SELECT COALESCE(SUM(
+                    CASE
+                        WHEN pnl IS NOT NULL THEN pnl
+                        WHEN pnl_pips IS NOT NULL
+                             AND position_size IS NOT NULL
+                             AND exit_price IS NOT NULL
+                             AND exit_price > 0
+                        THEN pnl_pips
+                             * CASE WHEN instrument LIKE '%%JPY' THEN 0.01 ELSE 0.0001 END
+                             * position_size * 100000.0
+                             / exit_price
+                        ELSE 0
+                    END
+                ), 0) AS weekly_pnl
                 FROM forex_network.trades
                 WHERE user_id = %s
                   AND exit_time IS NOT NULL
@@ -1527,8 +1561,13 @@ class RiskGuardian:
                     _pip_size = 0.01 if 'JPY' in instrument else 0.0001
                     _reward_pips = _rr_reward / _pip_size
                     _risk_pips = _rr_risk / _pip_size
-                    # Estimate hold days from stress: high stress → shorter hold (2d), else 3d.
-                    _hold_days = 2.0 if stress_score_for_sizing > 50 else 3.0
+                    # Hold days: read from risk_parameters if configured, else stress-based fallback.
+                    # High stress → shorter hold (2d); normal → 3d.
+                    _configured_hold = risk_params.get("swap_hold_days")
+                    if _configured_hold is not None:
+                        _hold_days = float(_configured_hold)
+                    else:
+                        _hold_days = 2.0 if stress_score_for_sizing > 50 else 3.0
                     swap_rate = self.reader.read_swap_rate(instrument, direction)
                     swap_passed, swap_details = SwapCostChecker.check(
                         swap_rate_pips=swap_rate,
