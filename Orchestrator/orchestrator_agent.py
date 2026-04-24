@@ -2,7 +2,7 @@
 """
 Project Neo — Orchestrator Agent v1.0
 ======================================
-Reads signals from Macro (35%), Technical (45%), and Regime (20%) agents.
+Reads signals from Macro and Technical agents.
 Computes weighted convergence score per pair per user.
 Approves trades only when convergence exceeds effective threshold
 and all pre-conditions are met.
@@ -60,7 +60,6 @@ EXPECTED_TABLES = {
     "forex_network.risk_parameters":      ["user_id", "convergence_threshold", "max_risk_pct",
                                            "max_open_positions", "account_value",
                                            "peak_account_value", "updated_at"],
-    "shared.market_context_snapshots":    ["system_stress_score", "stress_state", "snapshot_time"],
 }
 
 # =============================================================================
@@ -84,11 +83,10 @@ SIGNAL_EXPIRY_MINUTES = 20
 # Macro: 15-min active / 60-min quiet — threshold must exceed longest normal cycle.
 # Regime: 15-min active / 15-min quiet.
 SIGNAL_MAX_AGE_MINUTES = {
-    'active': {'macro': 25, 'technical': 20, 'regime': 20},
-    'quiet':  {'macro': 65, 'technical': 20, 'regime': 20},
+    'active': {'macro': 25, 'technical': 20},
+    'quiet':  {'macro': 65, 'technical': 20},
 }
-_SIGNAL_MAX_AGE_DEFAULT = {'macro': 25, 'technical': 20, 'regime': 20}
-REGIME_SNAPSHOT_MAX_AGE_MINUTES = 55  # regime quiet-hours sleep = 60s; 55 avoids false-stale before next write
+_SIGNAL_MAX_AGE_DEFAULT = {'macro': 25, 'technical': 20}
 HEARTBEAT_INTERVAL_SECONDS = 60
 AGENT_NAME = "orchestrator"
 
@@ -97,7 +95,6 @@ AGENT_NAME = "orchestrator"
 CONVERGENCE_WEIGHTS = {
     "macro":     0.40,
     "technical": 0.40,
-    "regime":    0.20,
 }
 
 # V1 Swing: single profile for all users.
@@ -159,8 +156,6 @@ CROSS_PAIR_SESSIONS = {
 # Per-cycle convergence cache for collapse-alert delta comparison
 _prev_convergence_scores: dict = {}
 
-# V1 Swing (2026-04-24): STRESS_ADJUSTMENTS removed.
-# Stress score is read for observability/logging only; does NOT raise threshold.
 
 # Pre-event protocol
 PRE_EVENT_WINDOW_MINUTES = 60
@@ -268,13 +263,13 @@ class SignalReader:
                        EXTRACT(EPOCH FROM (NOW() - created_at)) / 60 AS signal_age_min
                 FROM forex_network.agent_signals
                 WHERE user_id = %s
-                  AND agent_name IN ('macro', 'technical', 'regime')
+                  AND agent_name IN ('macro', 'technical')
                 ORDER BY agent_name, instrument, created_at DESC
             """, (self.user_id,))
             rows = cur.fetchall()
 
             _now_utc = datetime.datetime.now(datetime.timezone.utc)
-            signals: Dict[str, List[Dict]] = {"macro": [], "technical": [], "regime": []}
+            signals: Dict[str, List[Dict]] = {"macro": [], "technical": []}
             for row in rows:
                 agent = row["agent_name"]
                 if agent in signals:
@@ -300,85 +295,28 @@ class SignalReader:
             return signals
         except Exception as e:
             logger.error(f"Signal read failed: {e}")
-            return {"macro": [], "technical": [], "regime": []}
+            return {"macro": [], "technical": []}
         finally:
             cur.close()
 
     def read_market_context(self) -> Dict[str, Any]:
-        """Read latest market context snapshot (from regime agent).
-        If the snapshot is older than REGIME_SNAPSHOT_MAX_AGE_MINUTES, the regime
-        agent has likely crashed. Return conservative defaults (elevated stress, low
-        confidence) so the orchestrator doesn't trade on stale regime data.
-        """
-        cur = self.db.cursor()
-        try:
-            cur.execute("""
-                SELECT system_stress_score, stress_state, stress_components,
-                       current_session, day_of_week, stop_hunt_window,
-                       ny_close_window, regime_global AS global_regime, metadata,
-                       snapshot_time
-                FROM shared.market_context_snapshots
-                WHERE system_stress_score IS NOT NULL
-                ORDER BY snapshot_time DESC LIMIT 1
-            """)
-            row = cur.fetchone()
-            if row:
-                # Staleness guard — regime agent down or crashed
-                snapshot_time = row["snapshot_time"]
-                if snapshot_time:
-                    if snapshot_time.tzinfo is None:
-                        snapshot_time = snapshot_time.replace(tzinfo=datetime.timezone.utc)
-                    age_minutes = (
-                        datetime.datetime.now(datetime.timezone.utc) - snapshot_time
-                    ).total_seconds() / 60
-                    if age_minutes > REGIME_SNAPSHOT_MAX_AGE_MINUTES:
-                        logger.warning(
-                            f"Regime snapshot is {age_minutes:.0f}min old "
-                            f"(max: {REGIME_SNAPSHOT_MAX_AGE_MINUTES}min) — "
-                            f"using conservative defaults to avoid trading on stale stress data"
-                        )
-                        return {
-                            "stress_score": 50.0,
-                            "stress_state": "elevated",
-                            "stress_components": {},
-                            "current_session": "unknown",
-                            "day_of_week": None,
-                            "stop_hunt_window": False,
-                            "ny_close_window": False,
-                            "global_regime": "ranging",
-                            "metadata": {},
-                            "kill_switch_active": False,
-                            "stress_score_confidence": "low",
-                            "convergence_caution_buffer": 0.05,
-                            "vix_spike_floor_active": False,
-                            "regime_snapshot_stale": True,
-                            "regime_snapshot_age_minutes": round(age_minutes, 1),
-                        }
-
-                metadata = row["metadata"]
-                if isinstance(metadata, str):
-                    metadata = json.loads(metadata)
-                return {
-                    "stress_score": float(row["system_stress_score"]),
-                    "stress_state": row["stress_state"],
-                    "stress_components": row["stress_components"],
-                    "current_session": row["current_session"],
-                    "day_of_week": int(row["day_of_week"]) if row["day_of_week"] else None,
-                    "stop_hunt_window": row["stop_hunt_window"],
-                    "ny_close_window": row["ny_close_window"],
-                    "global_regime": row["global_regime"],
-                    "metadata": metadata or {},
-                    "kill_switch_active": (metadata or {}).get("kill_switch_active", False),
-                    "stress_score_confidence": (metadata or {}).get("stress_score_confidence", "high"),
-                    "convergence_caution_buffer": (metadata or {}).get("convergence_caution_buffer", 0.0),
-                    "vix_spike_floor_active": (metadata or {}).get("vix_spike_floor_active", False),
-                }
-            return {}
-        except Exception as e:
-            logger.error(f"Market context read failed: {e}")
-            return {}
-        finally:
-            cur.close()
+        """Derive market context from system clock (regime agent decommissioned)."""
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        h, m = now_utc.hour, now_utc.minute
+        if 0 <= h < 7:      session = 'asian'
+        elif 7 <= h < 12:   session = 'london'
+        elif 12 <= h < 16:  session = 'overlap'
+        elif 16 <= h < 20:  session = 'newyork'
+        elif 20 <= h < 22:  session = 'ny_close'
+        else:               session = 'off_hours'
+        return {
+            "current_session":  session,
+            "day_of_week":      now_utc.weekday(),
+            "stop_hunt_window": (h == 7 and m < 30) or (h == 13 and m < 30),
+            "ny_close_window":  20 <= h < 22,
+            "kill_switch_active": False,
+            "global_regime": "ranging",
+        }
 
     def read_risk_parameters(self) -> Dict[str, Any]:
         """Read risk parameters for this user."""
@@ -414,7 +352,7 @@ class SignalReader:
                        degradation_mode, convergence_boost
                 FROM forex_network.agent_heartbeats
                 WHERE user_id = %s
-                  AND agent_name IN ('macro', 'technical', 'regime')
+                  AND agent_name IN ('macro', 'technical')
             """, (self.user_id,))
             rows = cur.fetchall()
             return {
@@ -574,7 +512,6 @@ class ConvergenceCalculator:
         """Classify the type of fundamental-technical conflict.
 
         Returns one of:
-          crisis_divergence              — stress > 70
           noise_conflict                 — both low-confidence or both low-magnitude
           fundamental_shift_macro_leading    — macro changed recently, tech persistent
           fundamental_shift_technical_leading — tech changed recently, macro persistent
@@ -591,10 +528,6 @@ class ConvergenceCalculator:
 
         instrument = macro_signal.get("instrument") or tech_signal.get("instrument")
         stress_score = float(stress_score or 0)
-
-        # Category 4: Crisis divergence — market-wide stress overrides classification
-        if stress_score > 70:
-            return "crisis_divergence"
 
         # Category 3: Noise conflict — both agents weak on magnitude or confidence
         if (macro_conf < 0.40 and tech_conf < 0.40) or \
@@ -717,7 +650,7 @@ class ConvergenceCalculator:
 
     def write_convergence_history(
         self, instrument: str, convergence_score: float,
-        macro_score: float, technical_score: float, regime_score: float,
+        macro_score: float, technical_score: float, regime_score: float = None,
         bias: str = "neutral",
     ) -> None:
         """Persist convergence score for trend analysis. Auto-prunes rows >7 days."""
@@ -892,19 +825,6 @@ class ConvergenceCalculator:
         breakdown["base_threshold"] = base
         effective = base
 
-        # 2. Stress (V1 Swing 2026-04-24): stress no longer raises the gate threshold.
-        # Stress score is recorded for observability only.
-        _stress_score_obs = market_context.get("stress_score", 0)
-        breakdown["stress_score_observed"] = _stress_score_obs
-        breakdown["stress_state_observed"] = market_context.get("stress_state", "unknown")
-        # Backward-compat keys so evaluate_pair CHECK 2 still passes cleanly:
-        breakdown["stress_new_entries_allowed"] = True
-        breakdown["stress_session_restriction"] = None
-        breakdown["stress_size_multiplier"] = 1.0
-        breakdown["stress_adjustment"] = 0.0
-
-        # 3. (Removed) R5 caution buffer — stress no longer modifies threshold
-
         # 4. Pre-event protocol
         if upcoming_events:
             effective += PRE_EVENT_THRESHOLD_ADD
@@ -926,12 +846,6 @@ class ConvergenceCalculator:
         if total_degradation_boost > 0:
             effective += total_degradation_boost
             breakdown["total_degradation_boost"] = total_degradation_boost
-
-        # 6. Gap C: Regime confidence — low regime confidence adds +0.05
-        regime_confidence = market_context.get("metadata", {}).get("regime_confidence")
-        # Also check per-pair from regime signal
-        # This is applied per-pair in the convergence scoring, not globally
-        breakdown["regime_confidence_global"] = regime_confidence
 
         # 7. Drawdown step multiplier (from risk guardian)
         drawdown_mult = float(risk_params.get("size_multiplier", 1.0))
@@ -959,7 +873,6 @@ class ConvergenceCalculator:
         self,
         pair: str,
         signals: Dict[str, List[Dict[str, Any]]],
-        regime_payload: Dict[str, Any],
     ) -> Tuple[float, str, float, Dict[str, Any]]:
         """
         Compute convergence score for a single pair.
@@ -981,17 +894,10 @@ class ConvergenceCalculator:
           3. Bias strings from the LLM can be compound ("neutral_bullish",
              "neutral_bearish"). We normalise by substring match so the
              directional consensus counts them correctly.
-          4. Regime is excluded from the directional consensus. Regime emits
-             a constant `bias = "neutral"` string and its score sign doesn't
-             reliably indicate trend direction (TRENDING = +0.5 regardless of
-             the actual trend). Its weight still contributes to the magnitude
-             of the convergence score.
-
         Returns (convergence_score, bias, confidence, detail_dict).
         """
         detail: Dict[str, Any] = {"pair": pair}
-        directional_sum = 0.0        # macro + technical weighted contributions only
-        regime_score_captured = None  # captured separately; applied as multiplier
+        directional_sum = 0.0        # macro + technical weighted contributions
         weighted_confidence = 0.0
         agents_present: List[str] = []
         directional_biases: List[str] = []  # macro + technical only
@@ -1004,25 +910,9 @@ class ConvergenceCalculator:
             # if no per-pair signal exists or per-pair score is exactly 0.00.
             pair_signal = None
             for sig in agent_signals:
-                if agent_name == "regime":
-                    if sig["instrument"] == pair:
+                if sig["instrument"] == pair:
                         pair_signal = sig
                         break
-                else:
-                    if sig["instrument"] == pair:
-                        pair_signal = sig
-                        break
-
-            if agent_name == "regime":
-                if pair_signal is None or float(pair_signal.get("score") or 0) == 0.0:
-                    global_sig = None
-                    for sig in agent_signals:
-                        if sig["instrument"] is None:
-                            global_sig = sig
-                            break
-                    if global_sig is not None:
-                        pair_signal = global_sig
-                        detail["regime_used_global_fallback"] = True
 
             if not pair_signal:
                 detail[f"{agent_name}_missing"] = True
@@ -1078,16 +968,11 @@ class ConvergenceCalculator:
             else:
                 norm_bias = "neutral"
 
-            # Regime is a multiplier, not an additive component — capture score separately.
-            if agent_name == "regime":
-                regime_score_captured = score
-            else:
-                directional_sum += score * weight
+            directional_sum += score * weight
             weighted_confidence += confidence * weight
             agents_present.append(agent_name)
 
-            if agent_name != "regime":
-                directional_biases.append(norm_bias)
+            directional_biases.append(norm_bias)
 
             detail[f"{agent_name}_score"] = round(score, 4)
             detail[f"{agent_name}_confidence"] = round(confidence, 4)
@@ -1097,26 +982,7 @@ class ConvergenceCalculator:
         if not agents_present:
             return 0.0, "neutral", 0.0, detail
 
-        # Regime contributes additively to convergence (weight 0.20).
-        # Additive avoids cascading collapse when only one directional agent clears
-        # the confidence gate — regime's informational value is independent of
-        # how many agents are contributing to directional_sum.
-        # Score 0.0 (ranging)  -> +0.000 regime contribution.
-        # Score 0.50 (neutral) -> +0.100 regime contribution.
-        # Score 1.0 (trending) -> +0.200 regime contribution.
-        _regime_score = regime_score_captured if regime_score_captured is not None else 0.50
-        # Change 2: regime uses daily ADX; technical uses 15M. If regime says
-        # ranging (score≤0.1) but the regime agent's own daily ADX>20, the
-        # timeframes conflict — treat as neutral rather than penalising to 0.
-        _pair_regime_data = regime_payload.get("pair_regimes", {}).get(pair, {})
-        _regime_adx = float(_pair_regime_data.get('adx') or 0) if isinstance(_pair_regime_data, dict) else 0.0
-        if _regime_score <= 0.1 and _regime_adx > 20:
-            _regime_score = 0.50
-            detail["regime_score_adx_override"] = round(_regime_adx, 1)
-        regime_additive = _regime_score * 0.20
-        convergence = directional_sum + regime_additive
-        detail["regime_score_used"] = round(_regime_score, 4)
-        detail["regime_additive"] = round(regime_additive, 4)
+        convergence = directional_sum
         detail["directional_sum"] = round(directional_sum, 4)
 
         # Consensus bias from directional agents only (regime excluded).
@@ -1134,11 +1000,6 @@ class ConvergenceCalculator:
         avg_confidence = (
             weighted_confidence / present_weight_sum if present_weight_sum > 0 else 0.0
         )
-
-        # Gap C: per-pair regime confidence note (threshold boost applied elsewhere).
-        pair_regime = regime_payload.get("pair_regimes", {}).get(pair, {})
-        if pair_regime.get("regime_confidence") == "low":
-            detail["regime_confidence_low"] = True
 
         detail["convergence_score"] = round(convergence, 4)
         detail["consensus_bias"] = consensus_bias
@@ -1231,10 +1092,6 @@ class ConvergenceCalculator:
         else:
             decision["checks"]["convergence"] = "PASS"
 
-        # === CHECK 2: Stress gate (V1 Swing 2026-04-24 — removed) ===
-        # Stress no longer blocks new entries. Log for observability only.
-        decision["checks"]["stress_entries"] = "PASS"  # always pass
-
         # === CHECK 3: Kill switch ===
         if market_context.get("kill_switch_active"):
             decision["rejection_reasons"].append("Kill switch active — no new entries")
@@ -1245,12 +1102,8 @@ class ConvergenceCalculator:
         # === CHECK 4: Session filter ===
         current_session = market_context.get("current_session", "unknown")
         session_filter = self.profile.get("session_filter")
-        # V1 Swing 2026-04-24: stress_session_restriction removed.
-
-        # Apply session filter (stress restriction removed)
-        allowed_sessions = None
-        if session_filter:
-            allowed_sessions = session_filter
+        # Apply session filter
+        allowed_sessions = session_filter
 
         if allowed_sessions and current_session not in allowed_sessions:
             decision["rejection_reasons"].append(
@@ -1960,10 +1813,6 @@ class OrchestratorAgent:
         # Session and convergence from live context
         context['session'] = market_context.get('current_session', 'unknown')
         context['convergence_score'] = round(convergence_score, 4)
-        stress = market_context.get('stress_score')
-        if stress is not None:
-            context['stress_score'] = round(float(stress), 2)
-
         # Macro and tech confidence from signals
         macro_sigs = signals.get('macro', [])
         tech_sigs = signals.get('technical', [])
@@ -1988,17 +1837,7 @@ class OrchestratorAgent:
                 _macro_direction_ctx = 'long' if _ms_ctx > 0 else 'short'
         context['macro_direction'] = _macro_direction_ctx
 
-        # Per-instrument regime signal + global regime payload for pair data
-        _regime_sigs = signals.get('regime', [])
-        _regime_sig  = next((s for s in _regime_sigs if s.get('instrument') == instrument), {})
-        _regime_global = next((s for s in _regime_sigs if s.get('instrument') is None), {})
-        _pair_regime = (
-            (_regime_global.get('payload') or {})
-            .get('pair_regimes', {})
-            .get(instrument, {})
-        )
 
-        context['regime_score'] = float(_regime_sig.get('score') or 0) if _regime_sig else None
 
         # ── NEW: trajectory features from each agent's payload ────────────────
         def _safe_payload(sig):
@@ -2010,26 +1849,15 @@ class OrchestratorAgent:
 
         _mpay = _safe_payload(macro_sig)
         _tpay = _safe_payload(tech_sig)
-        _rpay = _safe_payload(_regime_sig)
 
         context['macro_trajectory']  = _mpay.get('trajectory')
         context['tech_trajectory']   = _tpay.get('trajectory')
-        context['regime_trajectory'] = _rpay.get('trajectory')
-
-        # ── NEW: per-pair regime classification ───────────────────────────────
-        context['regime_classification'] = (
-            _pair_regime.get('regime') if isinstance(_pair_regime, dict) else None
-        )
-        context['regime_adx'] = (
-            float(_pair_regime['adx']) if isinstance(_pair_regime, dict)
-                                          and _pair_regime.get('adx') is not None else None
-        )
 
         # ── NEW: agents_agreed ────────────────────────────────────────────────
         _agreed = []
         if (macro_sig or {}).get('bias') == bias: _agreed.append('macro')
         if (tech_sig  or {}).get('bias') == bias: _agreed.append('tech')
-        if (_regime_sig or {}).get('bias') == bias: _agreed.append('regime')
+
         context['agents_agreed'] = '+'.join(_agreed) if _agreed else 'none'
 
         # ── NEW: geopolitical tension + persistence ───────────────────────────
@@ -2233,7 +2061,6 @@ class OrchestratorAgent:
         _HEARTBEAT_STALE_MIN = {
             "macro":     30,
             "technical": 10,
-            "regime":    30,
         }
         for _agent_name, _agent_state in degradation.items():
             _last_seen = _agent_state.get("last_seen")
@@ -2256,11 +2083,10 @@ class OrchestratorAgent:
 
         logger.info(
             f"Signals: macro={len(signals['macro'])}, "
-            f"technical={len(signals['technical'])}, regime={len(signals['regime'])}"
+            f"technical={len(signals['technical'])}"
         )
         logger.info(
-            f"Context: stress={market_context.get('stress_score', 'N/A')}, "
-            f"session={market_context.get('current_session', 'N/A')}, "
+            f"Context: session={market_context.get('current_session', 'N/A')}, "
             f"open_positions={len(open_positions)}"
         )
 
@@ -2284,17 +2110,6 @@ class OrchestratorAgent:
             upcoming_events=upcoming_events,
         )
 
-        # 5. Get regime payload for per-pair context
-        regime_payload = {}
-        for sig in signals.get("regime", []):
-            if sig["instrument"] is None:
-                regime_payload = sig.get("payload", {})
-                break
-
-        # Regime signal contract check (once per cycle)
-        if regime_payload:
-            self._validator.validate_and_log("regime", regime_payload, None, logger)
-
         # 6. Evaluate each pair
         # Check for recent stop losses and update per-pair convergence penalties
         self._check_stop_loss_penalties()
@@ -2313,7 +2128,6 @@ class OrchestratorAgent:
             base_convergence, bias, confidence, detail = self.convergence_calc.compute_pair_convergence(
                 pair=pair,
                 signals=signals,
-                regime_payload=regime_payload,
             )
 
             # Write base convergence to history (Feature 2)
@@ -2323,17 +2137,15 @@ class OrchestratorAgent:
                     convergence_score=base_convergence,
                     macro_score=detail.get("macro_score", 0.0),
                     technical_score=detail.get("technical_score", 0.0),
-                    regime_score=detail.get("regime_score", 0.0),
+                    regime_score=None,
                     bias=bias,
                 )
 
             # Apply historical bonuses (Features 1, 2, 3)
-            pair_regime = regime_payload.get("pair_regimes", {}).get(pair, {})
-            regime_str = pair_regime.get("regime", "ranging") if isinstance(pair_regime, dict) else "ranging"
             final_convergence, historical_detail = self.convergence_calc.compute_final_convergence(
                 instrument=pair,
                 base_convergence=base_convergence,
-                regime=regime_str,
+                regime="ranging",
                 session=current_session,
                 bias=bias,
             )
@@ -2451,11 +2263,7 @@ class OrchestratorAgent:
             else:
                 _macro_direction = 'long' if _macro_score > 0 else 'short'
 
-            # Regime context for shadow trades
-            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
-            _regime_direction = 'long' if _regime_score_val > 0 else 'short'
-            _regime_agrees = _regime_score_val > 0.25
-            _regime_agrees_pre = (_regime_direction == _macro_direction)
+
             _p50 = None  # percentile gate removed (2026-04-24)
             _effective_macro_threshold = MACRO_THRESHOLD  # display-only reference
 
@@ -2509,11 +2317,11 @@ class OrchestratorAgent:
                 _gate_reject(_v1swing_reason)
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, _v1swing_reason,
+                    None, _v1swing_reason,
                     hypothesis='full_cycle',
                     macro_gate_passed=(_v1swing_reason not in ('macro_no_direction',)),
                     tech_gate_passed=(_v1swing_reason not in ('technical_gate_fail',)),
-                    regime_agrees=_regime_agrees_pre,
+                    regime_agrees=None,
                     p75_threshold=None,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=False,
@@ -2527,11 +2335,11 @@ class OrchestratorAgent:
             if 0.10 <= abs(_tech_score) < 0.20:
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'tech_in_0.10_0.20_range',
+                    None, 'tech_in_0.10_0.20_range',
                     hypothesis='tech_threshold_0.10',
                     macro_gate_passed=True,
                     tech_gate_passed=True,
-                    regime_agrees=_regime_agrees,
+                    regime_agrees=None,
                     p75_threshold=None,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=(_tech_direction == _macro_direction),
@@ -2540,11 +2348,11 @@ class OrchestratorAgent:
             # V1 Swing gate cleared — full_cycle shadow trade observation
             self._write_shadow_trade(
                 pair, bias, _macro_score, _tech_score,
-                _regime_score_val, None,
+                None, None,
                 hypothesis='full_cycle',
                 macro_gate_passed=True,
                 tech_gate_passed=True,
-                regime_agrees=_regime_agrees,
+                regime_agrees=None,
                 p75_threshold=None,
                 effective_threshold=_effective_macro_threshold,
                 would_have_traded=True,
@@ -2563,10 +2371,9 @@ class OrchestratorAgent:
                 "tech_gate":  round(_tech_score, 4),
             }
 
-            # Convergence for display — 70/20/10 (macro dominates; tech = confirmation strength)
-            _regime_s_display = float(detail.get("regime_score_used") or 0.50)
+            # Convergence for display (macro dominates; tech = confirmation strength)
             detail["hierarchical_convergence"] = round(
-                abs(_macro_score) * 0.70 + abs(_tech_score) * 0.20 + _regime_s_display * 0.10, 4
+                abs(_macro_score) * 0.70 + abs(_tech_score) * 0.30, 4
             )
 
             logger.info(f"{pair}: {dc_reason} (convergence={final_convergence:.3f})")
@@ -2640,8 +2447,8 @@ class OrchestratorAgent:
             decision["macro_direction"]          = _macro_direction  # Change 7: wire for technical agent
             decision["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
             decision["p75_threshold"]             = None  # removed
-            decision["stress_score"]              = market_context.get("stress_score")
-            decision["stress_band"]               = market_context.get("stress_state")
+            decision["stress_score"]              = None
+            decision["stress_band"]               = None
 
             # B. Bias-score inconsistency alert
             _bias_lower = (decision.get("bias") or "").lower()
@@ -2918,7 +2725,6 @@ class OrchestratorTester:
         self.test_convergence_weights()
         self.test_threshold_base_values()
         self.test_o1_hard_floor()
-        self.test_stress_threshold_adjustments()
         self.test_r5_confidence_low_floor()
         self.test_pre_event_adjustment()
         self.test_degradation_boost()
@@ -2947,10 +2753,9 @@ class OrchestratorTester:
     def test_convergence_weights(self):
         logger.info("\n--- Test: Convergence Weights ---")
         total = sum(CONVERGENCE_WEIGHTS.values())
-        self._assert(abs(total - 1.0) < 0.001, "Weights sum to 1.0", f"Got: {total}")
+        self._assert(abs(total - 0.80) < 0.001, "Weights sum to 0.80", f"Got: {total}")
         self._assert(CONVERGENCE_WEIGHTS["macro"] == 0.40, "Macro weight is 0.40")
         self._assert(CONVERGENCE_WEIGHTS["technical"] == 0.40, "Technical weight is 0.40")
-        self._assert(CONVERGENCE_WEIGHTS["regime"] == 0.20, "Regime weight is 0.20")
 
     def test_threshold_base_values(self):
         logger.info("\n--- Test: Threshold Base Values ---")
@@ -2965,62 +2770,25 @@ class OrchestratorTester:
         # Threshold should never go below base
         threshold, _ = calc.compute_effective_threshold(
             risk_params={"convergence_threshold": 0.65},
-            market_context={"stress_score": 0, "stress_state": "Normal"},
+            market_context={},
             degradation={},
             upcoming_events=[],
         )
         self._assert(threshold >= 0.65, "O1: Threshold never below base 0.65", f"Got: {threshold}")
 
-    def test_stress_threshold_adjustments(self):
-        logger.info("\n--- Test: Stress Threshold Adjustments ---")
-        calc = ConvergenceCalculator("neo_user_002")
-
-        # Normal (0-30): no adjustment
-        t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 15}, {}, [])
-        self._assert(t == 0.65, "Normal stress: no adjustment", f"Got: {t}")
-
-        # Elevated (30-50): +0.05
-        t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 40}, {}, [])
-        self._assert(abs(t - 0.70) < 0.001, "Elevated stress: +0.05", f"Got: {t}")
-
-        # High (50-70): +0.10
-        t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 60}, {}, [])
-        self._assert(t == 0.75, "High stress: +0.10", f"Got: {t}")
-
-        # Pre-crisis (70-85): +0.15, no new entries
-        t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 78}, {}, [])
-        self._assert(t == 0.80, "Pre-crisis: +0.15", f"Got: {t}")
-        self._assert(not b["stress_new_entries_allowed"], "Pre-crisis: no new entries")
-
-        # Crisis (85+): no new entries
-        t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 92}, {}, [])
-        self._assert(not b["stress_new_entries_allowed"], "Crisis: no new entries")
-        self._assert(b["stress_size_multiplier"] == 0.0, "Crisis: size multiplier 0")
-
     def test_r5_confidence_low_floor(self):
         logger.info("\n--- Test: R5 Confidence Low Floor ---")
         calc = ConvergenceCalculator("neo_user_002")
-
-        # Normal stress but low confidence → Elevated floor
         t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65},
-            {"stress_score": 15, "stress_score_confidence": "low",
-             "convergence_caution_buffer": 0.06},
-            {}, [])
-        self._assert(t >= 0.76, "R5 low confidence: threshold includes caution + Elevated floor", f"Got: {t}")
-        self._assert(b.get("stress_size_multiplier", 1.0) <= 0.75, "R5 low confidence: size ≤ 0.75×")
+            {"convergence_threshold": 0.65}, {}, {}, [])
+        self._assert(t >= 0.65, "R5: threshold at least base", f"Got: {t}")
 
-    def test_pre_event_adjustment(self):
+
         logger.info("\n--- Test: Pre-event Adjustment ---")
         calc = ConvergenceCalculator("neo_user_002")
         events = [{"country": "US", "indicator": "NFP", "scheduled_time": "2026-04-16T13:30:00Z"}]
         t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 15}, {}, events)
+            {"convergence_threshold": 0.65}, {}, {}, events)
         self._assert(abs(t - 0.70) < 0.001, "Pre-event: +0.05", f"Got: {t}")
 
     def test_degradation_boost(self):
@@ -3028,23 +2796,22 @@ class OrchestratorTester:
         calc = ConvergenceCalculator("neo_user_002")
         degradation = {
             "macro": {"convergence_boost": 0.10, "degradation_mode": "degraded"},
-            "regime": {"convergence_boost": 0.15, "degradation_mode": "degraded"},
         }
         t, b = calc.compute_effective_threshold(
-            {"convergence_threshold": 0.65}, {"stress_score": 15}, degradation, [])
-        self._assert(t == 0.90, "Degradation: +0.10 +0.15 = +0.25", f"Got: {t}")
+            {"convergence_threshold": 0.65}, {}, degradation, [])
+        self._assert(t == 0.75, "Degradation: +0.10", f"Got: {t}")
 
     def test_combined_threshold_stacking(self):
         logger.info("\n--- Test: Combined Threshold Stacking ---")
         calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
-        # High stress (+0.10) + pre-event (+0.05) + macro degraded (+0.10)
+        # Pre-event (+0.05) + macro degraded (+0.10)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},
-            {"stress_score": 60},
+            {},
             {"macro": {"convergence_boost": 0.10, "degradation_mode": "degraded"}},
             [{"country": "US", "indicator": "CPI", "scheduled_time": "2026-04-16T13:30:00Z"}],
         )
-        expected = 0.55 + 0.05 + 0.10  # = 0.70 (V1 Swing: stress no longer adds)
+        expected = 0.55 + 0.05 + 0.10  # = 0.70
         self._assert(
             abs(t - expected) < 0.001,
             f"Stacked: V1Swing 0.55 + pre_event + macro_degradation = 0.70",
@@ -3057,7 +2824,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "asian", "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3071,7 +2838,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 1},  # Monday
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3084,7 +2851,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "ny_close", "ny_close_window": True, "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3097,7 +2864,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "newyork", "day_of_week": 5, "ny_close_window": False},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3113,7 +2880,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=fake_positions, upcoming_events=[], technical_payload={},
@@ -3127,7 +2894,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3, "circuit_breaker_active": True},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3140,7 +2907,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="neutral", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
@@ -3153,7 +2920,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[],
@@ -3168,7 +2935,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True},
+            threshold_breakdown={},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[],
@@ -3183,7 +2950,7 @@ class OrchestratorTester:
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.85, bias="bullish", confidence=0.90,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": True, "combined_size_multiplier": 0.75},
+            threshold_breakdown={"combined_size_multiplier": 0.75},
             market_context={"current_session": "london", "day_of_week": 3},
             risk_params={"max_open_positions": 3, "pre_event_size_reduction": 50},
             open_positions=[], upcoming_events=[],
@@ -3199,16 +2966,16 @@ class OrchestratorTester:
     def test_size_multiplier_stacking(self):
         logger.info("\n--- Test: Size Multiplier Stacking ---")
         calc = ConvergenceCalculator("neo_user_002")
-        # High stress (0.50×) + drawdown step 1 (0.75×) + pre-event (0.50×)
+        # Drawdown step 1 (0.75x) — no stress multiplier
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.65, "size_multiplier": 0.75},
-            {"stress_score": 60},
+            {},
             {}, [{"country": "US", "indicator": "NFP", "scheduled_time": "2026-04-16T13:30:00Z"}],
         )
         combined = b["combined_size_multiplier"]
         self._assert(
-            abs(combined - 0.375) < 0.01,
-            "Stress 0.50 × drawdown 0.75 = 0.375",
+            abs(combined - 0.75) < 0.01,
+            "Drawdown 0.75 = 0.75",
             f"Got: {combined}"
         )
 
@@ -3218,7 +2985,7 @@ class OrchestratorTester:
             risk_params={"daily_loss_limit_pct": 3.0, "max_open_positions": 3},
             open_positions=[],
             daily_loss=0.0,
-            market_context={"stress_score": 15},
+            market_context={},
         )
         self._assert(result["budget_underdeployed"], "Empty book in Normal stress = underdeployed")
         self._assert(result["positions_available"] == 3, "3 positions available")
@@ -3240,36 +3007,35 @@ class OrchestratorTester:
         self._assert(len(near_miss) > 0, "Near-miss proposal generated")
 
     def test_crisis_no_entries(self):
-        logger.info("\n--- Test: Crisis No Entries ---")
+        logger.info("\n--- Test: Crisis No Entries (kill switch) ---")
         calc = ConvergenceCalculator("neo_user_002")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.99, bias="bullish", confidence=0.99,
             effective_threshold=0.65,
-            threshold_breakdown={"stress_new_entries_allowed": False},
-            market_context={"current_session": "london", "stress_state": "Crisis",
-                            "stress_score": 92, "day_of_week": 3},
+            threshold_breakdown={},
+            market_context={"current_session": "london", "kill_switch_active": True,
+                            "day_of_week": 3},
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
         )
-        self._assert(not decision["approved"], "Crisis: even perfect setup rejected")
+        self._assert(not decision["approved"], "Kill switch: even perfect setup rejected")
 
     def test_worst_case_threshold(self):
         logger.info("\n--- Test: Worst-case Threshold ---")
         calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
-        # High stress (+0.10) + pre-event (+0.05) + macro degraded (+0.10) + regime degraded (+0.15)
+        # Pre-event (+0.05) + macro degraded (+0.10)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},
-            {"stress_score": 60},
+            {},
             {
                 "macro": {"convergence_boost": 0.10, "degradation_mode": "degraded"},
-                "regime": {"convergence_boost": 0.15, "degradation_mode": "degraded"},
             },
             [{"country": "US", "indicator": "NFP", "scheduled_time": "2026-04-16T13:30:00Z"}],
         )
-        expected = 0.55 + 0.05 + 0.10 + 0.15  # = 0.85 (V1 Swing: stress no longer adds)
+        expected = 0.55 + 0.05 + 0.10  # = 0.70
         self._assert(
             abs(t - expected) < 0.001,
-            f"Worst-case V1Swing → {expected}",
+            f"Worst-case = {expected}",
             f"Got: {t}"
         )
 
