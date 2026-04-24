@@ -762,7 +762,7 @@ class SwapCostChecker:
             details["action"] = "reject"
             details["reason"] = f"Adjusted R:R is negative ({adjusted_rr:.2f}) after swap costs"
             return False, details
-        elif adjusted_rr < min_rr:
+        elif round(adjusted_rr, 4) < round(min_rr, 4):
             details["action"] = "reject"
             details["reason"] = f"Adjusted R:R ({adjusted_rr:.2f}) below minimum ({min_rr})"
             return False, details
@@ -856,10 +856,24 @@ class RiskGuardian:
           GBP_quote_rate = GBPXXX live rate (XXX = quote currency of the pair)
 
         Lookup priority:
-          1. GBP-base pair (GBPUSD, GBPJPY, etc.) — current_price IS the GBPXXX rate
-          2. GBP-quote pair (EURGBP) — rate = 1.0, no lookup needed
-          3. Otherwise — fetch GBPXXX from forex_network.historical_prices
-          4. Fallback — use current_price with a warning (imprecise for non-GBP-base)
+          1. GBP-quote pair (EURGBP): pip value already in GBP — return pip_mult directly.
+          2. GBP-base pair with current_price (GBPUSD, GBPJPY, etc.): current_price IS the
+             GBP/XXX rate, so pip_value_gbp = pip_mult / current_price.
+          3. All other cases (including GBP-base pairs without current_price, e.g. GBPJPY
+             when current_price is unavailable): build gbp_cross = 'GBP' + quote_ccy and
+             fetch from DB (LIVE → 1H → any timeframe). For GBPJPY this correctly queries
+             'GBPJPY'; for USDJPY it queries 'GBPJPY'; for EURUSD it queries 'GBPUSD', etc.
+          4. Fallback — use current_price as a proxy (only reached for non-GBP-base pairs).
+
+        Bug fix (2026-04-24): the previous code had a separate shorter DB fallback block for
+        GBP-base pairs when current_price was unavailable (LIVE/1H only, no tf=None sweep,
+        no current_price last resort). GBPJPY would enter that block instead of the robust
+        3-level fallback below, and could return None if LIVE/1H rows were absent. Fixed by
+        removing the GBP-base-only DB block and letting all pairs without a direct rate fall
+        through to the unified GBPXXX lookup which has LIVE → 1H → any-timeframe fallback
+        plus a current_price last resort. For GBPJPY: gbp_cross = 'GBPJPY', same key as
+        before; for GBPUSD: gbp_cross = 'GBPUSD'. Behaviour for USDJPY, EURUSD, EURGBP and
+        all other pairs is unchanged.
         """
         instr     = instrument.upper()
         base_ccy  = instr[:3]
@@ -867,49 +881,17 @@ class RiskGuardian:
         pip_mult  = 1000.0 if quote_ccy == 'JPY' else 10.0
 
         if quote_ccy == 'GBP':
-            # e.g. EURGBP: quote is GBP, pip value = 10 GBP per lot directly
+            # e.g. EURGBP: pip value is already in GBP — no conversion needed
             return pip_mult
 
         if base_ccy == 'GBP' and current_price and current_price > 0:
-            # e.g. GBPUSD, GBPJPY — the pair itself is GBPXXX
+            # e.g. GBPUSD, GBPJPY — current_price IS the GBP/XXX rate
             return pip_mult / current_price
 
-        # GBP-base but current_price unavailable — try LIVE then 1H from DB
-        if base_ccy == 'GBP':
-            for _tf in ('LIVE', '1H'):
-                try:
-                    _cur = self.db.cursor()
-                    _cur.execute("""
-                        SELECT close FROM forex_network.historical_prices
-                        WHERE instrument = %s AND timeframe = %s
-                        ORDER BY ts DESC LIMIT 1
-                    """, (instr, _tf))
-                    _row = _cur.fetchone()
-                    _cur.close()
-                    if _row and _row['close'] and float(_row['close']) > 0:
-                        logger.info(
-                            f"_get_pip_value_gbp({instrument}): rate from {_tf}: "
-                            f"{float(_row['close']):.5f}"
-                        )
-                        return pip_mult / float(_row['close'])
-                except Exception as _e:
-                    logger.debug(f"_get_pip_value_gbp: {_tf} fetch for {instr} failed: {_e}")
-            # Hardcoded last resort per quote currency (approximate mid-rates)
-            _HARDCODED_GBP = {
-                'JPY': 215.0, 'USD': 1.25, 'AUD': 1.90,
-                'CAD': 1.72, 'NZD': 2.05, 'CHF': 1.13,
-            }
-            _hc = _HARDCODED_GBP.get(quote_ccy)
-            if _hc:
-                logger.warning(
-                    f"_get_pip_value_gbp({instrument}): no live data — "
-                    f"using hardcoded {quote_ccy} rate {_hc}"
-                )
-                return pip_mult / _hc
-            logger.error(f"_get_pip_value_gbp({instrument}): no rate available, returning None")
-            return None
-
-        # Non-GBP-base pair: fetch GBPXXX from historical_prices (LIVE → 1H → any)
+        # All remaining pairs (including GBP-base when current_price is unavailable):
+        # build the GBP/XXX cross and fetch from DB with a 3-level fallback.
+        # For GBPJPY with no current_price: gbp_cross = 'GBPJPY' (same pair, correct rate).
+        # For USDJPY: gbp_cross = 'GBPJPY'. For EURUSD: gbp_cross = 'GBPUSD'. Etc.
         gbp_cross = f'GBP{quote_ccy}'
         for _tf in ('LIVE', '1H', None):
             try:
@@ -936,11 +918,11 @@ class RiskGuardian:
                     f"(tf={_tf}) failed: {_e}"
                 )
 
-        # Last resort: current_price as proxy (wrong scale for non-GBP-base but avoids None)
+        # Last resort: current_price as proxy (exact for GBP-base, approximate for others)
         if current_price and current_price > 0:
             logger.warning(
                 f"_get_pip_value_gbp({instrument}): using current_price={current_price:.5f} "
-                f"as proxy for {gbp_cross} — pip value will be inaccurate"
+                f"as proxy for {gbp_cross} — pip value will be inaccurate for non-GBP-base pairs"
             )
             return pip_mult / current_price
 
@@ -1549,7 +1531,7 @@ class RiskGuardian:
                 decision["checks"]["swap_rr"] = "SKIP"
             else:
                 _computed_rr = _rr_reward / _rr_risk
-                if _computed_rr < min_rr:
+                if round(_computed_rr, 4) < round(min_rr, 4):
                     decision["rejection_reasons"].append(
                         f"insufficient_rr: {_computed_rr:.2f}:1 < {min_rr:.1f}:1"
                     )
