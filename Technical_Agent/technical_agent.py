@@ -1145,18 +1145,6 @@ class TechnicalAgent:
                     if distance_to_swing_high > atr * 1.5:
                         score = round(score * 0.5, 4)
 
-                # ── swing-based stop reference ────────────────────────────────
-                # Use swing level as stop anchor; fall back to pure ATR if no swing data
-                if score > 0 and swing_low_price:
-                    stop_reference = min(swing_low_price, current_price - atr * 2.0)
-                    stop_basis = 'swing'
-                elif score < 0 and swing_high_price:
-                    stop_reference = max(swing_high_price, current_price + atr * 2.0)
-                    stop_basis = 'swing'
-                else:
-                    stop_reference = (current_price - atr * 2.0) if score >= 0 else (current_price + atr * 2.0)
-                    stop_basis = 'atr'
-
                 bias = 'bullish' if score > 0.1 else ('bearish' if score < -0.1 else 'neutral')
                 confidence = round(min(0.90, max(0.10, abs(score) * 1.5)), 4)
                 stop_distance_pips = round((atr * 1.5 / pip_size), 1) if atr > 0 else 20.0
@@ -1183,8 +1171,6 @@ class TechnicalAgent:
                         'trend_structure':    swing.get('trend_structure', 'neutral'),
                         'bars_since_swing_high': swing.get('bars_since_swing_high'),
                         'bars_since_swing_low':  swing.get('bars_since_swing_low'),
-                        'stop_reference':     round(stop_reference, 5),
-                        'stop_basis':         stop_basis,
                         'proposals':          [],
                         # signal_contract stubs — required by shared/signal_validator.py
                         'risk_management': {

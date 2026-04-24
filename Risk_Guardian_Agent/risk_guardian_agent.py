@@ -840,21 +840,67 @@ class RiskGuardian:
             # e.g. GBPUSD, GBPJPY — the pair itself is GBPXXX
             return pip_mult / current_price
 
-        # Non-GBP-base pair: fetch GBPXXX from historical_prices
+        # GBP-base but current_price unavailable — try LIVE then 1H from DB
+        if base_ccy == 'GBP':
+            for _tf in ('LIVE', '1H'):
+                try:
+                    _cur = self.db.cursor()
+                    _cur.execute("""
+                        SELECT close FROM forex_network.historical_prices
+                        WHERE instrument = %s AND timeframe = %s
+                        ORDER BY ts DESC LIMIT 1
+                    """, (instr, _tf))
+                    _row = _cur.fetchone()
+                    _cur.close()
+                    if _row and _row['close'] and float(_row['close']) > 0:
+                        logger.info(
+                            f"_get_pip_value_gbp({instrument}): rate from {_tf}: "
+                            f"{float(_row['close']):.5f}"
+                        )
+                        return pip_mult / float(_row['close'])
+                except Exception as _e:
+                    logger.debug(f"_get_pip_value_gbp: {_tf} fetch for {instr} failed: {_e}")
+            # Hardcoded last resort per quote currency (approximate mid-rates)
+            _HARDCODED_GBP = {
+                'JPY': 215.0, 'USD': 1.25, 'AUD': 1.90,
+                'CAD': 1.72, 'NZD': 2.05, 'CHF': 1.13,
+            }
+            _hc = _HARDCODED_GBP.get(quote_ccy)
+            if _hc:
+                logger.warning(
+                    f"_get_pip_value_gbp({instrument}): no live data — "
+                    f"using hardcoded {quote_ccy} rate {_hc}"
+                )
+                return pip_mult / _hc
+            logger.error(f"_get_pip_value_gbp({instrument}): no rate available, returning None")
+            return None
+
+        # Non-GBP-base pair: fetch GBPXXX from historical_prices (LIVE → 1H → any)
         gbp_cross = f'GBP{quote_ccy}'
-        try:
-            cur = self.db.cursor()
-            cur.execute("""
-                SELECT close FROM forex_network.historical_prices
-                WHERE instrument = %s
-                ORDER BY ts DESC LIMIT 1
-            """, (gbp_cross,))
-            row = cur.fetchone()
-            cur.close()
-            if row and row["close"] and float(row["close"]) > 0:
-                return pip_mult / float(row["close"])
-        except Exception as e:
-            logger.warning(f"_get_pip_value_gbp: DB fetch for {gbp_cross} failed: {e}")
+        for _tf in ('LIVE', '1H', None):
+            try:
+                _cur = self.db.cursor()
+                if _tf:
+                    _cur.execute("""
+                        SELECT close FROM forex_network.historical_prices
+                        WHERE instrument = %s AND timeframe = %s
+                        ORDER BY ts DESC LIMIT 1
+                    """, (gbp_cross, _tf))
+                else:
+                    _cur.execute("""
+                        SELECT close FROM forex_network.historical_prices
+                        WHERE instrument = %s
+                        ORDER BY ts DESC LIMIT 1
+                    """, (gbp_cross,))
+                _row = _cur.fetchone()
+                _cur.close()
+                if _row and _row['close'] and float(_row['close']) > 0:
+                    return pip_mult / float(_row['close'])
+            except Exception as _e:
+                logger.debug(
+                    f"_get_pip_value_gbp: DB fetch for {gbp_cross} "
+                    f"(tf={_tf}) failed: {_e}"
+                )
 
         # Last resort: current_price as proxy (wrong scale for non-GBP-base but avoids None)
         if current_price and current_price > 0:
@@ -1298,15 +1344,26 @@ class RiskGuardian:
         # CHECK 6: Position sizing
         # =================================================================
         orch_size_mult = float(payload.get("size_multiplier", 1.0))
-        # atr_14: orchestrator now propagates this directly (Stage 4).
-        # Fallback to price_metrics DB read for backwards compatibility.
-        atr_14 = payload.get("atr_14")
-        if atr_14 is not None:
-            atr_14 = float(atr_14)
+        # Always use 1D ATR × 2.0 for stop sizing — payload atr_14 is H1 from
+        # technical agent and produces stops that are far too tight for macro trades.
+        # Fallback chain: 1D × 2.0 → 1H × 3.0 → hardcoded emergency.
+        _atr_1d = self._fetch_atr(instrument, timeframe="1D")
+        if _atr_1d is not None:
+            atr_14 = _atr_1d
+            _stop_mult_override = 2.0
+            logger.debug(f"{instrument}: 1D ATR={atr_14:.5f} × 2.0 for stop")
         else:
-            atr_14 = self._fetch_atr(instrument)
-            if atr_14 is None:
-                logger.warning(f"atr_14 unavailable for {instrument} from both decision and price_metrics")
+            _atr_1h = self._fetch_atr(instrument, timeframe="1H")
+            if _atr_1h is not None:
+                atr_14 = _atr_1h
+                _stop_mult_override = 3.0
+                logger.warning(f"{instrument}: 1D ATR unavailable — using 1H ATR={atr_14:.5f} × 3.0")
+            else:
+                atr_14 = 1.5 if instrument.upper().endswith('JPY') else 0.0150
+                _stop_mult_override = 1.0
+                logger.warning(f"{instrument}: no ATR data — using hardcoded stop fallback atr={atr_14}")
+        _sizing_risk_params = dict(risk_params)
+        _sizing_risk_params["atr_stop_multiplier"] = _stop_mult_override
 
         conv_score_for_sizing   = float(payload.get("conviction_score", payload.get("convergence", 0.0)))
         stress_score_for_sizing = float((market_context or {}).get("stress_score", 0.0))
@@ -1320,7 +1377,7 @@ class RiskGuardian:
                 )
         pip_value_gbp = self._get_pip_value_gbp(instrument, _current_price_for_sizing)
         sizing = PositionSizer.calculate(
-            risk_params=risk_params,
+            risk_params=_sizing_risk_params,
             atr_14=atr_14,
             instrument=instrument,
             size_multiplier_from_orchestrator=orch_size_mult,
@@ -1398,6 +1455,42 @@ class RiskGuardian:
                 f"derived minimum target ({direction}): {_target_price:.5f} "
                 f"(entry={_current_price_rr}, stop_dist={_stop_distance_rr}, min_rr={min_rr})"
             )
+
+        # Warn if target is outside 20-day price range (structural impossibility check)
+        if _target_price is not None and _current_price_rr:
+            try:
+                _range_cur = self.db.cursor()
+                _range_cur.execute("""
+                    SELECT MAX(high) as high_20d, MIN(low) as low_20d
+                    FROM (
+                        SELECT high, low FROM forex_network.historical_prices
+                        WHERE instrument = %s AND timeframe = '1D'
+                        ORDER BY ts DESC LIMIT 20
+                    ) sub
+                """, (instrument,))
+                _range_row = _range_cur.fetchone()
+                _range_cur.close()
+                if _range_row and _range_row["high_20d"] and _range_row["low_20d"]:
+                    _high_20d = float(_range_row["high_20d"])
+                    _low_20d  = float(_range_row["low_20d"])
+                    if direction == "long" and float(_target_price) > _high_20d:
+                        logger.warning(
+                            f"{instrument} LONG target {_target_price:.5f} exceeds "
+                            f"20-day high {_high_20d:.5f} — target above recent range"
+                        )
+                        decision["risk_details"]["target_range_warn"] = (
+                            f"target {_target_price:.5f} > 20d_high {_high_20d:.5f}"
+                        )
+                    elif direction == "short" and float(_target_price) < _low_20d:
+                        logger.warning(
+                            f"{instrument} SHORT target {_target_price:.5f} below "
+                            f"20-day low {_low_20d:.5f} — target below recent range"
+                        )
+                        decision["risk_details"]["target_range_warn"] = (
+                            f"target {_target_price:.5f} < 20d_low {_low_20d:.5f}"
+                        )
+            except Exception as _e:
+                logger.debug(f"20-day range check failed for {instrument}: {_e}")
 
         if _target_price is None:
             decision["rejection_reasons"].append("no_target_price — cannot evaluate R:R")
