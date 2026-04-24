@@ -117,7 +117,7 @@ FX_PAIRS = [
 # (macro = daily/weekly, technical = 15M). For these pairs, macro direction
 # is used even when tech disagrees; the trade still requires both gates to
 # clear their individual score thresholds.
-MACRO_ONLY_PAIRS = {'AUDUSD', 'EURUSD', 'USDJPY', 'GBPAUD', 'CADJPY'}
+MACRO_ONLY_PAIRS = {'AUDUSD', 'EURUSD', 'USDJPY', 'GBPAUD', 'CADJPY', 'GBPJPY'}
 
 # Session constraints for cross pairs — these pairs have lower liquidity
 # outside their primary session; enforced in evaluate_pair CHECK 6.7.
