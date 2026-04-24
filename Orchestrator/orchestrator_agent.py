@@ -1762,24 +1762,26 @@ class OrchestratorAgent:
             return
         direction = (bias or "")[:5]  # 'bulli' or 'beari'
         hyp = (hypothesis or rejection_reason or "unknown")[:50]
-        # Fetch current price from LIVE historical_prices if not supplied by caller.
+        # Fetch current price from LIVE → 1H historical_prices if not supplied by caller.
         if current_price is None:
-            try:
-                _p_cur = self.db.cursor()
-                _p_cur.execute(
-                    """
-                    SELECT close FROM forex_network.historical_prices
-                    WHERE instrument = %s AND timeframe = 'LIVE'
-                    ORDER BY ts DESC LIMIT 1
-                    """,
-                    (pair,),
-                )
-                _p_row = _p_cur.fetchone()
-                _p_cur.close()
-                if _p_row:
-                    current_price = float(_p_row['close'] if isinstance(_p_row, dict) else _p_row[0])
-            except Exception as _pe:
-                logger.debug(f"_write_shadow_trade: could not fetch LIVE price for {pair}: {_pe}")
+            for _tf in ('LIVE', '1H'):
+                try:
+                    _p_cur = self.db.cursor()
+                    _p_cur.execute(
+                        """
+                        SELECT close FROM forex_network.historical_prices
+                        WHERE instrument = %s AND timeframe = %s
+                        ORDER BY ts DESC LIMIT 1
+                        """,
+                        (pair, _tf),
+                    )
+                    _p_row = _p_cur.fetchone()
+                    _p_cur.close()
+                    if _p_row:
+                        current_price = float(_p_row['close'] if isinstance(_p_row, dict) else _p_row[0])
+                        break
+                except Exception as _pe:
+                    logger.debug(f"_write_shadow_trade: could not fetch {_tf} price for {pair}: {_pe}")
         try:
             cur = self.db.cursor()
             cur.execute(
