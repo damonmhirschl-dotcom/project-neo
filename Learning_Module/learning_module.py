@@ -522,7 +522,6 @@ class TradeAutopsyEngine:
                        drawdown_step_level, size_multiplier,
                        step_down_drawdown_pct,
                        min_risk_pct, curve_exponent, max_convergence_reference,
-                       stress_threshold_score, stress_multiplier,
                        min_risk_reward_ratio, max_usd_units, correlation_threshold
                 FROM forex_network.risk_parameters
                 WHERE user_id = %s
@@ -662,21 +661,9 @@ class TradeAutopsyEngine:
             cur.close()
 
     def _get_stress_at_time(self, entry_time) -> Optional[float]:
-        """Get the stress score closest to a given time."""
-        cur = self.db.cursor()
-        try:
-            cur.execute("""
-                SELECT system_stress_score
-                FROM shared.market_context_snapshots
-                WHERE snapshot_time <= %s AND system_stress_score IS NOT NULL
-                ORDER BY snapshot_time DESC LIMIT 1
-            """, (entry_time,))
-            row = cur.fetchone()
-            return float(row["system_stress_score"]) if row else None
-        except:
-            return None
-        finally:
-            cur.close()
+        """Regime agent decommissioned — historical stress data preserved but no new writes.
+        Returns None; autopsy callers handle None gracefully."""
+        return None
 
     def _get_entry_signals(self, instrument: str, entry_time) -> Dict[str, Any]:
         """Get the agent signals that were active when this trade was entered."""
@@ -1285,40 +1272,12 @@ class WeeklyReportGenerator:
             cur.close()
 
     def _section_stress(self) -> Dict[str, Any]:
-        """Section 5: Stress score history for the week."""
-        cur = self.db.cursor()
-        try:
-            cur.execute("""
-                SELECT MIN(system_stress_score) AS min_stress,
-                       MAX(system_stress_score) AS max_stress,
-                       AVG(system_stress_score) AS avg_stress,
-                       COUNT(*) AS snapshot_count
-                FROM shared.market_context_snapshots
-                WHERE system_stress_score IS NOT NULL
-                  AND snapshot_time >= NOW() - INTERVAL '7 days'
-            """)
-            row = cur.fetchone()
-
-            # Count escalations
-            cur.execute("""
-                SELECT COUNT(*) AS escalation_count
-                FROM forex_network.system_stress_alerts
-                WHERE transition_type = 'escalation'
-                  AND ts >= NOW() - INTERVAL '7 days'
-            """)
-            esc_row = cur.fetchone()
-
-            return {
-                "min_stress": float(row["min_stress"]) if row and row["min_stress"] else None,
-                "max_stress": float(row["max_stress"]) if row and row["max_stress"] else None,
-                "avg_stress": float(row["avg_stress"]) if row and row["avg_stress"] else None,
-                "snapshots": int(row["snapshot_count"]) if row else 0,
-                "escalations": int(esc_row["escalation_count"]) if esc_row else 0,
-            }
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            cur.close()
+        """Section 5: Stress score — regime agent decommissioned; historical data preserved."""
+        return {
+            "note": "regime_agent_decommissioned",
+            "min_stress": None, "max_stress": None, "avg_stress": None,
+            "snapshots": 0, "escalations": 0,
+        }
 
     def _section_recommendations(self) -> Dict[str, Any]:
         """Section 6: Rule adjustment recommendations based on data."""
@@ -2158,7 +2117,7 @@ class LearningModule:
                     payload = json.loads(payload)
 
                 session = payload.get("current_session", "unknown")
-                stress_score = payload.get("stress_score")
+                stress_score = None  # regime agent decommissioned
                 regime = payload.get("stress_state", "unknown")
                 decisions = payload.get("decisions", [])
 
@@ -2290,8 +2249,7 @@ class LearningModule:
                 f"conv_thr={rp_conv_thr:.4f} max_risk={rp_max_risk:.4f} "
                 f"min_risk={rp_min_risk:.4f} curve_exp={rp_full['curve_exponent']} "
                 f"max_conv_ref={rp_full['max_convergence_reference']} "
-                f"stress_thr={rp_full['stress_threshold_score']} "
-                f"stress_mult={rp_full['stress_multiplier']} "
+
                 f"min_rr={rp_full['min_risk_reward_ratio']} "
                 f"max_units={rp_full['max_usd_units']} "
                 f"corr_thr={rp_full['correlation_threshold']}"

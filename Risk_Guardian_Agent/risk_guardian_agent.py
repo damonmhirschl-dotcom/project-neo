@@ -694,44 +694,24 @@ class RiskDataReader:
             cur.close()
 
     def read_market_context(self):
-        """
-        Read latest market context for stress score and session.
-        Returns None on error or empty table — caller MUST treat None as
-        elevated stress (fail-safe: no new entries).
-        """
-        cur = self.db.cursor()
-        try:
-            cur.execute("""
-                SELECT system_stress_score, stress_state, current_session
-                FROM shared.market_context_snapshots
-                WHERE system_stress_score IS NOT NULL
-                ORDER BY snapshot_time DESC LIMIT 1
-            """)
-            row = cur.fetchone()
-            if not row:
-                logger.warning("read_market_context: table empty — returning None (fail-safe)")
-                return None
-            return {
-                "stress_score": float(row["system_stress_score"]),
-                "stress_state": row["stress_state"],
-                "current_session": row["current_session"],
-            }
-        except Exception as e:
-            logger.error(f"Market context read failed: {e}")
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
-            return None  # Fail-safe: caller treats None as stress >= threshold
-        finally:
-            cur.close()
+        """Derive market context from system clock (regime agent decommissioned)."""
+        import datetime as _dt
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        h, m = now_utc.hour, now_utc.minute
+        if 0 <= h < 7:      session = 'asian'
+        elif 7 <= h < 12:   session = 'london'
+        elif 12 <= h < 16:  session = 'overlap'
+        elif 16 <= h < 20:  session = 'newyork'
+        elif 20 <= h < 22:  session = 'ny_close'
+        else:               session = 'off_hours'
+        return {
+            "current_session":  session,
+            "day_of_week":      now_utc.weekday(),
+            "stop_hunt_window": (h == 7 and m < 30) or (h == 13 and m < 30),
+            "ny_close_window":  20 <= h < 22,
+            "kill_switch_active": False,
+        }
 
-
-# =============================================================================
-# CORRELATION CHECKER
-# =============================================================================
-class CorrelationChecker:
-    """Enforces correlation-based position blocking."""
 
     def __init__(self, user_id: str, threshold: float = 0.70):
         self.user_id = user_id
@@ -805,7 +785,6 @@ class CorrelationChecker:
 
 def compute_position_risk_pct(
     convergence_score: float,
-    stress_score: float,
     risk_params: dict,
 ) -> float:
     """
@@ -813,7 +792,6 @@ def compute_position_risk_pct(
 
     Interpolates between min_risk_pct and max_risk_pct using a power curve
     (curve_exponent) over the normalised conviction range [threshold, max_ref].
-    Applies stress_multiplier when stress_score exceeds stress_threshold_score.
     """
     conv_abs  = abs(convergence_score)
     threshold = float(risk_params.get('convergence_threshold') or 0.22)
@@ -832,11 +810,6 @@ def compute_position_risk_pct(
 
     # Apply curve and interpolate between min and max risk
     risk_pct = min_risk + (max_risk - min_risk) * (conviction ** exponent)
-
-    # Apply stress multiplier when market stress is elevated
-    if stress_score > float(risk_params.get('stress_threshold_score') or 60.0):
-        risk_pct *= float(risk_params.get('stress_multiplier') or 0.70)
-
     return risk_pct
 
 
@@ -872,7 +845,7 @@ class PositionSizer:
 
         # Conviction-scaled risk fraction (decimal, e.g. 0.0025 = 0.25%)
         conviction_risk_pct = compute_position_risk_pct(
-            convergence_score, stress_score, risk_params
+            convergence_score, risk_params
         )
         if conviction_risk_pct <= 0:
             min_risk = float(risk_params.get('min_risk_pct') or 0.0025)
@@ -1643,7 +1616,7 @@ class RiskGuardian:
         _sizing_risk_params["atr_stop_multiplier"] = _stop_mult_override
 
         conv_score_for_sizing   = float(payload.get("conviction_score", payload.get("convergence", 0.0)))
-        stress_score_for_sizing = float((market_context or {}).get("stress_score", 0.0))
+
         _current_price_for_sizing = payload.get("current_price")
         if _current_price_for_sizing is None:
             _current_price_for_sizing = self._fetch_live_price(instrument)
@@ -1659,7 +1632,6 @@ class RiskGuardian:
             instrument=instrument,
             size_multiplier_from_orchestrator=orch_size_mult,
             convergence_score=conv_score_for_sizing,
-            stress_score=stress_score_for_sizing,
             current_price=_current_price_for_sizing,
             pip_value_gbp=pip_value_gbp,
         )
@@ -1810,7 +1782,7 @@ class RiskGuardian:
                     if _configured_hold is not None:
                         _hold_days = float(_configured_hold)
                     else:
-                        _hold_days = 2.0 if stress_score_for_sizing > 50 else 3.0
+                        _hold_days = 3.0
                     swap_rate = self.reader.read_swap_rate(instrument, direction)
                     swap_passed, swap_details = SwapCostChecker.check(
                         swap_rate_pips=swap_rate,
@@ -1849,39 +1821,6 @@ class RiskGuardian:
         decision["risk_details"]["live_drawdown_pct"] = round(live_drawdown_pct, 2)
 
         # =================================================================
-        # CHECK 9: Stress score sanity (Pre-crisis/Crisis should not reach here
-        # but belt-and-suspenders)
-        # =================================================================
-        STRESS_REJECT_THRESHOLD = 70.0
-        if market_context is None:
-            # Fail-safe: market context unreadable — treat as elevated stress
-            effective_stress = STRESS_REJECT_THRESHOLD
-            logger.warning(
-                f"User {self.user_id}: market_context unreadable, "
-                f"treating stress as {STRESS_REJECT_THRESHOLD} (fail-safe)"
-            )
-        else:
-            effective_stress = float(market_context.get("stress_score", STRESS_REJECT_THRESHOLD))
-        if effective_stress >= STRESS_REJECT_THRESHOLD:
-            decision["rejection_reasons"].append(
-                f"stress_too_high: {effective_stress} >= {STRESS_REJECT_THRESHOLD} "
-                f"({(market_context or {}).get('stress_state', 'unknown')})"
-            )
-            decision["checks"]["stress_sanity"] = "FAIL"
-            decision["risk_details"]["stress_sanity"] = {
-                "status": "REJECT",
-                "stress_score": effective_stress,
-                "threshold": STRESS_REJECT_THRESHOLD,
-            }
-            self._write_decision(decision)
-            return decision
-        else:
-            decision["checks"]["stress_sanity"] = "PASS"
-            decision["risk_details"]["stress_sanity"] = {
-                "status": "PASS",
-                "stress_score": effective_stress,
-            }
-
         # =================================================================
         # FINAL DECISION
         # =================================================================
@@ -1917,16 +1856,8 @@ class RiskGuardian:
 
         # Snapshot risk parameters into payload so execution agent can persist them
         # in trade_parameters at entry (Gap 1).
-        _mc = market_context or {}
-        _stress_score_snap = float(_mc.get("stress_score", 0.0))
-        _stress_threshold  = float(risk_params.get("stress_threshold_score") or 60.0)
-        _stress_mult_cfg   = float(risk_params.get("stress_multiplier") or 0.70)
-        decision["effective_threshold"]  = risk_params.get("convergence_threshold")
-        decision["stress_band"]          = _mc.get("stress_state")
-        decision["stress_size_multiplier"] = (
-            _stress_mult_cfg if _stress_score_snap > _stress_threshold else 1.0
-        )
-        decision["conviction_exponent"]  = risk_params.get("curve_exponent", 2.0)
+        decision["effective_threshold"] = risk_params.get("convergence_threshold")
+        decision["conviction_exponent"] = risk_params.get("curve_exponent", 2.0)
 
         # Write decision
         self._write_decision(decision)
@@ -2112,7 +2043,7 @@ class RiskGuardian:
                     payload.get("tech_score"),
                     payload.get("conviction_score", payload.get("convergence")),
                     payload.get("convergence"),
-                    market_context.get("stress_score"),
+                    None,  # stress_score — regime agent decommissioned
                 ))
             self.db.commit()
         except Exception as e:

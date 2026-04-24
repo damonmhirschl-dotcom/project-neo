@@ -1418,7 +1418,7 @@ class TradeExecutor:
         _swap      = (payload.get("risk_details") or {}).get("swap") or {}
         _ectx      = payload.get("entry_context") or {}
         _macro_raw = _ectx.get("macro_score")
-        _stress    = payload.get("stress_score") or _ectx.get("stress_score")
+
         _atr_val   = payload.get("atr_14") or _ectx.get("atr_14")
         _atr_mult  = payload.get("atr_stop_multiplier") or _sizing.get("atr_stop_multiplier")
         _min_rr    = payload.get("min_risk_reward_ratio") or _swap.get("min_rr")
@@ -1433,12 +1433,11 @@ class TradeExecutor:
                 payload.get("effective_macro_threshold")
                 or _ectx.get("effective_macro_threshold")
             ),
-            "stress_score_at_entry":     _stress,
+
             # ── Legacy aliases (remove in next LM release) ───────────────────
             "conviction_score":          _conv_risk,
             "atr_stop_multiplier":       _atr_mult,
             "min_rr":                    _min_rr,
-            "stress_score":              _stress,
             # ── Unchanged fields ─────────────────────────────────────────────
             "convergence_threshold":     payload.get("effective_threshold"),
             "convergence_score":         payload.get("convergence"),
@@ -1446,7 +1445,7 @@ class TradeExecutor:
             "tech_score":               _ectx.get("tech_score"),
             "pair_score_p75":            _ectx.get("pair_score_p75"),
             "stress_band":               payload.get("stress_band"),
-            "stress_multiplier":         payload.get("stress_size_multiplier"),
+
             "conviction_exponent":       payload.get("conviction_exponent"),
             "risk_pct":                  (
                 payload.get("effective_risk_pct") or _sizing.get("effective_risk_pct")
@@ -2233,10 +2232,8 @@ class ExecutionAgent:
             return False
 
     @staticmethod
-    def _get_max_hold_days(regime, stress_score: float) -> int:
-        """Research-backed maximum holding periods by regime and stress level."""
-        if stress_score > 50:
-            return 2
+    def _get_max_hold_days(regime, stress_score: float = 0) -> int:
+        """Research-backed maximum holding periods by regime."""
         if regime and "trend" in str(regime).lower():
             return 5
         return 3  # ranging, transitional, unknown, or NULL
@@ -3432,20 +3429,8 @@ class ExecutionAgent:
         logger.info("Execution Agent shutdown complete.")
 
     def _get_current_stress(self) -> float:
-        """Read current stress score for kill switch multiplier decision."""
-        cur = self.db.cursor()
-        try:
-            cur.execute("""
-                SELECT system_stress_score FROM shared.market_context_snapshots
-                WHERE system_stress_score IS NOT NULL
-                ORDER BY snapshot_time DESC LIMIT 1
-            """)
-            row = cur.fetchone()
-            return float(row["system_stress_score"]) if row else 0
-        except:
-            return 0
-        finally:
-            cur.close()
+        """Regime agent decommissioned — stress score no longer available. Returns 0."""
+        return 0
 
 
 # =============================================================================
