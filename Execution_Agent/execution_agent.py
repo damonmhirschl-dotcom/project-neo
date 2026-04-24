@@ -1380,6 +1380,8 @@ class TradeExecutor:
             "min_rr":               payload.get("min_risk_reward_ratio") or _swap.get("min_rr"),
             "risk_pct":             payload.get("effective_risk_pct") or _sizing.get("effective_risk_pct"),
             "combined_multiplier":  payload.get("combined_mult") or _sizing.get("combined_multiplier"),
+            "rsi_at_entry":         _ectx.get("rsi_14"),
+            "adx_at_entry":         _ectx.get("adx_14"),
         }
 
     def _write_trade(self, instrument: str, direction: str, entry_price: float,

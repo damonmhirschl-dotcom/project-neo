@@ -1046,20 +1046,57 @@ class TechnicalAgent:
                         atr = 0.0
 
                 pip_size = 0.01 if 'JPY' in pair else 0.0001
-                trending = adx > 20
+
+                # ── LM timing params: RSI/ADX thresholds refined by closed-trade outcomes ──
+                # Populated by learning_module.compute_entry_timing_quality().
+                # Falls back to static defaults when insufficient sample (<10 trades).
+                _lm_rsi_low = 38.0
+                _lm_rsi_high_long = None   # set after swing detection below
+                _lm_rsi_low_short = None
+                _lm_min_adx = 20.0
+                try:
+                    with self.db_conn.cursor(
+                        cursor_factory=psycopg2.extras.RealDictCursor
+                    ) as _tc:
+                        _tc.execute("""
+                            SELECT optimal_rsi_low, optimal_rsi_high, min_adx
+                            FROM forex_network.technical_timing_params
+                            WHERE instrument = %s AND session = %s
+                              AND sample_size >= 10
+                              AND computed_at > NOW() - INTERVAL '7 days'
+                        """, (pair, session))
+                        _timing = _tc.fetchone()
+                    if _timing:
+                        _lm_rsi_low        = float(_timing['optimal_rsi_low'])
+                        _lm_rsi_high_long  = float(_timing['optimal_rsi_high'])
+                        _lm_rsi_low_short  = 100.0 - float(_timing['optimal_rsi_high'])
+                        _lm_min_adx        = float(_timing['min_adx'])
+                        logger.debug(
+                            f"{pair} LM timing params: RSI {_lm_rsi_low:.0f}–"
+                            f"{_lm_rsi_high_long:.0f}, ADX>{_lm_min_adx:.0f}"
+                        )
+                except Exception as _te:
+                    logger.debug(f"{pair} LM timing params unavailable: {_te}")
+
+                trending = adx > _lm_min_adx
 
                 # ── swing high/low structure (1D data, 5-bar rule) ────────────
                 swing      = self._detect_swing_points(pair)
                 swing_trend = swing.get('trend_structure', 'neutral')
 
                 # ── RSI pullback direction & conviction ──────────────────────
-                # Extend RSI window when swing structure confirms direction
-                rsi_long_hi   = 65.0 if swing_trend == 'bullish' else 55.0
-                rsi_short_lo  = 35.0 if swing_trend == 'bearish' else 45.0
+                # LM params override static window when available (≥10 sample trades).
+                # Swing structure still extends the high boundary when bullish.
+                if _lm_rsi_high_long is not None:
+                    rsi_long_hi  = _lm_rsi_high_long
+                    rsi_short_lo = _lm_rsi_low_short
+                else:
+                    rsi_long_hi  = 65.0 if swing_trend == 'bullish' else 55.0
+                    rsi_short_lo = 35.0 if swing_trend == 'bearish' else 45.0
 
-                if trending and 38.0 <= rsi <= rsi_long_hi:
+                if trending and _lm_rsi_low <= rsi <= rsi_long_hi:
                     direction  =  1.0   # bullish pullback
-                    conviction = (rsi_long_hi - rsi) / (rsi_long_hi - 38.0)
+                    conviction = (rsi_long_hi - rsi) / (rsi_long_hi - _lm_rsi_low)
                 elif trending and rsi_short_lo <= rsi <= 62.0:
                     direction  = -1.0   # bearish rally into resistance
                     conviction = (rsi - rsi_short_lo) / (62.0 - rsi_short_lo)

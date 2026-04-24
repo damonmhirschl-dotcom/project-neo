@@ -1422,6 +1422,9 @@ class LearningModule:
             # Entry timing quality analysis
             self.analyse_entry_timing()
 
+            # RSI/ADX entry timing parameters for technical agent
+            self.compute_entry_timing_quality()
+
             # Phase 1 accuracy tracking — per-agent, per-instrument, per-session
             self.compute_per_agent_accuracy()
 
@@ -1626,6 +1629,101 @@ class LearningModule:
             self._write_proposals(proposals)
         else:
             logger.debug("analyse_entry_timing: no actionable timing gaps")
+
+    def compute_entry_timing_quality(self) -> List[dict]:
+        """
+        Analyses which RSI zones and ADX levels at entry produced best outcomes.
+        Writes optimal entry parameters per pair per session to technical_timing_params.
+        Technical agent reads this table to adjust its RSI window dynamically.
+        """
+        proposals = []
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT
+                    t.instrument,
+                    t.session_at_entry as session,
+                    FLOOR((t.trade_parameters->>'rsi_at_entry')::float / 5) * 5 as rsi_bucket,
+                    FLOOR((t.trade_parameters->>'adx_at_entry')::float / 5) * 5 as adx_bucket,
+                    COUNT(*) as trades,
+                    AVG(CASE WHEN t.pnl_pips > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
+                    AVG(t.pnl_pips) as avg_pips
+                FROM forex_network.trades t
+                WHERE t.exit_time IS NOT NULL
+                AND t.entry_time > %s
+                AND t.trade_parameters->>'rsi_at_entry' IS NOT NULL
+                GROUP BY t.instrument, t.session_at_entry, rsi_bucket, adx_bucket
+                HAVING COUNT(*) >= 5
+                ORDER BY t.instrument, win_rate DESC
+            """, (DATA_QUALITY_CUTOFF,))
+
+            rows = cur.fetchall()
+            by_pair_session = {}
+            for row in rows:
+                key = (row['instrument'], row['session'])
+                if key not in by_pair_session:
+                    by_pair_session[key] = []
+                by_pair_session[key].append(row)
+
+            for (instrument, session), buckets in by_pair_session.items():
+                if not buckets:
+                    continue
+                best = sorted(buckets, key=lambda x: x['win_rate'], reverse=True)
+                top_rsi_buckets = [b for b in best if b['win_rate'] > 0.55]
+                if not top_rsi_buckets:
+                    continue
+                rsi_low = min(b['rsi_bucket'] for b in top_rsi_buckets)
+                rsi_high = max(b['rsi_bucket'] for b in top_rsi_buckets) + 5
+                min_adx = min(b['adx_bucket'] for b in top_rsi_buckets if b['adx_bucket'])
+                total_samples = sum(b['trades'] for b in top_rsi_buckets)
+                avg_win_rate = sum(b['win_rate'] * b['trades'] for b in top_rsi_buckets) / total_samples
+
+                cur.execute("""
+                    INSERT INTO forex_network.technical_timing_params
+                    (instrument, session, optimal_rsi_low, optimal_rsi_high, min_adx, sample_size, win_rate, computed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (instrument, session) DO UPDATE SET
+                        optimal_rsi_low = EXCLUDED.optimal_rsi_low,
+                        optimal_rsi_high = EXCLUDED.optimal_rsi_high,
+                        min_adx = EXCLUDED.min_adx,
+                        sample_size = EXCLUDED.sample_size,
+                        win_rate = EXCLUDED.win_rate,
+                        computed_at = NOW()
+                """, (instrument, session, rsi_low, rsi_high, min_adx, total_samples, avg_win_rate))
+
+                if avg_win_rate > 0.60:
+                    proposals.append({
+                        'proposal_type': 'technical_timing_update',
+                        'instrument': instrument,
+                        'message': (
+                            f"Optimal RSI entry zone for {instrument} during {session}: "
+                            f"{rsi_low:.0f}–{rsi_high:.0f} with min ADX {min_adx:.0f}. "
+                            f"Win rate {avg_win_rate:.0%} on {total_samples} trades. "
+                            f"Technical agent parameters updated automatically."
+                        ),
+                        'evidence': {
+                            'session': session,
+                            'optimal_rsi_low': rsi_low,
+                            'optimal_rsi_high': rsi_high,
+                            'min_adx': min_adx,
+                            'win_rate': round(avg_win_rate, 3),
+                            'sample_size': total_samples
+                        }
+                    })
+
+            self.db.commit()
+            if proposals:
+                self._write_proposals(proposals)
+            logger.info(
+                f"compute_entry_timing_quality: updated timing params for "
+                f"{len(by_pair_session)} pair/session combinations"
+            )
+            cur.close()
+            return proposals
+
+        except Exception as e:
+            logger.error(f"compute_entry_timing_quality failed: {e}")
+            return []
 
     def analyse_contrarian_performance(self):
         """
