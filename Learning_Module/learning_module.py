@@ -113,10 +113,23 @@ WEEKLY_REPORT_HOUR = 6  # 06:00 UTC
 # First IG trade — reject any signal data predating the broker migration
 DATA_QUALITY_CUTOFF = '2026-04-23 21:55:00+00'
 
+CYCLE_LOG_PATH   = '/var/log/neo/learning_module.jsonl'
+AUTOPSY_LOG_PATH = '/var/log/neo/learning_module_autopsies.jsonl'
+
 
 # =============================================================================
 # AWS HELPERS
 # =============================================================================
+def _append_jsonl(path: str, record: dict) -> None:
+    """Append one JSON record to a JSONL file. Silent on failure."""
+    try:
+        line = json.dumps(record, default=str)
+        with open(path, 'a') as _f:
+            _f.write(line + '\n')
+    except Exception as _e:
+        logger.debug(f"_append_jsonl({path}): {_e}")
+
+
 def get_secret(secret_name: str, region: str = AWS_REGION) -> dict:
     client = boto3.client("secretsmanager", region_name=region)
     resp = client.get_secret_value(SecretId=secret_name)
@@ -1371,6 +1384,95 @@ class LearningModule:
         self.session_id = str(uuid.uuid4())
         self.cycle_count = 0
 
+    def _write_cycle_log(self, cycle_start: float, autopsies: int,
+                          rejections: int, proposals: int, arch_issues: int) -> None:
+        """Write structured cycle summary to JSONL. Never raises."""
+        try:
+            duration_ms = round((time.time() - cycle_start) * 1000)
+            now_utc     = datetime.datetime.now(datetime.timezone.utc)
+            start_dt    = datetime.datetime.fromtimestamp(cycle_start, tz=datetime.timezone.utc)
+
+            tables_read     = {}
+            autopsy_records = []
+            patterns_updated = 0
+            cur = None
+            try:
+                cur = self.db.cursor()
+                for tbl in ('forex_network.proposals',
+                            'forex_network.rejection_patterns',
+                            'forex_network.trade_autopsies'):
+                    cur.execute(
+                        f"SELECT COUNT(*) AS n FROM {tbl} WHERE user_id = %s",
+                        (self.user_id,))
+                    tables_read[tbl.split('.')[-1]] = int(cur.fetchone()['n'])
+
+                cur.execute("""
+                    SELECT ta.trade_id, t.instrument,
+                           ta.signal_quality             AS outcome,
+                           ta.failure_mode,
+                           ta.regime_stress_at_entry     AS stress_at_entry,
+                           ta.pattern_context->>'regime' AS regime_at_entry
+                    FROM forex_network.trade_autopsies ta
+                    JOIN forex_network.trades t ON ta.trade_id = t.id
+                    WHERE ta.user_id = %s AND ta.created_at >= %s
+                    ORDER BY ta.created_at
+                """, (self.user_id, start_dt))
+                autopsy_records = [dict(r) for r in cur.fetchall()]
+
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) AS n FROM forex_network.rejection_patterns
+                        WHERE user_id = %s AND updated_at >= %s
+                    """, (self.user_id, start_dt))
+                    patterns_updated = int(cur.fetchone()['n'])
+                except Exception:
+                    patterns_updated = rejections
+            except Exception as _qe:
+                logger.debug(f"_write_cycle_log DB query: {_qe}")
+            finally:
+                if cur is not None:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+
+            record = {
+                'ts':                   now_utc.isoformat(),
+                'cycle_id':             self.cycle_count,
+                'user_id':              self.user_id,
+                'trades_processed':     len(autopsy_records),
+                'autopsies_written':    autopsies,
+                'patterns_updated':     patterns_updated,
+                'patterns_activated':   None,
+                'patterns_deactivated': None,
+                'proposals_generated':  proposals,
+                'data_quality_cutoff':  DATA_QUALITY_CUTOFF,
+                'tables_read':          tables_read,
+                'arch_issues':          arch_issues,
+                'errors':               [],
+                'warnings':             [],
+                'cycle_duration_ms':    duration_ms,
+                'autopsies':            autopsy_records,
+            }
+            _append_jsonl(CYCLE_LOG_PATH, record)
+
+            for a in autopsy_records:
+                _append_jsonl(AUTOPSY_LOG_PATH, {
+                    'ts':       now_utc.isoformat(),
+                    'cycle_id': self.cycle_count,
+                    'user_id':  self.user_id,
+                    **a,
+                })
+
+            logger.info(
+                f"[LM cycle {self.cycle_count}] "
+                f"processed={len(autopsy_records)} autopsies={autopsies} "
+                f"patterns_updated={patterns_updated} proposals={proposals} "
+                f"duration={duration_ms}ms errors=0"
+            )
+        except Exception as _e:
+            logger.debug(f"_write_cycle_log failed: {_e}")
+
     def write_heartbeat(self):
         cur = self.db.cursor()
         try:
@@ -2509,10 +2611,13 @@ class LearningModule:
     def run_cycle(self):
         """Run a single learning cycle — process autopsies, check weekly report."""
         try:
+            _cycle_start = time.time()
             count = self.poll_and_process()
             if count > 0:
                 logger.info(f"Processed {count} autopsy/ies")
-            rej_count = 0
+            rej_count  = 0
+            prop_count = 0
+            arch_count = 0
             if not self.dry_run:
                 rej_count = self._process_rejections()
                 if rej_count > 0:
@@ -2524,11 +2629,13 @@ class LearningModule:
             if not self.dry_run:
                 arch_issues = self.diagnose_architecture()
                 if arch_issues:
-                    logger.info(f"Architecture diagnostics: {len(arch_issues)} issue(s) flagged")
+                    arch_count = len(arch_issues)
+                    logger.info(f"Architecture diagnostics: {arch_count} issue(s) flagged")
             if not self.dry_run and self.weekly_report.should_generate():
                 self.weekly_report.generate()
             self.cycle_count += 1
             self.write_heartbeat()
+            self._write_cycle_log(_cycle_start, count, rej_count, prop_count, arch_count)
             return {"autopsies": count, "rejections": rej_count}
         except Exception as e:
             logger.error(f"Cycle failed: {e}", exc_info=True)
