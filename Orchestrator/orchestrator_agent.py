@@ -1640,6 +1640,21 @@ class OrchestratorAgent:
         self.signal_writer = OrchestratorSignalWriter(self.db, self.user_id)
         # (user_id, instrument) -> cycles_remaining; raised threshold +0.05 per cycle
         self._stop_loss_penalties: dict = {}
+        # Shadow trades are portfolio-level observations — only the first user
+        # (alphabetically by UUID) writes them; others skip to avoid duplication.
+        try:
+            _sc = self.db.cursor()
+            _sc.execute(
+                "SELECT user_id FROM forex_network.risk_parameters "
+                "WHERE paper_mode = TRUE ORDER BY user_id LIMIT 1"
+            )
+            _row = _sc.fetchone()
+            _sc.close()
+            self._is_shadow_primary = (
+                _row is not None and str(_row["user_id"]) == str(self.user_id)
+            )
+        except Exception:
+            self._is_shadow_primary = True  # fail open
 
     def _resolve_user_id(self, user_id: str) -> str:
         """Resolve a Cognito username like 'neo_user_002' to its UUID from risk_parameters."""
@@ -1740,6 +1755,9 @@ class OrchestratorAgent:
         price_at_signal/pips populated nightly by backfill_shadow_trades.py."""
         if not self.db or not pair:
             return
+        # Only the primary user writes shadow trades — one row per pair per hypothesis per day.
+        if not getattr(self, '_is_shadow_primary', True):
+            return
         direction = (bias or "")[:5]  # 'bulli' or 'beari'
         hyp = (hypothesis or rejection_reason or "unknown")[:50]
         try:
@@ -1755,7 +1773,7 @@ class OrchestratorAgent:
                      p75_threshold, effective_threshold, would_have_traded)
                 VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (instrument, hypothesis, user_id,
+                ON CONFLICT (instrument, hypothesis,
                              CAST(signal_time AT TIME ZONE 'UTC' AS date))
                 DO NOTHING
                 """,
