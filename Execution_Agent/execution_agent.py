@@ -1360,28 +1360,53 @@ class TradeExecutor:
 
     @staticmethod
     def _build_trade_parameters_helper(payload: Dict) -> Dict:
-        """Extract risk parameter snapshot from RG approval payload."""
-        _sizing = (payload.get("risk_details") or {}).get("sizing") or {}
-        _swap   = (payload.get("risk_details") or {}).get("swap") or {}
-        _ectx   = payload.get("entry_context") or {}
+        """Extract risk parameter snapshot from RG approval payload.
+
+        Key names match LM reads in compute_macro_direction_accuracy().
+        Legacy aliases kept for one release so queries against older rows keep working.
+        """
+        _sizing    = (payload.get("risk_details") or {}).get("sizing") or {}
+        _swap      = (payload.get("risk_details") or {}).get("swap") or {}
+        _ectx      = payload.get("entry_context") or {}
         _macro_raw = _ectx.get("macro_score")
+        _stress    = payload.get("stress_score") or _ectx.get("stress_score")
+        _atr_val   = payload.get("atr_14") or _ectx.get("atr_14")
+        _atr_mult  = payload.get("atr_stop_multiplier") or _sizing.get("atr_stop_multiplier")
+        _min_rr    = payload.get("min_risk_reward_ratio") or _swap.get("min_rr")
+        _conv_risk = round(abs(float(_macro_raw)), 4) if _macro_raw is not None else None
         return {
-            "convergence_threshold": payload.get("effective_threshold"),
-            "convergence_score":     payload.get("convergence"),
-            "conviction_score":      round(abs(float(_macro_raw)), 4) if _macro_raw is not None else None,
-            "macro_score":           _macro_raw,
-            "tech_score":            _ectx.get("tech_score"),
-            "pair_score_p75":        _ectx.get("pair_score_p75"),
-            "stress_score":          payload.get("stress_score") or _ectx.get("stress_score"),
-            "stress_band":           payload.get("stress_band"),
-            "stress_multiplier":     payload.get("stress_size_multiplier"),
-            "conviction_exponent":   payload.get("conviction_exponent"),
-            "atr_stop_multiplier":   payload.get("atr_stop_multiplier") or _sizing.get("atr_stop_multiplier"),
-            "min_rr":               payload.get("min_risk_reward_ratio") or _swap.get("min_rr"),
-            "risk_pct":             payload.get("effective_risk_pct") or _sizing.get("effective_risk_pct"),
-            "combined_multiplier":  payload.get("combined_mult") or _sizing.get("combined_multiplier"),
-            "rsi_at_entry":         _ectx.get("rsi_14"),
-            "adx_at_entry":         _ectx.get("adx_14"),
+            # ── Primary names — matched to LM trade_parameters reads ──────────
+            "conviction_risk_pct":       _conv_risk,
+            "atr_14":                    _atr_val,
+            "r_r_ratio":                 _min_rr,
+            "regime_score":              _ectx.get("regime_score"),
+            "effective_macro_threshold": (
+                payload.get("effective_macro_threshold")
+                or _ectx.get("effective_macro_threshold")
+            ),
+            "stress_score_at_entry":     _stress,
+            # ── Legacy aliases (remove in next LM release) ───────────────────
+            "conviction_score":          _conv_risk,
+            "atr_stop_multiplier":       _atr_mult,
+            "min_rr":                    _min_rr,
+            "stress_score":              _stress,
+            # ── Unchanged fields ─────────────────────────────────────────────
+            "convergence_threshold":     payload.get("effective_threshold"),
+            "convergence_score":         payload.get("convergence"),
+            "macro_score":               _macro_raw,
+            "tech_score":               _ectx.get("tech_score"),
+            "pair_score_p75":            _ectx.get("pair_score_p75"),
+            "stress_band":               payload.get("stress_band"),
+            "stress_multiplier":         payload.get("stress_size_multiplier"),
+            "conviction_exponent":       payload.get("conviction_exponent"),
+            "risk_pct":                  (
+                payload.get("effective_risk_pct") or _sizing.get("effective_risk_pct")
+            ),
+            "combined_multiplier":       (
+                payload.get("combined_mult") or _sizing.get("combined_multiplier")
+            ),
+            "rsi_at_entry":              _ectx.get("rsi_14"),
+            "adx_at_entry":              _ectx.get("adx_14"),
         }
 
     def _write_trade(self, instrument: str, direction: str, entry_price: float,
