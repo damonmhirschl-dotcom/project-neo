@@ -245,7 +245,7 @@ def _get_last_bar_ts(conn, pair: str, timeframe: str):
 
 
 def _get_last_metric_ts(conn, pair: str, timeframe: str):
-    """Return timezone-aware datetime of the most recent metric row, or None."""
+    """Return timezone-aware datetime of the most recent price_metrics row, or None."""
     with conn.cursor() as cur:
         cur.execute("""
             SELECT MAX(ts) FROM forex_network.price_metrics
@@ -256,21 +256,6 @@ def _get_last_metric_ts(conn, pair: str, timeframe: str):
             ts = row[0]
             return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     return None
-
-
-def _get_bars_after(conn, pair: str, timeframe: str, after_ts) -> list:
-    """Return bars after after_ts as TraderMade-format dicts for use with _compute_metrics."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT ts, open, high, low, close
-            FROM forex_network.historical_prices
-            WHERE instrument = %s AND timeframe = %s AND ts > %s
-            ORDER BY ts ASC
-        """, (pair, timeframe, after_ts))
-        rows = cur.fetchall()
-    return [{"date": r["ts"].strftime("%Y-%m-%d %H:%M:%S"),
-             "open": float(r["open"]), "high": float(r["high"]),
-             "low":  float(r["low"]),  "close": float(r["close"])} for r in rows]
 
 
 def _get_context_bars(conn, pair: str, timeframe: str, n: int = 60) -> list:
@@ -306,7 +291,10 @@ def _upsert_prices(conn, pair: str, timeframe: str, bars: list) -> int:
                 INSERT INTO forex_network.historical_prices
                     (instrument, timeframe, ts, open, high, low, close, session)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'utc')
-                ON CONFLICT (instrument, timeframe, ts) DO NOTHING
+                ON CONFLICT (instrument, timeframe, ts) DO UPDATE SET
+                    atr_14=EXCLUDED.atr_14,
+                    realised_vol_14=EXCLUDED.realised_vol_14,
+                    realised_vol_30=EXCLUDED.realised_vol_30
             """, (pair, timeframe, ts,
                   float(q["open"]), float(q["high"]),
                   float(q["low"]),  float(q["close"])))
@@ -331,10 +319,7 @@ def _upsert_metrics(conn, pair: str, timeframe: str, metrics: list) -> int:
                 INSERT INTO forex_network.price_metrics
                     (instrument, timeframe, ts, atr_14, realised_vol_14, realised_vol_30)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (instrument, timeframe, ts) DO UPDATE SET
-                    atr_14          = EXCLUDED.atr_14,
-                    realised_vol_14 = EXCLUDED.realised_vol_14,
-                    realised_vol_30 = EXCLUDED.realised_vol_30
+                ON CONFLICT (instrument, timeframe, ts) DO NOTHING
             """, (pair, timeframe, ts,
                   m["atr_14"],
                   m["rv_14"],
@@ -401,29 +386,20 @@ def _ingest_one(conn, pair: str, timeframe: str, api_key: str, now: datetime) ->
         start_dt = cap_start
 
     if start_dt >= end_dt:
-        # Price bars current — check whether metrics also need updating
-        last_metric_ts = _get_last_metric_ts(conn, pair, timeframe)
-        if last_metric_ts is not None and last_metric_ts >= last_ts:
+        # Bars are current — but check if price_metrics also needs updating
+        metrics_ts = _get_last_metric_ts(conn, pair, timeframe)
+        prices_ts  = _get_last_bar_ts(conn, pair, timeframe)
+        if metrics_ts is not None and prices_ts is not None and metrics_ts >= prices_ts:
             result["skipped"] = True
-            return result  # bars and metrics both current
-        # Metrics are stale — recompute the missing range from historical_prices
-        print(f"  [METRICS] {pair}/{timeframe} — bars current, metrics stale "
-              f"(last_metric={last_metric_ts}, last_bar={last_ts})")
-        if last_metric_ts is not None:
-            new_bars = _get_bars_after(conn, pair, timeframe, last_metric_ts)
-            context  = [b for b in _get_context_bars(conn, pair, timeframe, 60)
-                        if b["ts"] <= last_metric_ts]
-        else:
-            new_bars = _get_bars_after(conn, pair, timeframe,
-                                       last_ts - timedelta(days=7))
-            context  = []
-        if not new_bars:
+            return result  # both current
+        # else: bars current but metrics stale — fall through to metrics recalc
+        all_bars = _get_context_bars(conn, pair, timeframe, 60)
+        if not all_bars:
             result["skipped"] = True
             return result
-        metrics = _compute_metrics(context, new_bars)
-        result["metric_rows"] = _upsert_metrics(conn, pair, timeframe, metrics)
-        result["skipped"] = True
-        return result
+        context  = all_bars
+        p_count  = 0
+        result["price_rows"] = 0
 
     # Format date strings for TraderMade
     if timeframe == "1D":
