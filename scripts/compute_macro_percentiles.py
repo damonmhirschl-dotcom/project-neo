@@ -51,9 +51,9 @@ for pair, (base, quote) in sorted(PAIRS.items()):
     cur.execute(
         """
         SELECT
-            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ABS(b.composite_score - q.composite_score)),
-            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ABS(b.composite_score - q.composite_score)),
-            PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(b.composite_score - q.composite_score)),
+            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ABS(TANH((b.composite_score - q.composite_score) * 1.5))),
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ABS(TANH((b.composite_score - q.composite_score) * 1.5))),
+            PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(TANH((b.composite_score - q.composite_score) * 1.5))),
             COUNT(*)
         FROM forex_network.macro_signals_history b
         JOIN forex_network.macro_signals_history q ON b.signal_date = q.signal_date

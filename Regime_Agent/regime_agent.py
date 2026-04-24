@@ -2619,6 +2619,47 @@ def _fetch_cot_extremity_from_db() -> Optional[float]:
     return None
 
 
+
+def _read_vix_from_cache(conn):
+    """Return cached VIX value if fresher than 48 hours, else None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT num_value, fetched_at FROM shared.api_cache "
+                "WHERE cache_key = 'vix_last_known'"
+            )
+            row = cur.fetchone()
+        if row and row[0] is not None:
+            import datetime as _dt
+            fetched = row[1]
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=_dt.timezone.utc)
+            age_h = (_dt.datetime.now(_dt.timezone.utc) - fetched).total_seconds() / 3600
+            if age_h < 48:
+                return float(row[0])
+    except Exception as _e:
+        logger.debug(f"VIX cache read failed: {_e}")
+    return None
+
+
+def _write_vix_to_cache(conn, vix: float) -> None:
+    """Upsert the latest VIX value into shared.api_cache."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO shared.api_cache (cache_key, num_value, fetched_at)
+                VALUES ('vix_last_known', %s, NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                    SET num_value = EXCLUDED.num_value, fetched_at = NOW()
+                """,
+                (vix,)
+            )
+        conn.commit()
+    except Exception as _e:
+        logger.debug(f"VIX cache write failed: {_e}")
+
+
 def run_mcp_data_gathering(conn=None) -> dict:
     """
     Gather VIX (FRED VIXCLS REST) + COT (shared.cot_positioning DB) data.
@@ -2688,6 +2729,8 @@ def run_mcp_data_gathering(conn=None) -> dict:
         logger.info(
             f"FRED VIX: {current:.2f} (prev {previous:.2f}, trend {trend:+.4f}); COT: null"
         )
+        if conn is not None:
+            _write_vix_to_cache(conn, current)
         return {
             "vix_value": current,
             "vix_previous_close": previous,
@@ -2701,12 +2744,23 @@ def run_mcp_data_gathering(conn=None) -> dict:
             log_api_call(conn, 'fred', '/fred/series/observations', 'regime',
                          False, _ms, error_type=type(e).__name__)
         logger.warning(f"FRED VIX fetch failed: {e}")
+        _cached_vix = _read_vix_from_cache(conn) if conn is not None else None
+        if _cached_vix is not None:
+            logger.info(f"VIX: using cached value {_cached_vix:.2f} (FRED failed)")
+            return {
+                "vix_value": _cached_vix,
+                "vix_previous_close": None,
+                "vix_trend": None,
+                "cot_extremity": cot_extremity,
+                "data_notes": f"VIX from api_cache (FRED failed: {e})",
+            }
+        logger.warning("VIX: no cache available, using neutral fallback 20.0")
         return {
-            "vix_value": None,
+            "vix_value": 20.0,
             "vix_previous_close": None,
             "vix_trend": None,
             "cot_extremity": cot_extremity,
-            "data_notes": f"FRED VIX REST failed: {e}",
+            "data_notes": f"VIX: neutral fallback 20.0 (FRED failed, no cache: {e})",
         }
 
 
