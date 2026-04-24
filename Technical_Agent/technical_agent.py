@@ -1297,6 +1297,26 @@ class TechnicalAgent:
             self.db_conn.rollback()
             return False
 
+    def _write_degraded_heartbeat(self, reason: str):
+        """Write a degraded status heartbeat. Signals staleness or data quality issues."""
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO forex_network.agent_heartbeats
+                    (agent_name, user_id, session_id, last_seen, status, cycle_count)
+                    VALUES (%s, %s, %s, NOW(), 'degraded', %s)
+                    ON CONFLICT (agent_name, user_id)
+                    DO UPDATE SET
+                        last_seen = NOW(),
+                        status = 'degraded',
+                        cycle_count = EXCLUDED.cycle_count,
+                        session_id = EXCLUDED.session_id
+                """, (self.AGENT_NAME, self.user_id, self.session_id, self.cycle_count))
+                self.db_conn.commit()
+            logger.warning(f"Degraded heartbeat written: {reason}")
+        except Exception as e:
+            logger.warning(f"Failed to write degraded heartbeat ({reason}): {e}")
+
     def _reuse_existing_signals(self) -> bool:
         """
         On a price-skip cycle, re-insert the most recent signal per pair with
@@ -1582,6 +1602,21 @@ class TechnicalAgent:
         self.cycle_count += 1
 
         logger.info(f"Starting technical agent cycle #{self.cycle_count}")
+
+        # ── PRICE_METRICS STALENESS CHECK ─────────────────────────────────────
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("""SELECT MAX(ts) FROM forex_network.price_metrics WHERE timeframe = '1H'""")
+                latest_ts = cur.fetchone()[0]
+            if latest_ts is not None:
+                age_hours = (datetime.utcnow().replace(tzinfo=latest_ts.tzinfo) - latest_ts).total_seconds() / 3600
+                market_hours = 7 <= datetime.utcnow().hour < 21
+                if age_hours > self.PRICE_METRICS_MAX_AGE_HOURS and market_hours:
+                    logger.warning(f"price_metrics 1H stale: {age_hours:.1f}h old — skipping cycle")
+                    self._write_degraded_heartbeat("price_metrics_stale")
+                    return True
+        except Exception as e:
+            logger.warning(f"price_metrics staleness check failed: {e} — proceeding anyway")
 
         # ── FORCED RECALCULATION TIMER ────────────────────────────────────────
         _cycles_since_forced = self.cycle_count - self._last_forced_recalc_cycle
