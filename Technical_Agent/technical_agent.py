@@ -1682,12 +1682,15 @@ class TechnicalAgent:
                     continue
 
                 pip_precision = 3 if pair.upper().endswith('JPY') else 5
+                _factor = 10 ** pip_precision  # ceil/floor scale factor
                 if bias == 'bullish':
-                    target_1 = round(current_price + 2.0 * atr_1d, pip_precision)
-                    target_2 = round(current_price + 4.0 * atr_1d, pip_precision)
+                    # Long: round UP (away from entry) so R:R is never truncated below 2.0
+                    target_1 = math.ceil((current_price + 2.0 * atr_1d) * _factor) / _factor
+                    target_2 = math.ceil((current_price + 4.0 * atr_1d) * _factor) / _factor
                 else:  # bearish
-                    target_1 = round(current_price - 2.0 * atr_1d, pip_precision)
-                    target_2 = round(current_price - 4.0 * atr_1d, pip_precision)
+                    # Short: round DOWN (away from entry on the downside) for same reason
+                    target_1 = math.floor((current_price - 2.0 * atr_1d) * _factor) / _factor
+                    target_2 = math.floor((current_price - 4.0 * atr_1d) * _factor) / _factor
 
                 rm['target_price']   = target_2   # T2 for R:R gate (2:1)
                 rm['target_1_price'] = target_1   # T1 for execution close (v0)
