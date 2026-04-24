@@ -1053,12 +1053,16 @@ class TechnicalAgent:
                 swing_trend = swing.get('trend_structure', 'neutral')
 
                 # ── RSI pullback direction & conviction ──────────────────────
-                if trending and 38.0 <= rsi <= 55.0:
+                # Extend RSI window when swing structure confirms direction
+                rsi_long_hi   = 65.0 if swing_trend == 'bullish' else 55.0
+                rsi_short_lo  = 35.0 if swing_trend == 'bearish' else 45.0
+
+                if trending and 38.0 <= rsi <= rsi_long_hi:
                     direction  =  1.0   # bullish pullback
-                    conviction = (55.0 - rsi) / (55.0 - 38.0)   # 1.0 @ RSI=38, 0.0 @ RSI=55
-                elif trending and 45.0 <= rsi <= 62.0:
+                    conviction = (rsi_long_hi - rsi) / (rsi_long_hi - 38.0)
+                elif trending and rsi_short_lo <= rsi <= 62.0:
                     direction  = -1.0   # bearish rally into resistance
-                    conviction = (rsi - 45.0) / (62.0 - 45.0)   # 1.0 @ RSI=62, 0.0 @ RSI=45
+                    conviction = (rsi - rsi_short_lo) / (62.0 - rsi_short_lo)
                 else:
                     direction  = 0.0
                     conviction = 0.0
@@ -1074,6 +1078,13 @@ class TechnicalAgent:
 
                 session_weight = self.get_session_pair_weight(pair, session)
                 score          = direction * (adx / 100.0) * conviction * session_weight
+
+                # ── swing structure amplifier ─────────────────────────────────
+                # When swing structure confirms direction, amplify score by 1.3x
+                if (swing_trend == 'bullish' and score > 0) or (swing_trend == 'bearish' and score < 0):
+                    score = score * 1.3
+                    logger.debug(f"{pair} swing structure confirms direction — score amplified to {score:.3f}")
+
                 score          = round(score, 4)
 
                 bias = 'bullish' if score > 0.1 else ('bearish' if score < -0.1 else 'neutral')
