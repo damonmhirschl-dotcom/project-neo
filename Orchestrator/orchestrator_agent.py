@@ -112,6 +112,13 @@ FX_PAIRS = [
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
 ]
 
+# Pairs where macro signal is structurally dominant — persistent directional
+# bias means technical signal routinely disagrees due to timeframe mismatch
+# (macro = daily/weekly, technical = 15M). For these pairs, macro direction
+# is used even when tech disagrees; the trade still requires both gates to
+# clear their individual score thresholds.
+MACRO_ONLY_PAIRS = {'AUDUSD', 'EURUSD', 'USDJPY', 'GBPAUD', 'CADJPY'}
+
 # Session constraints for cross pairs — these pairs have lower liquidity
 # outside their primary session; enforced in evaluate_pair CHECK 6.7.
 CROSS_PAIR_SESSIONS = {
@@ -1111,6 +1118,14 @@ class ConvergenceCalculator:
         # Score 0.50 (neutral) -> +0.100 regime contribution.
         # Score 1.0 (trending) -> +0.200 regime contribution.
         _regime_score = regime_score_captured if regime_score_captured is not None else 0.50
+        # Change 2: regime uses daily ADX; technical uses 15M. If regime says
+        # ranging (score≤0.1) but the regime agent's own daily ADX>20, the
+        # timeframes conflict — treat as neutral rather than penalising to 0.
+        _pair_regime_data = regime_payload.get("pair_regimes", {}).get(pair, {})
+        _regime_adx = float(_pair_regime_data.get('adx') or 0) if isinstance(_pair_regime_data, dict) else 0.0
+        if _regime_score <= 0.1 and _regime_adx > 20:
+            _regime_score = 0.50
+            detail["regime_score_adx_override"] = round(_regime_adx, 1)
         regime_additive = _regime_score * 0.20
         convergence = directional_sum + regime_additive
         detail["regime_score_used"] = round(_regime_score, 4)
@@ -2485,48 +2500,58 @@ class OrchestratorAgent:
                 )
 
             if _tech_direction != _macro_direction:
-                _gate_reject(
-                    f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
-                    f"vs tech={_tech_direction} ({_tech_score:+.3f})"
-                )
-                # Hypothesis E — directional_disagreement: both convicted, opposite directions
-                self._write_shadow_trade(
-                    pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'directional_disagreement',
-                    hypothesis='directional_disagreement',
-                    macro_gate_passed=True,
-                    tech_gate_passed=True,
-                    regime_agrees=_regime_agrees,
-                    p75_threshold=_p75,
-                    effective_threshold=_effective_macro_threshold,
-                    would_have_traded=False,
-                )
-                # Hypothesis C — macro_regime_no_tech: macro+regime agree despite tech opposing
-                if _regime_agrees:
+                if pair in MACRO_ONLY_PAIRS:
+                    # Macro-only pair: directional agreement not required.
+                    # Macro uses daily/weekly data; 15M tech routinely disagrees
+                    # on structural trend. Log the disagreement but proceed.
+                    logger.info(
+                        f"{pair} MACRO_ONLY: overriding tech direction "
+                        f"(macro={_macro_direction} {_macro_score:+.3f}, "
+                        f"tech={_tech_direction} {_tech_score:+.3f})"
+                    )
+                else:
+                    _gate_reject(
+                        f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
+                        f"vs tech={_tech_direction} ({_tech_score:+.3f})"
+                    )
+                    # Hypothesis E — directional_disagreement: both convicted, opposite directions
                     self._write_shadow_trade(
                         pair, bias, _macro_score, _tech_score,
                         _regime_score_val, 'directional_disagreement',
-                        hypothesis='macro_regime_no_tech',
+                        hypothesis='directional_disagreement',
                         macro_gate_passed=True,
                         tech_gate_passed=True,
-                        regime_agrees=True,
+                        regime_agrees=_regime_agrees,
                         p75_threshold=_p75,
                         effective_threshold=_effective_macro_threshold,
-                        would_have_traded=True,
+                        would_have_traded=False,
                     )
-                # Full-cycle observation — directional gate blocked
-                self._write_shadow_trade(
-                    pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'directional_disagreement',
-                    hypothesis='full_cycle',
-                    macro_gate_passed=True,
-                    tech_gate_passed=True,
-                    regime_agrees=_regime_agrees,
-                    p75_threshold=_p75,
-                    effective_threshold=_effective_macro_threshold,
-                    would_have_traded=False,
-                )
-                continue
+                    # Hypothesis C — macro_regime_no_tech: macro+regime agree despite tech opposing
+                    if _regime_agrees:
+                        self._write_shadow_trade(
+                            pair, bias, _macro_score, _tech_score,
+                            _regime_score_val, 'directional_disagreement',
+                            hypothesis='macro_regime_no_tech',
+                            macro_gate_passed=True,
+                            tech_gate_passed=True,
+                            regime_agrees=True,
+                            p75_threshold=_p75,
+                            effective_threshold=_effective_macro_threshold,
+                            would_have_traded=True,
+                        )
+                    # Full-cycle observation — directional gate blocked
+                    self._write_shadow_trade(
+                        pair, bias, _macro_score, _tech_score,
+                        _regime_score_val, 'directional_disagreement',
+                        hypothesis='full_cycle',
+                        macro_gate_passed=True,
+                        tech_gate_passed=True,
+                        regime_agrees=_regime_agrees,
+                        p75_threshold=_p75,
+                        effective_threshold=_effective_macro_threshold,
+                        would_have_traded=False,
+                    )
+                    continue
 
             # Layer 3 — all existing session, stress, R:R, spread checks in evaluate_pair
             # Full-cycle observation — all three hierarchical gates cleared
