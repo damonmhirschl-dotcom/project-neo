@@ -372,6 +372,9 @@ class IGBroker(BrokerInterface):
             if _lim_pips > 0:
                 _limit_distance = round(_lim_pips, 1)
 
+        # Pass-through V1 Swing reference tag if caller provided one (max 30 chars, alphanumeric)
+        _order_reference = str(payload.get("reference", ""))[:30] or None
+
         body = {
             "epic":           epic,
             "expiry":         "-",
@@ -384,6 +387,8 @@ class IGBroker(BrokerInterface):
             "currencyCode":   self.CURRENCY_CODE_MAP.get(instrument.upper().replace("/", ""), "USD"),
             "forceOpen":      True,
         }
+        if _order_reference:
+            body["reference"] = _order_reference
 
         r = self._session.post(
             self.base_url + "/positions/otc",

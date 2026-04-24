@@ -1040,6 +1040,9 @@ class TradeExecutor:
                 f"(pre-fill price={_current_price:.5f} atr={_entry_atr:.5f})"
             )
 
+        # V1 Swing: tag order with reference for broker-side strategy separation
+        order['reference'] = f"NEOv1s{instrument[:7].replace('/', '').upper()}" 
+
         # Capture intended entry price for execution_failures logging.
         # For LMT orders, this is the limit price set in _build_order.
         # For MKT orders, attempt a quick live quote; fall back to None.
@@ -1505,8 +1508,8 @@ class TradeExecutor:
                      slippage_pips, slippage_action, partial_fill_action,
                      fill_time_ms, entry_context, ibkr_order_id, convergence_score,
                      target_price, session_at_entry, agents_agreed, entry_rank_position,
-                     trade_parameters)
-                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     trade_parameters, strategy)
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 self.user_id, instrument, direction, entry_price, stop_price,
@@ -1521,6 +1524,7 @@ class TradeExecutor:
                 agents_agreed,
                 entry_rank_position,
                 json.dumps(trade_parameters) if trade_parameters else None,
+                'v1_swing',
             ))
             result = cur.fetchone()
             self.db.commit()
@@ -3301,6 +3305,89 @@ class ExecutionAgent:
         self.kill_handler.account_id = self.broker_account_id
         logger.info(f"Account ID propagated to executor/kill_handler: {self.broker_account_id}")
 
+
+    def _check_active_halts(self) -> 'Optional[Dict]':
+        """Query system_events for active daily/weekly drawdown halts.
+
+        Returns dict with event_type, halt_until, halt_reason if an active halt exists.
+        Fails open (returns None) on DB error so normal operation continues.
+        halt_until IS NULL = manual-clear only (weekly_drawdown_halt pattern).
+        halt_until > NOW()  = timed halt (daily_drawdown_halt pattern).
+        """
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT event_type, halt_until, halt_reason
+                FROM forex_network.system_events
+                WHERE event_type IN ('daily_drawdown_halt', 'weekly_drawdown_halt')
+                  AND (halt_until IS NULL OR halt_until > NOW())
+                ORDER BY created_at DESC LIMIT 1
+            """)
+            row = cur.fetchone()
+            cur.close()
+            if row:
+                return {"event_type": row["event_type"],
+                        "halt_until": row["halt_until"],
+                        "halt_reason": row["halt_reason"]}
+            return None
+        except Exception as _e:
+            logger.error(f"_check_active_halts DB query failed: {_e} — failing open")
+            return None  # fail open: do not halt if DB query fails
+
+    def _handle_daily_drawdown_halt(self) -> None:
+        """Force-close all open IG positions on daily drawdown halt trigger.
+
+        Called only for event_type='daily_drawdown_halt'. Weekly halts do NOT
+        force-close — existing stops are left to run.
+        """
+        try:
+            ig_positions = self.broker.get_positions()
+        except Exception as _e:
+            logger.error(f"_handle_daily_drawdown_halt: get_positions failed: {_e}")
+            return
+
+        if not ig_positions:
+            logger.info("_handle_daily_drawdown_halt: no open IG positions to close")
+            return
+
+        closed = 0; failed = 0
+        for pos in ig_positions:
+            deal_id    = pos.get("dealId", "")
+            instrument = pos.get("instrument", "")
+            size       = abs(float(pos.get("size", 0) or 0))
+            ig_dir     = pos.get("direction", "BUY")
+            close_dir  = "SELL" if ig_dir == "BUY" else "BUY"
+            if not deal_id or size <= 0:
+                continue
+            try:
+                result = self.broker.close_position(deal_id, size, close_dir)
+                if result.get("error") or result.get("status") == "rejected":
+                    logger.error(
+                        f"DD halt close failed {deal_id} ({instrument}): "
+                        f"{result.get('error') or result.get('status')}"
+                    )
+                    failed += 1
+                else:
+                    logger.info(
+                        f"DD halt: closed {instrument} {deal_id} "
+                        f"@ {result.get('fill_price', '?')}"
+                    )
+                    closed += 1
+            except Exception as _ce:
+                logger.error(f"DD halt close exception {deal_id} ({instrument}): {_ce}")
+                failed += 1
+
+        log_event(
+            "DAILY_DD_HALT_CLOSE_ALL",
+            f"Closed {closed} positions, {failed} failed",
+            category="RISK", agent="execution", user_id=str(self.user_id),
+            severity="CRITICAL",
+            payload={"closed": closed, "failed": failed},
+        )
+        logger.warning(
+            f"_handle_daily_drawdown_halt complete: closed={closed} failed={failed}"
+        )
+
     def run_cycle(self):
         """Run a single execution cycle — manage positions, poll approvals."""
         try:
@@ -3309,6 +3396,25 @@ class ExecutionAgent:
                 logger.info("Kill switch ACTIVE — execution cycle skipped")
                 self.write_heartbeat()
                 return {"skipped": "kill_switch_active"}
+
+            # D1.5: Active drawdown halt check (RG writes on daily/weekly DD breach)
+            _active_halt = self._check_active_halts()
+            if _active_halt:
+                _halt_type   = _active_halt.get("event_type", "unknown_halt")
+                _halt_reason = _active_halt.get("halt_reason", "")
+                _halt_until  = _active_halt.get("halt_until")
+                logger.warning(
+                    f"Active halt: {_halt_type} ({_halt_reason}) "
+                    f"until {_halt_until or 'manual_review'}"
+                )
+                if _halt_type == "daily_drawdown_halt":
+                    # Daily: force-close all open positions then stop new entries
+                    self._handle_daily_drawdown_halt()
+                # Weekly and daily: both skip new-entry processing
+                # (Weekly leaves existing positions to run their stops)
+                self.write_heartbeat()
+                return {"skipped": f"halt_active_{_halt_type}", "halt_until": str(_halt_until)}
+
             self.manage_open_positions()
             self.update_account_value()
             approvals = self.read_pending_approvals()
