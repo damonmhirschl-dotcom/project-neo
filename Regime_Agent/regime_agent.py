@@ -2000,11 +2000,34 @@ class StressScoreEngine:
         return raw_score
 
     def _classify_stress_state(self, score: float) -> StressState:
-        """Map stress score to state."""
+        """Map stress score to state with hysteresis at the normal/elevated boundary.
+
+        Prevents threshold oscillation when stress sits near 31:
+          normal → elevated : requires score > 33  (was >= 30)
+          elevated → normal : requires score < 29  (was < 30)
+        """
+        base_state = StressState.CRISIS
         for low, high, state_name in STRESS_THRESHOLDS:
             if low <= score < high:
-                return StressState(state_name)
-        return StressState.CRISIS
+                base_state = StressState(state_name)
+                break
+
+        # Hysteresis at the normal↔elevated boundary only
+        if base_state in (StressState.NORMAL, StressState.ELEVATED):
+            prev_str = (self.previous_snapshot or {}).get("stress_state")
+            try:
+                prev_state = StressState(prev_str) if prev_str else base_state
+            except ValueError:
+                prev_state = base_state
+
+            if prev_state == StressState.ELEVATED and base_state == StressState.NORMAL:
+                if score >= 29:   # must drop clearly below 29 to leave elevated
+                    return StressState.ELEVATED
+            elif prev_state == StressState.NORMAL and base_state == StressState.ELEVATED:
+                if score < 33:    # must rise clearly above 33 to enter elevated
+                    return StressState.NORMAL
+
+        return base_state
 
     def _apply_r1_boundary_oscillation(
         self, score: float, state: StressState
