@@ -1235,7 +1235,8 @@ function LoginScreen({ onLogin }) {
           <div className="login-title">Two-factor authentication</div>
           <div className="login-sub">Enter the 6-digit code from your authenticator app</div>
           <form onSubmit={handleTotp}>
-            <input className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} autoFocus />
+            <label htmlFor="mfa-code">Auth code</label>
+            <input id="mfa-code" name="mfa-code" className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" autoComplete="one-time-code" autoFocus value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} />
             <button className="login-btn" type="submit" disabled={loading||mfaCode.length!==6}>{loading ? 'Verifying...' : 'Verify'}</button>
           </form>
           {err && <div className="login-err">{err}</div>}
@@ -1264,7 +1265,8 @@ function LoginScreen({ onLogin }) {
           </div>
           <div className="login-sub" style={{marginBottom:'0.5rem',textAlign:'left'}}>Enter the 6-digit code from your app to confirm</div>
           <form onSubmit={handleMfaSetup}>
-            <input className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} autoFocus />
+            <label htmlFor="mfa-code">Verification code</label>
+            <input id="mfa-code" name="mfa-code" className="login-input" type="text" inputMode="numeric" pattern="[0-9]{6}" placeholder="000000" autoComplete="one-time-code" autoFocus value={mfaCode} onChange={e=>setMfaCode(e.target.value.replace(/\D/g,''))} required maxLength={6} />
             <button className="login-btn" type="submit" disabled={loading||mfaCode.length!==6}>{loading ? 'Confirming...' : 'Confirm & sign in'}</button>
           </form>
           {err && <div className="login-err">{err}</div>}
@@ -1296,8 +1298,10 @@ function LoginScreen({ onLogin }) {
         <div className="login-title">AlgoDesk</div>
         <div className="login-sub">Trading dashboard</div>
         <form onSubmit={handleSubmit}>
-          <input className="login-input" type="text" placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} required autoComplete="username" />
-          <input className="login-input" type="password" placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} required autoComplete="current-password" />
+          <label htmlFor="username">Username</label>
+          <input id="username" name="username" className="login-input" type="text" placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} required autoComplete="username" />
+          <label htmlFor="password">Password</label>
+          <input id="password" name="password" className="login-input" type="password" placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} required autoComplete="current-password" />
           <button className="login-btn" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
         </form>
         {err && <div className="login-err">{err}</div>}
