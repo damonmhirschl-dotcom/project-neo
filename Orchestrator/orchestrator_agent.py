@@ -1706,6 +1706,46 @@ class OrchestratorAgent:
             except Exception:
                 pass
 
+    def _write_shadow_trade(
+        self, pair: str, bias: str,
+        macro_score: float, tech_score: float, regime_score: float,
+        rejection_reason: str,
+    ) -> None:
+        """Record a macro-convicted but technically-rejected signal as a shadow trade.
+        price_at_signal is populated nightly by backfill_shadow_trades.py from
+        historical_prices. Tracks technical_too_weak and directional_disagreement
+        rejections to measure how often macro alone was correct."""
+        if not self.db or not pair:
+            return
+        direction = (bias or "")[:5]  # 'bulli' or 'beari' — matches rejected_signals convention
+        try:
+            cur = self.db.cursor()
+            cur.execute(
+                """
+                INSERT INTO forex_network.shadow_trades
+                    (instrument, direction, signal_time,
+                     macro_score, tech_score, regime_score,
+                     rejection_reason, user_id)
+                VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s)
+                """,
+                (
+                    pair, direction,
+                    float(macro_score) if macro_score is not None else None,
+                    float(tech_score) if tech_score is not None else None,
+                    float(regime_score) if regime_score is not None else None,
+                    rejection_reason[:50],
+                    str(self.user_id),
+                ),
+            )
+            cur.close()
+            self.db.commit()
+        except Exception as _e:
+            logger.warning(f"shadow_trade insert failed for {pair}: {_e}")
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
     def build_entry_context(self, instrument: str, convergence_score: float,
                              bias: str, market_context: Dict[str, Any],
                              signals: Dict[str, Any]) -> Dict[str, Any]:
@@ -2270,7 +2310,7 @@ class OrchestratorAgent:
             # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
             # Layer 1 — macro gate
             MACRO_THRESHOLD    = float(risk_params.get('convergence_threshold', 0.30))
-            TECH_MIN_THRESHOLD = 0.20
+            TECH_MIN_THRESHOLD = 0.10
 
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
@@ -2333,6 +2373,10 @@ class OrchestratorAgent:
                 _gate_reject(
                     f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
                 )
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    detail.get("regime_score"), 'technical_too_weak',
+                )
                 continue
 
             _tech_direction = 'long' if _tech_score > 0 else 'short'
@@ -2340,6 +2384,10 @@ class OrchestratorAgent:
                 _gate_reject(
                     f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
                     f"vs tech={_tech_direction} ({_tech_score:+.3f})"
+                )
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    detail.get("regime_score"), 'directional_disagreement',
                 )
                 continue
 
