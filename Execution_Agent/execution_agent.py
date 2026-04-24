@@ -508,9 +508,9 @@ class ReconciliationEngine:
                     try:
                         _ep = float(rds_trade["entry_price"])
                         _sz = float(rds_trade.get("position_size_usd") or 0)
-                        # _compute_pnl is a @staticmethod on ExecutionAgent — call via class
-                        ghost_pnl_pips, ghost_pnl_usd = ExecutionAgent._compute_pnl(
-                            instrument, rds_trade["direction"], _ep, ghost_exit_price, _sz
+                        ghost_pnl_pips, ghost_pnl_usd = self._compute_pnl(
+                            instrument, rds_trade["direction"], _ep, ghost_exit_price, _sz,
+                            conversion_rate=self._fetch_gbp_rate(instrument),
                         )
                     except Exception as e:
                         logger.warning(f"Ghost cleanup P&L calc failed for {instrument}: {e}")
@@ -2212,11 +2212,18 @@ class ExecutionAgent:
         # Pip P&L computed from confirmed fill price (IG does not return pips)
         pnl_pips = None
         if exit_price and trade.get("entry_price"):
-            pnl_pips, _ = self._compute_pnl(
+            pnl_pips, _computed_pnl = self._compute_pnl(
                 instrument, direction,
                 float(trade["entry_price"]), exit_price,
-                float(trade.get("position_size_usd") or 0),
+                float(trade.get("position_size") or 0),
+                conversion_rate=self._fetch_gbp_rate(instrument),
             )
+            if pnl_usd is None and _computed_pnl is not None:
+                pnl_usd = _computed_pnl
+                logger.info(
+                    f"_close_position {instrument} trade {trade_id}: "
+                    f"using computed P&L £{pnl_usd:.2f} (ig_profit unavailable)"
+                )
 
         logger.info(
             f"Close confirmed: {instrument} trade {trade_id} reason={close_reason} "
@@ -2430,31 +2437,19 @@ class ExecutionAgent:
         signed_move = price_move * direction_sign          # positive = profit
         pnl_pips = round(signed_move / pip_size, 1)
 
-        size = float(position_size_usd)
-        ep   = float(entry_price)
-        xp   = float(exit_price)
-
-        quote_ccy = ExecutionAgent._QUOTE_CURRENCIES.get(instrument.upper(), 'USD')
-
-        if quote_ccy == 'USD':
-            # P&L in USD; size / ep converts lot-notional to USD P&L
-            pnl_usd = signed_move * (size / ep)
-        elif quote_ccy == 'GBP':
-            # Quote is GBP — P&L directly in GBP (e.g. EURGBP)
-            pnl_usd = signed_move * (size / ep)
-        elif instrument.upper().startswith('USD'):
-            # Base is USD (USDCHF, USDCAD, USDJPY): P&L in quote ccy, convert via exit_price
-            pnl_usd = signed_move * size / xp
+        # position_size_usd is LOTS (e.g. 0.10 = 0.10 standard lots = 10,000 base units).
+        # Unified formula for all pair types:
+        #   pnl_in_quote = signed_move × lots × 100,000
+        #   pnl_in_GBP   = pnl_in_quote × conversion_rate  (quote→GBP from _fetch_gbp_rate)
+        # conversion_rate must be supplied by caller; returns None for pnl_gbp if absent.
+        units     = float(position_size_usd) * 100_000   # base currency units
+        pnl_quote = signed_move * units                  # in quote currency
+        if conversion_rate is not None and conversion_rate > 0:
+            pnl_gbp = round(pnl_quote * conversion_rate, 2)
         else:
-            # Cross pair: P&L in quote currency; conversion_rate converts quote→GBP.
-            # Callers that have DB access should pass conversion_rate for accuracy.
-            # If unavailable (static call sites), return None rather than a wrong value.
-            if conversion_rate is not None and conversion_rate > 0:
-                pnl_usd = signed_move * (size / ep) * conversion_rate
-            else:
-                pnl_usd = None
+            pnl_gbp = None
 
-        return pnl_pips, (round(pnl_usd, 2) if pnl_usd is not None else None)
+        return pnl_pips, pnl_gbp
 
     def _handle_trade_closed(self, trade: Dict, prev_snapshot: Optional[Dict] = None,
                              close_cause: str = 'stop_hit'):
@@ -2566,8 +2561,23 @@ class ExecutionAgent:
             logger.warning(
                 f"[close] {instrument} trade {trade_id}: no matching IG transaction "
                 f"(size={trade.get('position_size')}, entry={trade.get('entry_price')}) "
-                f"— pnl will be NULL, manual backfill needed"
+                f"— computing P&L from formula"
             )
+            if exit_price and trade.get("entry_price") and trade.get("direction"):
+                try:
+                    _, pnl_usd = self._compute_pnl(
+                        instrument, trade["direction"],
+                        float(trade["entry_price"]), exit_price,
+                        float(trade.get("position_size") or 0),
+                        conversion_rate=self._fetch_gbp_rate(instrument),
+                    )
+                    if pnl_usd is not None:
+                        logger.info(
+                            f"[close] {instrument} trade {trade_id}: "
+                            f"formula P&L = £{pnl_usd:.2f}"
+                        )
+                except Exception as _pe:
+                    logger.warning(f"[close] {instrument}: formula P&L failed: {_pe}")
 
         # pnl_pips: pip move from final exit_price (IG does not return pips)
         if exit_price is not None and trade.get("entry_price") and trade.get("direction"):
