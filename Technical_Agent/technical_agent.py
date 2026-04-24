@@ -1563,8 +1563,11 @@ class TechnicalAgent:
                     target = round(max(candidates), 5)  # nearest (highest) swing low below price
 
                 # Minimum distance gate: target must be >= 1.5× stop_distance from entry (1.5:1 R:R floor)
-                stop_distance = (rm.get('stop_distance')
-                                 or payload.get('stop_distance'))
+                # stop_distance_pips is the canonical key; convert to price units for the gate.
+                _stop_pips = float(rm.get('stop_distance_pips') or rm.get('stop_distance') or
+                                   payload.get('stop_distance_pips') or payload.get('stop_distance') or 0)
+                _pip_size = 0.01 if (pair or '').upper().endswith('JPY') else 0.0001
+                stop_distance = _stop_pips * _pip_size if _stop_pips > 0 else None
                 if stop_distance and float(stop_distance) > 0 and current_price is not None:
                     min_target_distance = float(stop_distance) * 1.5
                     actual_distance = abs(target - current_price)
