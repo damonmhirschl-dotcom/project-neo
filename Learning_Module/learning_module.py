@@ -3073,6 +3073,86 @@ class LearningModule:
             logger.error(f"compute_kelly_fraction failed: {e}")
             return {}
 
+    def generate_daily_summary(self) -> dict:
+        """
+        Generate daily summary of LM findings for human review.
+        Called by send_daily_lm_summary.py cron script at 22:00 UTC.
+        Returns structured dict covering shadow trades, proposals,
+        RG rejections, architecture issues, and closed-trade P&L.
+        """
+        try:
+            cur = self.db.cursor()
+            summary: dict = {}
+
+            # Shadow trade accumulation (last 24h) — which hypotheses are firing
+            cur.execute("""
+                SELECT hypothesis,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN shadow_pips_1d IS NOT NULL THEN 1 ELSE 0 END) as with_outcomes,
+                       ROUND(AVG(shadow_pips_1d)::numeric, 2) as avg_pips_1d
+                FROM forex_network.shadow_trades
+                WHERE signal_time > NOW() - INTERVAL '24 hours'
+                GROUP BY hypothesis ORDER BY total DESC
+            """)
+            summary['shadow_trades_today'] = [dict(r) for r in cur.fetchall()]
+
+            # LM proposals today — from agent_signals learning_review payloads
+            # (_write_proposals writes to agent_signals, not the proposals table)
+            cur.execute("""
+                SELECT payload, created_at
+                FROM forex_network.agent_signals
+                WHERE agent_name = 'learning_module'
+                  AND signal_type = 'learning_review'
+                  AND created_at > NOW() - INTERVAL '24 hours'
+                ORDER BY created_at DESC LIMIT 20
+            """)
+            proposals_today = []
+            arch_issues = []
+            for row in cur.fetchall():
+                payload = row['payload'] or {}
+                for p in payload.get('proposals', []):
+                    ptype = p.get('proposal_type', p.get('type', 'unknown'))
+                    msg = p.get('message', p.get('suggestion', p.get('reasoning', '')))
+                    entry = {
+                        'proposal_type': ptype,
+                        'instrument':    p.get('instrument'),
+                        'message':       msg,
+                        'created_at':    str(row['created_at']),
+                    }
+                    if str(ptype).startswith('architecture_'):
+                        arch_issues.append(entry)
+                    else:
+                        proposals_today.append(entry)
+            summary['proposals_today'] = proposals_today[:10]
+            summary['architecture_issues'] = arch_issues[:5]
+
+            # RG rejections today — use rejected_signals (rg_rejections does not exist)
+            cur.execute("""
+                SELECT rejection_reason, COUNT(*) as total
+                FROM forex_network.rejected_signals
+                WHERE rejected_at > NOW() - INTERVAL '24 hours'
+                GROUP BY rejection_reason ORDER BY total DESC
+            """)
+            summary['rg_rejections_today'] = [dict(r) for r in cur.fetchall()]
+
+            # Closed trades today
+            cur.execute("""
+                SELECT COUNT(*) as total,
+                       COALESCE(SUM(CASE WHEN pnl_pips > 0 THEN 1 ELSE 0 END), 0) as winners,
+                       COALESCE(SUM(pnl_pips), 0) as total_pips
+                FROM forex_network.trades
+                WHERE entry_time > NOW() - INTERVAL '24 hours'
+                  AND exit_time IS NOT NULL
+            """)
+            summary['trades_today'] = dict(cur.fetchone())
+
+            cur.close()
+            return summary
+
+        except Exception as e:
+            logger.error(f"generate_daily_summary failed: {e}")
+            return {}
+
 
 # =============================================================================
 # TEST SUITE
