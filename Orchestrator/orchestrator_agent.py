@@ -1748,11 +1748,13 @@ class OrchestratorAgent:
         p75_threshold: float = None,
         effective_threshold: float = None,
         would_have_traded: bool = None,
+        current_price: float = None,
     ) -> None:
         """Record a shadow trade hypothesis row.
         hypothesis maps the 5 learning hypotheses (macro_only, tech_threshold_0.10,
         macro_regime_no_tech, p75_relaxed, directional_disagreement).
-        price_at_signal/pips populated nightly by backfill_shadow_trades.py."""
+        price_at_signal written at insert time from LIVE prices; shadow_pips_*
+        populated nightly by backfill_shadow_trades.py."""
         if not self.db or not pair:
             return
         # Only the primary user writes shadow trades — one row per pair per hypothesis per day.
@@ -1760,6 +1762,24 @@ class OrchestratorAgent:
             return
         direction = (bias or "")[:5]  # 'bulli' or 'beari'
         hyp = (hypothesis or rejection_reason or "unknown")[:50]
+        # Fetch current price from LIVE historical_prices if not supplied by caller.
+        if current_price is None:
+            try:
+                _p_cur = self.db.cursor()
+                _p_cur.execute(
+                    """
+                    SELECT close FROM forex_network.historical_prices
+                    WHERE instrument = %s AND timeframe = 'LIVE'
+                    ORDER BY ts DESC LIMIT 1
+                    """,
+                    (pair,),
+                )
+                _p_row = _p_cur.fetchone()
+                _p_cur.close()
+                if _p_row:
+                    current_price = float(_p_row['close'] if isinstance(_p_row, dict) else _p_row[0])
+            except Exception as _pe:
+                logger.debug(f"_write_shadow_trade: could not fetch LIVE price for {pair}: {_pe}")
         try:
             cur = self.db.cursor()
             cur.execute(
@@ -1770,9 +1790,10 @@ class OrchestratorAgent:
                      rejection_reason, user_id,
                      hypothesis, macro_gate_passed, tech_gate_passed,
                      regime_agrees, cot_multiplier,
-                     p75_threshold, effective_threshold, would_have_traded)
+                     p75_threshold, effective_threshold, would_have_traded,
+                     price_at_signal)
                 VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (instrument, hypothesis,
                              CAST(signal_time AT TIME ZONE 'UTC' AS date))
                 DO NOTHING
@@ -1792,6 +1813,7 @@ class OrchestratorAgent:
                     float(p75_threshold) if p75_threshold is not None else None,
                     float(effective_threshold) if effective_threshold is not None else None,
                     would_have_traded,
+                    float(current_price) if current_price is not None else None,
                 ),
             )
             cur.close()
