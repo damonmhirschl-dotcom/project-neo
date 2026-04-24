@@ -2501,7 +2501,11 @@ class OrchestratorAgent:
                 continue
 
             _macro_direction = 'long' if _macro_score > 0 else 'short'
-            _regime_agrees = (_regime_direction == _macro_direction)
+            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
+            # Regime score is trend strength (ADX-based), not directional.
+            # _regime_agrees = True when regime confirms a trending environment (score > 0.25),
+            # regardless of macro direction. False in ranging/high-vol conditions.
+            _regime_agrees = _regime_score_val > 0.25
 
             # Layer 2 — technical trigger
             if abs(_tech_score) < TECH_MIN_THRESHOLD:
