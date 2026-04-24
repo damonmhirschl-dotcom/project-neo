@@ -1722,6 +1722,12 @@ class OrchestratorAgent:
             stage = "risk_gate"
         elif "portfolio" in r_lower or "max_position" in r_lower or "max positions" in r_lower:
             stage = "capacity"
+        elif reason == "technical_gate_fail":
+            stage = "technical_gate"
+        elif reason == "macro_no_direction":
+            stage = "macro_gate"
+        elif reason == "direction_disagreement":
+            stage = "directional"
         else:
             stage = "other"
         try:
