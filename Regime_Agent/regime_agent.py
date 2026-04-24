@@ -144,10 +144,13 @@ VOL_HIGH_MULTIPLIER = 1.5
 VOL_LOW_MULTIPLIER = 0.5
 
 # R1: Boundary oscillation detection
-R1_BOUNDARY_TOLERANCE = 3       # ±3 points
-R1_OSCILLATION_CYCLES = 4       # 4+ consecutive cycles
-R1_RECOVERY_MARGIN = 5          # Must be 5 points below boundary
-R1_RECOVERY_CYCLES = 3          # For 3 consecutive cycles
+R1_BOUNDARY_TOLERANCE = 3       # ±3 points detection window
+R1_OSCILLATION_CYCLES = 4       # 4+ consecutive cycles before escalation
+R1_RECOVERY_MARGIN    = 1       # Score must be 1 pt below boundary to start recovery
+R1_RECOVERY_CYCLES    = 3       # Consecutive recovery cycles required
+R1_ESCALATION_BUFFER  = 3       # Score must exceed boundary+3 before cycles count
+                                 #   elevated→high: score must be >33 (boundary=30+3)
+                                 #   high→elevated: score must be <29 (boundary=30-1)
 
 # R2: VIX spike detection
 R2_VIX_SPIKE_PCT = 0.50         # 50% increase
@@ -1997,34 +2000,11 @@ class StressScoreEngine:
         return raw_score
 
     def _classify_stress_state(self, score: float) -> StressState:
-        """Map stress score to state with hysteresis at the normal/elevated boundary.
-
-        Prevents threshold oscillation when stress sits near 31:
-          normal → elevated : requires score > 33  (was >= 30)
-          elevated → normal : requires score < 29  (was < 30)
-        """
-        base_state = StressState.CRISIS
+        """Map stress score to state."""
         for low, high, state_name in STRESS_THRESHOLDS:
             if low <= score < high:
-                base_state = StressState(state_name)
-                break
-
-        # Hysteresis at the normal↔elevated boundary only
-        if base_state in (StressState.NORMAL, StressState.ELEVATED):
-            prev_str = (self.previous_snapshot or {}).get("stress_state")
-            try:
-                prev_state = StressState(prev_str) if prev_str else base_state
-            except ValueError:
-                prev_state = base_state
-
-            if prev_state == StressState.ELEVATED and base_state == StressState.NORMAL:
-                if score >= 29:   # must drop clearly below 29 to leave elevated
-                    return StressState.ELEVATED
-            elif prev_state == StressState.NORMAL and base_state == StressState.ELEVATED:
-                if score < 33:    # must rise clearly above 33 to enter elevated
-                    return StressState.NORMAL
-
-        return base_state
+                return StressState(state_name)
+        return StressState.CRISIS
 
     def _apply_r1_boundary_oscillation(
         self, score: float, state: StressState
@@ -2042,7 +2022,17 @@ class StressScoreEngine:
 
         if min_distance <= R1_BOUNDARY_TOLERANCE:
             if self.boundary_state.boundary_value == nearest_boundary:
-                self.boundary_state.oscillation_cycles += 1
+                # Hysteresis: only accumulate escalation cycles when score is
+                # meaningfully above the boundary — prevents false escalation when
+                # score merely grazes it (e.g. 31.0 at boundary=30 → no cycles;
+                # needs score ≥ boundary+R1_ESCALATION_BUFFER = 33).
+                if score >= nearest_boundary + R1_ESCALATION_BUFFER:
+                    self.boundary_state.oscillation_cycles += 1
+                elif not self.boundary_state.higher_state_applied:
+                    # Bleed off any accumulated cycles while score is in the buffer zone
+                    self.boundary_state.oscillation_cycles = max(
+                        0, self.boundary_state.oscillation_cycles - 1
+                    )
             else:
                 self.boundary_state.boundary_value = nearest_boundary
                 self.boundary_state.oscillation_cycles = 1
