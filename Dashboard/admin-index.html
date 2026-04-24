@@ -226,15 +226,49 @@ tr:hover td{background:var(--panel2)}
 #neo-session-warning{display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--amber);color:#000;padding:8px 16px;align-items:center;justify-content:space-between;font-size:.8rem;font-weight:500;gap:12px}
 .warn-dismiss{background:rgba(0,0,0,.15);border:none;cursor:pointer;padding:3px 10px;border-radius:var(--r);font-weight:600;font-size:.75rem}
 
+/* TAB NAV */
+.tab-nav{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:12px;overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+.tab-nav::-webkit-scrollbar{display:none}
+.tab-btn{font-family:var(--mono);font-size:.68rem;font-weight:500;color:var(--text3);background:none;border:none;border-bottom:2px solid transparent;padding:10px 16px 8px;cursor:pointer;transition:color .15s;margin-bottom:-1px;white-space:nowrap;flex-shrink:0;letter-spacing:.04em}
+.tab-btn:hover{color:var(--text1)}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green)}
+
+/* AUDIT LOG */
+.audit-row{display:grid;grid-template-columns:80px 1fr 56px;align-items:start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.audit-row:last-child{border-bottom:none}
+.audit-time{font-family:var(--mono);font-size:.65rem;color:var(--text3);white-space:nowrap}
+.audit-event{font-size:.68rem;color:var(--text2);line-height:1.4}
+.audit-tag{font-family:var(--mono);font-size:.57rem;font-weight:600;padding:2px 5px;border-radius:2px;text-align:center;text-transform:uppercase}
+.tag-signal{background:var(--blue-dim);color:var(--blue)}
+.tag-trade{background:var(--green-dim);color:var(--green)}
+.tag-risk{background:var(--red-dim);color:var(--red)}
+.tag-system{background:var(--border);color:var(--text2)}
+
+/* OBSERVATION */
+.obs-pair-section{margin-bottom:12px}
+.obs-pair-hdr{font-family:var(--mono);font-size:.72rem;font-weight:600;color:var(--text1);padding:6px 8px;background:var(--panel2);border:1px solid var(--border);border-radius:var(--r);cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+.obs-pair-hdr:hover{border-color:var(--border2)}
+.obs-agent-row{padding:6px 10px;border-left:1px solid var(--border);margin-left:8px;border-bottom:1px solid var(--border)}
+.obs-agent-row:last-child{border-bottom:none}
+.obs-agent-name{font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text2);text-transform:capitalize;width:80px;flex-shrink:0}
+.obs-signal-detail{font-size:.65rem;color:var(--text2);line-height:1.5;flex:1}
+.obs-signal-meta{font-family:var(--mono);font-size:.6rem;color:var(--text3);white-space:nowrap}
+.obs-controls{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.obs-chip{font-family:var(--mono);font-size:.62rem;color:var(--text3);background:var(--panel);border:1px solid var(--border2);padding:3px 8px;border-radius:12px;cursor:pointer;transition:all .12s;white-space:nowrap}
+.obs-chip:hover{color:var(--text1);border-color:var(--text3)}
+.obs-chip.active{background:var(--text1);color:var(--bg);border-color:var(--text1)}
+
 /* UTILS */
 .text-green{color:var(--green)}
 .text-red{color:var(--red)}
 .text-amber{color:var(--amber)}
 .text-dim{color:var(--text3)}
 .mono-sm{font-family:var(--mono);font-size:.65rem}
+.dl-btn{background:transparent;border:1px solid var(--border2);color:var(--text2);font-family:var(--mono);font-size:.65rem;padding:4px 10px;cursor:pointer;border-radius:var(--r);transition:border-color .15s,color .15s;margin-left:auto}
+.dl-btn:hover{border-color:var(--green);color:var(--green)}
 
 @media(max-width:1100px){.row-3{grid-template-columns:1fr 1fr}.row-6040{grid-template-columns:1fr}}
-@media(max-width:700px){.row-3{grid-template-columns:1fr}.header-center{display:none}.col-m-hide{display:none!important}}
+@media(max-width:700px){.row-3{grid-template-columns:1fr}.header-center{display:none}.col-m-hide{display:none!important}.tab-btn{min-height:44px}}
 
 /* SESSION EXPIRY MODAL */
 #session-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center}
@@ -520,7 +554,7 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
 
   return (
     <div className="header">
-      <div className="header-logo">Neo<span>Brief</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Project Neo</span></div>
+      <div className="header-logo"><span>Project Neo</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Admin</span></div>
       <div className="header-divider"/>
       <div className="header-center">
         {balance!=null && (
@@ -1136,6 +1170,277 @@ function RecentTradesPanel({trades}) {
 }
 
 /* =====================================================
+   TAB: AGENT OBSERVATION
+   ===================================================== */
+function ObservationTab({signals_full, decisions}) {
+  const [pairFilter, setPairFilter] = useState(null);
+  const [expandedPairs, setExpandedPairs] = useState({});
+
+  const AGENT_COLORS = {
+    macro:'var(--purple)', technical:'var(--blue)', regime:'var(--amber)',
+    orchestrator:'var(--green)', risk_guardian:'var(--red)',
+  };
+  const PAIRS_ALL = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','AUDJPY','CADJPY','EURGBP','EURAUD',
+    'USDCAD','USDCHF','NZDUSD','EURCHF','GBPCHF','GBPAUD','EURCAD','GBPCAD','AUDNZD','NZDJPY'];
+
+  const pairDec = latestDecisions(decisions);
+
+  // Group signals_full by instrument/pair, latest per agent per pair
+  const pairAgentMap = {};
+  (signals_full || []).filter(s => s.pair).forEach(s => {
+    const instr = (s.instrument || s.pair || '').replace('/','');
+    if (!pairAgentMap[instr]) pairAgentMap[instr] = {};
+    const existing = pairAgentMap[instr][s.agent_name];
+    if (!existing || new Date(s.created_at) > new Date(existing.created_at)) {
+      pairAgentMap[instr][s.agent_name] = s;
+    }
+  });
+
+  const pairs = pairFilter
+    ? [pairFilter]
+    : Object.keys(pairAgentMap).sort((a,b) => {
+        const sa = Math.abs(pairDec[a.slice(0,3)+'/'+a.slice(3)]?.macro_score || 0);
+        const sb = Math.abs(pairDec[b.slice(0,3)+'/'+b.slice(3)]?.macro_score || 0);
+        return sb - sa;
+      });
+
+  const toggle = instr => setExpandedPairs(e => ({...e, [instr]: !e[instr]}));
+
+  const downloadCsv = () => {
+    const rows = [];
+    rows.push(['pair','agent','bias','score','confidence','reasoning','created_at'].join(','));
+    Object.entries(pairAgentMap).forEach(([instr, agents]) => {
+      Object.entries(agents).forEach(([agent, s]) => {
+        const reasoning = (s.payload?.reasoning || '').replace(/"/g,'""');
+        rows.push([instr, agent, s.bias, s.score, s.confidence, `"${reasoning}"`, s.created_at].join(','));
+      });
+    });
+    const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+    const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='signals.csv'; a.click();
+  };
+
+  return (
+    <div>
+      <div className="obs-controls">
+        <button className={`obs-chip ${!pairFilter?'active':''}`} onClick={()=>setPairFilter(null)}>All pairs</button>
+        {PAIRS_ALL.map(p => (
+          pairAgentMap[p] ? (
+            <button key={p} className={`obs-chip ${pairFilter===p?'active':''}`}
+              onClick={()=>setPairFilter(pairFilter===p?null:p)}>
+              {p.slice(0,3)}/{p.slice(3)}
+            </button>
+          ) : null
+        ))}
+        <button className="dl-btn" onClick={downloadCsv}>↓ Download CSV</button>
+      </div>
+      <div style={{fontSize:'.65rem',color:'var(--text3)',marginBottom:8,fontFamily:'var(--mono)',letterSpacing:'.06em',textTransform:'uppercase'}}>
+        Agent reasoning — latest cycle · {Object.keys(pairAgentMap).length} pairs
+      </div>
+      {!pairs.length && <div className="empty-state"><div className="em-icon">◌</div><span>No signal data</span></div>}
+      {pairs.map(instr => {
+        const agents = pairAgentMap[instr] || {};
+        const pairLabel = instr.slice(0,3)+'/'+instr.slice(3);
+        const dec = pairDec[pairLabel] || {};
+        const isExpanded = expandedPairs[instr] !== false; // default expanded
+        const conv = dec.final_convergence;
+        const convCls = conv == null ? 'neut' : conv > 0.05 ? 'bull' : conv < -0.05 ? 'bear' : 'neut';
+        return (
+          <div key={instr} className="obs-pair-section">
+            <div className="obs-pair-hdr" onClick={() => toggle(instr)}>
+              <span style={{display:'flex',alignItems:'center',gap:10}}>
+                <span style={{fontWeight:700}}>{pairLabel}</span>
+                {conv != null && <span className={`dir-badge dir-${convCls}`}>{conv>=0?'+':''}{fmt(conv,3)}</span>}
+                {dec.rejection_reasons && <span style={{fontSize:'.6rem',color:'var(--text3)',fontWeight:400}}>{String(dec.rejection_reasons).slice(0,50)}</span>}
+              </span>
+              <span style={{color:'var(--text3)',fontSize:'.7rem'}}>{isExpanded ? '▲' : '▼'}</span>
+            </div>
+            {isExpanded && (
+              <div>
+                {Object.entries(agents).map(([agent, s]) => {
+                  const color = AGENT_COLORS[agent] || 'var(--text3)';
+                  const payload = s.payload || {};
+                  const reasoning = payload.reasoning || '';
+                  const adx = payload.adx;
+                  const regime = payload.regime || payload.decision;
+                  const ccy = payload.currency_scores;
+                  return (
+                    <div key={agent} className="obs-agent-row" style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                      <span className="obs-agent-name" style={{color}}>{agent}</span>
+                      <div style={{flex:1}}>
+                        <div className="obs-signal-detail">
+                          <span className={`dir-badge dir-${sgn(s.score||0)}`} style={{marginRight:6}}>
+                            {s.bias || (s.score>0?'bull':s.score<0?'bear':'neut')}
+                          </span>
+                          <span style={{fontFamily:'var(--mono)',fontSize:'.65rem',fontWeight:600,marginRight:8}}>
+                            {s.score!=null?(s.score>=0?'+':'')+fmt(s.score,3):'—'}
+                          </span>
+                          {reasoning && <span style={{color:'var(--text3)',fontSize:'.62rem'}}>{reasoning.slice(0,120)}</span>}
+                          {adx && <span style={{color:'var(--text3)',fontSize:'.62rem',marginLeft:8}}>ADX {fmt(adx,1)}</span>}
+                          {regime && <span className={`dir-badge dir-neut`} style={{marginLeft:6,fontSize:'.57rem'}}>{regime.replace(/_/g,' ')}</span>}
+                          {ccy && Object.entries(ccy).slice(0,2).map(([c,v])=>(
+                            <span key={c} style={{marginLeft:6,fontFamily:'var(--mono)',fontSize:'.6rem',color:'var(--text3)'}}>
+                              {c}:{v.score>=0?'+':''}{fmt(v.score,3)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <span className="obs-signal-meta">{relTime(s.created_at)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* =====================================================
+   TAB: TRADES (full history + filters)
+   ===================================================== */
+function TradesTab({trades, openPositions, onDownload}) {
+  const [period, setPeriod] = useState('all');
+  const PERIODS = [['Today','today'],['This week','week'],['This month','month'],['All time','all']];
+
+  const filtered = (trades||[]).filter(t => {
+    if (period === 'all') return true;
+    const d = (t.exit_time||t.closed_at||t.exit_date||'').slice(0,10);
+    const now = new Date();
+    const today = now.toISOString().slice(0,10);
+    if (period === 'today') return d === today;
+    if (period === 'week') { const w = new Date(now); w.setDate(w.getDate()-w.getDay()+1); return d >= w.toISOString().slice(0,10); }
+    if (period === 'month') return d >= `${today.slice(0,7)}-01`;
+    return true;
+  });
+
+  const totalPnl = filtered.reduce((s,t) => s+(t.pnl||t.profit_loss||0), 0);
+  const wins = filtered.filter(t => (t.pnl||t.profit_loss||0) > 0).length;
+  const winRate = filtered.length ? Math.round(wins/filtered.length*100) : null;
+
+  const dlCsv = () => {
+    const hdrs = ['time','profile','pair','direction','entry','exit','pips','pnl','hold','exit_reason','conv'];
+    const rows = filtered.map(t => {
+      const pips=t.pnl_pips??t.pips??'';
+      const pnl=t.pnl??t.profit_loss??'';
+      const held=t.held_minutes??t.hold_minutes??'';
+      return [t.exit_time||t.closed_at||'',t.profile||'',t.instrument||t.pair||'',t.direction||'',
+        t.entry_price||'',t.exit_price||'',pips,pnl,held,t.exit_reason||'',t.convergence_score||t.conv||''].join(',');
+    });
+    const blob = new Blob([[hdrs.join(','),...rows].join('\n')],{type:'text/csv'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='trades.csv';a.click();
+  };
+
+  return (
+    <div>
+      {/* Open positions at top */}
+      <div style={{marginBottom:12}}>
+        <OpenPositionsPanel openPositions={openPositions}/>
+      </div>
+
+      {/* Closed trades with filter */}
+      <div className="panel">
+        <div className="panel-hdr" style={{marginBottom:8}}>
+          <span className="panel-title">Closed Trades</span>
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            {PERIODS.map(([lbl,key])=>(
+              <button key={key} className={`obs-chip ${period===key?'active':''}`} onClick={()=>setPeriod(key)}>{lbl}</button>
+            ))}
+            <button className="dl-btn" onClick={dlCsv}>↓ CSV</button>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:20,padding:'6px 0 10px',borderBottom:'1px solid var(--border)',marginBottom:8}}>
+          <div className="header-stat">
+            <span className="lbl">Total trades</span>
+            <span className="val">{filtered.length}</span>
+          </div>
+          <div className="header-stat">
+            <span className="lbl">Win rate</span>
+            <span className={`val ${winRate==null?'':winRate>=50?'pos':'neg'}`}>{winRate!=null?winRate+'%':'—'}</span>
+          </div>
+          <div className="header-stat">
+            <span className="lbl">Total P&L</span>
+            <span className={`val ${totalPnl>=0?'pos':'neg'}`}>{totalPnl>=0?'+$':'-$'}{Math.abs(totalPnl).toFixed(0)}</span>
+          </div>
+        </div>
+        {!filtered.length ? (
+          <div className="empty-state"><div className="em-icon">◻</div><span>No trades for this period</span></div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Time</th><th>Profile</th><th>Pair</th><th>Dir</th>
+                <th>Entry</th><th>Exit</th><th>Pips</th><th>P&L</th>
+                <th>Hold</th><th>Exit reason</th><th>Conv</th>
+              </tr></thead>
+              <tbody>
+                {filtered.map((t,i)=>{
+                  const pips=t.pnl_pips??t.pips??null;
+                  const pnl=t.pnl??t.profit_loss??null;
+                  const held=t.held_minutes??t.hold_minutes??null;
+                  const exitTs=t.exit_time??t.exit_date??t.closed_at??null;
+                  const conv=t.conv??t.convergence_score??t.final_convergence??null;
+                  return (
+                    <tr key={i}>
+                      <td className="mono val-dim" style={{fontSize:'.62rem'}}>{exitTs?relTime(exitTs):'—'}</td>
+                      <td className="mono" style={{fontSize:'.65rem'}}>{t.profile||t.user_id?.slice(-6)||'—'}</td>
+                      <td className="mono" style={{fontWeight:600}}>{t.instrument||t.pair||'—'}</td>
+                      <td className={t.direction==='long'?'dir-long':'dir-short'}>{(t.direction||'').toUpperCase()}</td>
+                      <td className="mono">{fmt(t.entry_price,4)}</td>
+                      <td className="mono">{fmt(t.exit_price,4)}</td>
+                      <td className={pips==null?'':pips>=0?'val-pos':'val-neg'}>{pips!=null?fmtPips(pips):'—'}</td>
+                      <td className={pnl==null?'':pnl>=0?'val-pos':'val-neg'}>{pnl!=null?(pnl>=0?'+$':'-$')+Math.abs(pnl).toFixed(0):'—'}</td>
+                      <td className="mono val-dim">{held!=null?(held<60?`${held}m`:`${Math.floor(held/60)}h`):'—'}</td>
+                      <td className="exit-reason">{t.exit_reason||t.close_reason||'—'}</td>
+                      <td><span className="conv-tag">{conv!=null?fmt(conv,3):'—'}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================
+   TAB: AUDIT LOG
+   ===================================================== */
+function AuditTab({audit}) {
+  const rows = audit || [];
+
+  const dlCsv = () => {
+    const hdrs = ['time','event','tag'];
+    const lines = rows.map(a=>[a.time||'', `"${(a.event||'').replace(/"/g,'""')}"`, a.tag||''].join(','));
+    const blob = new Blob([[hdrs.join(','),...lines].join('\n')],{type:'text/csv'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audit-log.csv';a.click();
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">Audit Log</span>
+        <button className="dl-btn" onClick={dlCsv}>↓ CSV</button>
+      </div>
+      {!rows.length ? (
+        <div className="empty-state"><div className="em-icon">◌</div><span>No audit entries</span></div>
+      ) : (
+        rows.map((a,i) => (
+          <div key={i} className="audit-row">
+            <span className="audit-time">{a.time || relTime(a.created_at) || '—'}</span>
+            <span className="audit-event">{a.event||a.message||a.description||JSON.stringify(a).slice(0,120)}</span>
+            <span className={`audit-tag tag-${a.tag||'system'}`}>{(a.tag||'system').slice(0,8)}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/* =====================================================
    MAIN APP
    ===================================================== */
 function App() {
@@ -1151,6 +1456,7 @@ function App() {
     alerts:[], system:{}, drawdown:[],
   });
   const [proposals,setProposals] = useState([]);
+  const [activeTab,setActiveTab] = useState('overview');
   const [lastUpdated,setLastUpdated] = useState(null);
   const [refreshing,setRefreshing] = useState(false);
 
@@ -1204,29 +1510,61 @@ function App() {
 
   if (!authed) return <Login onAuth={()=>setAuthed(true)}/>;
 
-  const {convergence,signals_full,decisions,currency_strength,learning,trades,open_positions,portfolio_exposure}=data;
+  const {convergence,signals_full,decisions,currency_strength,learning,trades,open_positions,portfolio_exposure,audit}=data;
 
   return (
     <div>
       <Header data={data} lastUpdated={lastUpdated} onRefresh={refresh} refreshing={refreshing}/>
       <div className="dash">
-        <div className="row row-3">
-          <ConvergencePanel convergence={convergence} decisions={decisions}/>
-          <CurrencyStrengthPanel currency_strength={currency_strength}/>
-          <MacroSignalsPanel decisions={decisions} signals_full={signals_full} currency_strength={currency_strength}/>
+
+        {/* TAB NAV */}
+        <div className="tab-nav">
+          {[
+            ['overview',     'Overview'],
+            ['observation',  'Agent Observation'],
+            ['trades',       'Trades'],
+            ['audit',        'Audit Log'],
+          ].map(([key,lbl]) => (
+            <button key={key} className={`tab-btn ${activeTab===key?'active':''}`} onClick={()=>setActiveTab(key)}>{lbl}</button>
+          ))}
         </div>
-        <div className="row row-6040">
-          <OpenPositionsPanel openPositions={open_positions}/>
-          <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} openPositions={open_positions}/>
-        </div>
-        <div className="row row-3">
-          <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
-          <LearningPanel learning={learning} proposals={proposals}/>
-          <RegimeStressPanel decisions={decisions} signals_full={signals_full}/>
-        </div>
-        <div className="row row-1">
-          <RecentTradesPanel trades={trades}/>
-        </div>
+
+        {/* OVERVIEW TAB */}
+        {activeTab === 'overview' && (<>
+          <div className="row row-3">
+            <ConvergencePanel convergence={convergence} decisions={decisions}/>
+            <CurrencyStrengthPanel currency_strength={currency_strength}/>
+            <MacroSignalsPanel decisions={decisions} signals_full={signals_full} currency_strength={currency_strength}/>
+          </div>
+          <div className="row row-6040">
+            <OpenPositionsPanel openPositions={open_positions}/>
+            <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} openPositions={open_positions}/>
+          </div>
+          <div className="row row-3">
+            <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
+            <LearningPanel learning={learning} proposals={proposals}/>
+            <RegimeStressPanel decisions={decisions} signals_full={signals_full}/>
+          </div>
+          <div className="row row-1">
+            <RecentTradesPanel trades={trades}/>
+          </div>
+        </>)}
+
+        {/* AGENT OBSERVATION TAB */}
+        {activeTab === 'observation' && (
+          <ObservationTab signals_full={signals_full} decisions={decisions}/>
+        )}
+
+        {/* TRADES TAB */}
+        {activeTab === 'trades' && (
+          <TradesTab trades={trades} openPositions={open_positions}/>
+        )}
+
+        {/* AUDIT LOG TAB */}
+        {activeTab === 'audit' && (
+          <AuditTab audit={audit}/>
+        )}
+
       </div>
     </div>
   );
