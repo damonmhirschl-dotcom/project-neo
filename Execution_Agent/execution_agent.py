@@ -1166,6 +1166,28 @@ class TradeExecutor:
         else:
             _session_at_entry = 'off_hours'
 
+        # V1 Swing spec: target is always ATR-derived, never swing-based.
+        # T1 = entry ± 2.0 × ATR(14, 1D); T2 = entry ± 4.0 × ATR(14, 1D).
+        # v0 stores T1 as target_price (full close); partial exits (T2) are v0.1.
+        _atr_1d_val, _atr_1d_tf = _fetch_atr_for_stop(self.db, instrument)
+        _pip_prec_tgt = 3 if instrument.upper().endswith('JPY') else 5
+        if _atr_1d_val and _atr_1d_val > 0:
+            if direction == 'long':
+                _atr_target_1 = round(entry_price + 2.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_2 = round(entry_price + 4.0 * _atr_1d_val, _pip_prec_tgt)
+            else:
+                _atr_target_1 = round(entry_price - 2.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_2 = round(entry_price - 4.0 * _atr_1d_val, _pip_prec_tgt)
+            logger.info(
+                f"{instrument} ATR targets: T1={_atr_target_1} T2={_atr_target_2} "
+                f"(entry={entry_price} atr_1d={_atr_1d_val:.5f} via {_atr_1d_tf})"
+            )
+        else:
+            # Fallback: use payload target if no ATR data (prevents ghost trade with no target)
+            _atr_target_1 = payload.get("target_price")
+            _atr_target_2 = None
+            logger.warning(f"{instrument}: no 1D ATR — falling back to payload target_price {_atr_target_1}")
+
         trade_id = self._write_trade(
             instrument=instrument,
             direction=direction,
@@ -1180,7 +1202,7 @@ class TradeExecutor:
             entry_context=payload.get("entry_context"),
             order_id=order_id,
             convergence_score=approval.get("payload", {}).get("convergence"),
-            target_price=payload.get("target_price"),
+            target_price=_atr_target_1,
             requested_size=varied_size,
             session_at_entry=_session_at_entry,
             agents_agreed=_agents_agreed,

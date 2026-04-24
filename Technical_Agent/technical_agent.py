@@ -1553,17 +1553,16 @@ class TechnicalAgent:
             except Exception as e:
                 logger.warning(f"Trajectory modifier failed for {instrument}: {e}")
 
-    def _inject_structure_targets(self, signals: list, live_prices: dict) -> None:
-        """Post-process signals: add Python-computed structure targets where target_price is null.
+    def _inject_atr_targets(self, signals: list, live_prices: dict) -> None:
+        """Inject ATR-based stop/target levels for all directional signals (V1 Swing spec).
 
-        Algorithm (per non-neutral signal):
-          - Fetch last 100 bars of 15M data; use the 50 most recent for structure (~12.5 hours).
-          - True swing detection: bar i qualifies if its high/low beats both neighbours ±2 bars.
-          - LONG/bullish → nearest swing HIGH above current_price (lowest qualifying high).
-          - SHORT/bearish → nearest swing LOW below current_price (highest qualifying low).
-          - If no qualifying swing exists in the window: skip — do not set a target.
-          - Minimum distance gate: target must be at least 1.5× stop_distance from entry.
-          - If LLM already filled target_price (non-null), preserve it.
+        Uses ATR(14, 1D) from price_metrics table:
+          Stop distance : 2.0 × atr_14_1d  (set by risk guardian, mirrored here for consistency)
+          Target 1 (T1) : current_price ± 2.0 × atr_14_1d  (50% partial exit; v0 = full close)
+          Target 2 (T2) : current_price ± 4.0 × atr_14_1d  (remaining 50%; used for R:R gate)
+          rm['target_price']   = T2  → passes risk guardian R:R gate (4.0/2.0 = 2:1 > min_rr 1.5)
+          rm['target_1_price'] = T1  → execution agent stores this in trades table for v0 close
+        Replaces swing-based _inject_structure_targets entirely.
         Never raises — failures log and skip silently.
         """
         for sig in signals:
@@ -1572,84 +1571,58 @@ class TechnicalAgent:
                 rm = payload.get('risk_management')
                 if not isinstance(rm, dict):
                     continue
-                if rm.get('target_price') is not None:
-                    continue  # LLM already set a value — preserve it
 
                 pair = sig.get('instrument')
                 bias = sig.get('bias', 'neutral')
                 if bias == 'neutral' or not pair:
                     continue
 
-                # Current mid price
                 current_price = None
                 lp = live_prices.get(pair, {})
                 if lp.get('last'):
                     current_price = float(lp['last'])
-
-                # Fetch last 100 candles; use the 50 most recent for structure (~12.5 hours)
-                bars = self.get_historical_bars(pair, '15M', 100)
-                if bars is None or bars.empty or len(bars) < 5:
-                    logger.warning(f"Structure target: insufficient 15M bars for {pair}")
+                if current_price is None:
                     continue
-                recent = bars.tail(50)
 
-                if bias == 'bullish':
-                    # True swing high: bar i high beats both neighbours ±2 bars
-                    highs = recent['high'].values
-                    swing_highs = []
-                    for i in range(2, len(highs) - 2):
-                        if (highs[i] > highs[i-1] and highs[i] > highs[i-2]
-                                and highs[i] > highs[i+1] and highs[i] > highs[i+2]):
-                            swing_highs.append(highs[i])
-                    if not swing_highs:
-                        logger.debug(f"Structure target: no swing high found for {pair} bullish")
-                        continue
-                    candidates = [sh for sh in swing_highs if current_price is None or sh > current_price]
-                    if not candidates:
-                        logger.debug(f"Structure target: no swing high above price for {pair} bullish")
-                        continue
-                    target = round(min(candidates), 5)  # nearest (lowest) swing high above price
-                else:  # bearish
-                    # True swing low: bar i low beats both neighbours ±2 bars
-                    lows = recent['low'].values
-                    swing_lows = []
-                    for i in range(2, len(lows) - 2):
-                        if (lows[i] < lows[i-1] and lows[i] < lows[i-2]
-                                and lows[i] < lows[i+1] and lows[i] < lows[i+2]):
-                            swing_lows.append(lows[i])
-                    if not swing_lows:
-                        logger.debug(f"Structure target: no swing low found for {pair} bearish")
-                        continue
-                    candidates = [sl for sl in swing_lows if current_price is None or sl < current_price]
-                    if not candidates:
-                        logger.debug(f"Structure target: no swing low below price for {pair} bearish")
-                        continue
-                    target = round(max(candidates), 5)  # nearest (highest) swing low below price
-
-                # Minimum distance gate: target must be >= 1.5× stop_distance from entry (1.5:1 R:R floor)
-                # stop_distance_pips is the canonical key; convert to price units for the gate.
-                _stop_pips = float(rm.get('stop_distance_pips') or rm.get('stop_distance') or
-                                   payload.get('stop_distance_pips') or payload.get('stop_distance') or 0)
-                _pip_size = 0.01 if (pair or '').upper().endswith('JPY') else 0.0001
-                stop_distance = _stop_pips * _pip_size if _stop_pips > 0 else None
-                if stop_distance and float(stop_distance) > 0 and current_price is not None:
-                    min_target_distance = float(stop_distance) * 1.5
-                    actual_distance = abs(target - current_price)
-                    if actual_distance < min_target_distance:
-                        logger.warning(
-                            f"Structure target {target:.5f} too close to entry for {pair} "
-                            f"({bias}) — distance {actual_distance:.5f} < min {min_target_distance:.5f} "
-                            f"(stop_distance={stop_distance})"
+                # Fetch 1D ATR from price_metrics
+                atr_1d = None
+                try:
+                    with self.db_conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT atr_14 FROM forex_network.price_metrics"
+                            " WHERE instrument = %s AND timeframe = '1D'"
+                            " ORDER BY ts DESC LIMIT 1",
+                            (pair,)
                         )
-                        continue
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            atr_1d = float(row[0])
+                except Exception as e:
+                    logger.warning(f"ATR target: could not fetch 1D ATR for {pair}: {e}")
+                    continue
 
-                rm['target_price'] = target
+                if not atr_1d or atr_1d <= 0:
+                    logger.warning(f"ATR target: no 1D ATR for {pair} — skipping")
+                    continue
+
+                pip_precision = 3 if pair.upper().endswith('JPY') else 5
+                if bias == 'bullish':
+                    target_1 = round(current_price + 2.0 * atr_1d, pip_precision)
+                    target_2 = round(current_price + 4.0 * atr_1d, pip_precision)
+                else:  # bearish
+                    target_1 = round(current_price - 2.0 * atr_1d, pip_precision)
+                    target_2 = round(current_price - 4.0 * atr_1d, pip_precision)
+
+                rm['target_price']   = target_2   # T2 for R:R gate (2:1)
+                rm['target_1_price'] = target_1   # T1 for execution close (v0)
+                rm['atr_1d']         = round(atr_1d, 6)
+
                 logger.info(
-                    f"Structure target set {pair} ({bias}): {target:.5f} "
-                    f"[current={current_price} stop_dist={stop_distance}]"
+                    f"ATR target {pair} ({bias}): T1={target_1:.5f} T2={target_2:.5f} "
+                    f"[price={current_price:.5f} atr_1d={atr_1d:.5f}]"
                 )
             except Exception as exc:
-                logger.warning(f"Structure target injection failed for {sig.get('instrument')}: {exc}")
+                logger.warning(f"ATR target injection failed for {sig.get('instrument')}: {exc}")
 
     def run_cycle(self) -> bool:
         """Execute one complete technical analysis cycle."""
@@ -1720,8 +1693,8 @@ class TechnicalAgent:
             # Apply trajectory-based confidence modifiers (score unchanged)
             self._apply_trajectory_modifiers(signals)
 
-            # Inject Python-computed structure targets (nearest swing high/low from 15M bars)
-            self._inject_structure_targets(signals, live_prices)
+            # Inject ATR-based targets: T1 = 2× daily ATR, T2 = 4× daily ATR (V1 Swing spec)
+            self._inject_atr_targets(signals, live_prices)
 
             # Store mid prices for next cycle's skip check
             self._last_llm_prices = {
@@ -1932,8 +1905,8 @@ def main():
                         # Apply trajectory-based confidence modifiers (score unchanged)
                         primary._apply_trajectory_modifiers(signals)
 
-                        # Inject Python-computed structure targets (nearest swing high/low from 15M bars)
-                        primary._inject_structure_targets(signals, live_prices)
+                        # Inject ATR-based targets: T1 = 2× daily ATR, T2 = 4× daily ATR (V1 Swing spec)
+                        primary._inject_atr_targets(signals, live_prices)
 
                         # Store mid prices for next cycle's skip check
                         primary._last_llm_prices = {
