@@ -266,6 +266,28 @@ STATIC_CORRELATIONS = {
     ("GBPUSD", "NZDJPY"): +0.65,
     ("NZDJPY", "USDCAD"): -0.59,
     ("NZDJPY", "USDCHF"): -0.56,
+    # EURNZD correlations (60d daily log returns, 2026-04-24)
+    ("AUDCAD", "EURNZD"): -0.67,
+    ("EURNZD", "GBPUSD"): -0.42,
+    ("AUDUSD", "EURNZD"): -0.54,
+    ("EURNZD", "NZDUSD"): -0.69,
+    ("EURNZD", "USDCAD"): +0.40,
+    ("EURAUD", "EURNZD"): +0.58,
+    ("EURNZD", "GBPAUD"): +0.41,
+    ("AUDJPY", "EURNZD"): -0.44,
+    # AUDCAD correlations (60d daily log returns, 2026-04-24)
+    ("AUDCAD", "EURUSD"): +0.60,
+    ("AUDCAD", "GBPUSD"): +0.66,
+    ("AUDCAD", "AUDUSD"): +0.80,
+    ("AUDCAD", "NZDUSD"): +0.77,
+    ("AUDCAD", "USDCHF"): -0.41,
+    ("AUDCAD", "USDJPY"): -0.42,
+    ("AUDCAD", "EURAUD"): -0.69,
+    ("AUDCAD", "EURCAD"): +0.52,
+    ("AUDCAD", "GBPAUD"): -0.59,
+    ("AUDCAD", "GBPCAD"): +0.62,
+    ("AUDCAD", "GBPCHF"): +0.40,
+    ("AUDCAD", "AUDJPY"): +0.61,
 }
 
 # correlation_threshold is read from forex_network.risk_parameters per user (see DB migration patch)
@@ -283,6 +305,7 @@ CURRENCY_EXPOSURE_MAP = {
     "EURCAD": ("EUR", "CAD"), "GBPCAD": ("GBP", "CAD"),
     "AUDNZD": ("AUD", "NZD"), "AUDJPY": ("AUD", "JPY"),
     "CADJPY": ("CAD", "JPY"), "NZDJPY": ("NZD", "JPY"),
+    "EURNZD": ("EUR", "NZD"), "AUDCAD": ("AUD", "CAD"),
 }
 
 # Slippage thresholds by pair (pips)
