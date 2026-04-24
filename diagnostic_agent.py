@@ -494,6 +494,32 @@ for agent, logpath in LOG_FILES.items():
         check(f"Recent errors: {agent}", "WARN", f"Could not read log: {e}")
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+# ── CHECK 18: price_metrics freshness ─────────────────────────────────────
+try:
+    cur.execute("""
+        SELECT timeframe,
+               MAX(ts) as latest_ts,
+               EXTRACT(EPOCH FROM (NOW() - MAX(ts))) / 3600 as age_hours
+        FROM forex_network.price_metrics
+        WHERE timeframe IN ('1H', '15M', '1D')
+        GROUP BY timeframe
+        ORDER BY timeframe
+    """)
+    rows = cur.fetchall()
+    if not rows:
+        check("price_metrics freshness", "FAIL", "no rows in price_metrics")
+    else:
+        stale = [(r['timeframe'], round(float(r['age_hours']), 1)) for r in rows if float(r['age_hours']) > 2]
+        if stale:
+            detail = ", ".join(f"{tf} {age}h old" for tf, age in stale)
+            check("price_metrics freshness", "WARN" if all(age < 24 for _, age in stale) else "FAIL",
+                  f"stale timeframes: {detail} (ATR/vol unreliable if 1H stale)")
+        else:
+            ages = ", ".join(f"{r['timeframe']} {round(float(r['age_hours']),1)}h" for r in rows)
+            check("price_metrics freshness", "PASS", ages)
+except Exception as e:
+    check("price_metrics freshness", "FAIL", str(e)[:80])
+
 section("SUMMARY")
 n_pass = sum(1 for s, _, _ in results if s == 'PASS')
 n_warn = sum(1 for s, _, _ in results if s == 'WARN')

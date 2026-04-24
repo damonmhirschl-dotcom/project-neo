@@ -2412,7 +2412,7 @@ class OrchestratorAgent:
             # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
             # Layer 1 — macro gate
             MACRO_THRESHOLD    = float(risk_params.get('convergence_threshold', 0.30))
-            TECH_MIN_THRESHOLD = 0.10
+            TECH_MIN_THRESHOLD = 0.0
 
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
