@@ -467,7 +467,7 @@ function Login({onAuth}) {
   const submitTOTP = async e => {
     e.preventDefault(); setErr(''); setLoading(true);
     try {
-      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'SOFTWARE_TOKEN_MFA',Session:session,ChallengeResponses:{USERNAME:user,SOFTWARE_TOKEN_MFA_CODE:code}});
+      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'SOFTWARE_TOKEN_MFA',Session:session,ChallengeResponses:{USERNAME:user,SOFTWARE_TOKEN_MFA_CODE:code.trim()}});
       if (d.AuthenticationResult) storeAuth(d); else setErr('Authentication failed.');
     } catch(e2){setErr(e2.message);}finally{setLoading(false);}
   };
@@ -475,8 +475,9 @@ function Login({onAuth}) {
   const submitSetup = async e => {
     e.preventDefault(); setErr(''); setLoading(true);
     try {
-      await cogCall('VerifySoftwareToken',{Session:session,UserCode:code});
-      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'MFA_SETUP',Session:session,ChallengeResponses:{USERNAME:user,SOFTWARE_TOKEN_MFA_CODE:code}});
+      // VerifySoftwareToken returns a new Session — must use it for the subsequent challenge response.
+      const v = await cogCall('VerifySoftwareToken',{Session:session,UserCode:code.trim()});
+      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'MFA_SETUP',Session:v.Session,ChallengeResponses:{USERNAME:user,SOFTWARE_TOKEN_MFA_CODE:code.trim()}});
       if (d.AuthenticationResult) storeAuth(d); else setErr('Verification failed.');
     } catch(e2){setErr(e2.message);}finally{setLoading(false);}
   };
