@@ -234,15 +234,29 @@ tr:hover td{background:var(--panel2)}
 .mono-sm{font-family:var(--mono);font-size:.65rem}
 
 @media(max-width:1100px){.row-3{grid-template-columns:1fr 1fr}.row-6040{grid-template-columns:1fr}}
-@media(max-width:700px){.row-3{grid-template-columns:1fr}.header-center{display:none}}
+@media(max-width:700px){.row-3{grid-template-columns:1fr}.header-center{display:none}.col-m-hide{display:none!important}}
+
+/* SESSION EXPIRY MODAL */
+#session-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center}
+#session-modal.show{display:flex}
+.session-modal-card{background:var(--panel);border:1px solid var(--red);border-radius:var(--r);padding:28px 32px;width:320px;display:flex;flex-direction:column;gap:12px;text-align:center}
+.session-modal-title{font-family:var(--mono);font-size:.9rem;font-weight:600;color:var(--text1)}
+.session-modal-count{font-family:var(--mono);font-size:2rem;font-weight:600;color:var(--red)}
+.session-modal-sub{font-size:.72rem;color:var(--text3)}
+.session-modal-btn{background:var(--green);color:#000;font-family:var(--mono);font-size:.78rem;font-weight:600;border:none;border-radius:var(--r);padding:10px;cursor:pointer}
+.session-modal-btn:hover{opacity:.85}
 </style>
 </head>
 <body>
 <div id="app-loading"><div class="spin"></div></div>
 <div id="root"></div>
-<div id="neo-session-warning">
-  <span>Session expires in 1 minute due to inactivity.</span>
-  <button class="warn-dismiss" onclick="resetTimers()">Dismiss</button>
+<div id="session-modal">
+  <div class="session-modal-card">
+    <div class="session-modal-title">Session expiring</div>
+    <div class="session-modal-count" id="session-countdown">60</div>
+    <div class="session-modal-sub">No activity detected. You will be logged out automatically.</div>
+    <button class="session-modal-btn" onclick="resetSessionTimer()">Stay logged in</button>
+  </div>
 </div>
 <script type="text/babel">
 /* =====================================================
@@ -747,25 +761,32 @@ function OpenPositionsPanel({openPositions}) {
             <thead><tr>
               <th>Profile</th><th>Pair</th><th>Dir</th><th>Size</th>
               <th>Entry</th><th>Current</th><th>Pips</th>
-              <th>Stop</th><th>Target</th><th>Held</th><th>Structure</th>
+              <th>Stop</th><th>Target</th><th>Held</th>
+              <th className="col-m-hide">Structure</th>
             </tr></thead>
             <tbody>
               {pos.map((p,i)=>{
-                const pips=p.pips??p.unrealised_pips??null;
-                const heldMin=p.held_minutes??(p.entry_time?Math.round((Date.now()-new Date(p.entry_time).getTime())/60000):null);
+                // Lambda fields: unrealised_pips (float), hold_hours (float), stop_price, target_price
+                const pips = p.unrealised_pips ?? null;
+                const holdH = p.hold_hours ?? null;
+                const heldStr = holdH != null
+                  ? holdH < 1
+                    ? `${Math.round(holdH*60)}m`
+                    : `${Math.floor(holdH)}h ${Math.round((holdH%1)*60)}m`
+                  : '—';
                 return (
                   <tr key={i}>
                     <td className="mono">{p.profile||p.user_id?.slice(-6)||'—'}</td>
-                    <td className="mono" style={{fontWeight:600}}>{p.pair||p.instrument||'—'}</td>
+                    <td className="mono" style={{fontWeight:600}}>{p.instrument||p.pair||'—'}</td>
                     <td className={p.direction==='long'?'dir-long':'dir-short'}>{(p.direction||'').toUpperCase()}</td>
-                    <td className="mono">{p.position_size?.toLocaleString()??'—'}</td>
+                    <td className="mono">{p.position_size!=null?Number(p.position_size).toLocaleString():'—'}</td>
                     <td className="mono">{fmt(p.entry_price,4)}</td>
-                    <td className="mono">{fmt(p.current_price,4)}</td>
+                    <td className="mono">{p.current_price!=null?fmt(p.current_price,4):'—'}</td>
                     <td className={pips==null?'':pips>=0?'val-pos':'val-neg'}>{pips!=null?fmtPips(pips):'—'}</td>
-                    <td className="mono val-dim">{fmt(p.stop_price,4)}</td>
-                    <td className="mono val-dim">{fmt(p.target_price,4)}</td>
-                    <td className="mono val-dim">{heldMin!=null?(heldMin<60?`${heldMin}m`:`${Math.floor(heldMin/60)}h${heldMin%60}m`):'—'}</td>
-                    <td className="mono val-dim" style={{fontSize:'.6rem'}}>{p.regime||p.structure||'—'}</td>
+                    <td className="mono val-dim">{p.stop_price!=null?fmt(p.stop_price,4):'—'}</td>
+                    <td className="mono val-dim">{p.target_price!=null?fmt(p.target_price,4):'—'}</td>
+                    <td className="mono val-dim">{heldStr}</td>
+                    <td className="mono val-dim col-m-hide" style={{fontSize:'.6rem'}}>{p.regime_at_entry||p.session_at_entry||'—'}</td>
                   </tr>
                 );
               })}
@@ -1212,17 +1233,61 @@ function App() {
 }
 
 /* =====================================================
-   SESSION INACTIVITY
+   SESSION INACTIVITY — 10 min timeout, 60s countdown warning
    ===================================================== */
-let _warnT, _killT;
-function resetTimers() {
-  document.getElementById('neo-session-warning').style.display='none';
-  clearTimeout(_warnT); clearTimeout(_killT);
-  _warnT=setTimeout(()=>{document.getElementById('neo-session-warning').style.display='flex';},14*60000);
-  _killT=setTimeout(()=>{clearAuth();window.location.reload();},15*60000);
+const INACTIVITY_MS = 10 * 60 * 1000;  // 10 minutes
+const WARNING_MS    = 60 * 1000;        // 60-second warning period
+
+let _inactivityTimer = null;
+let _countdownInterval = null;
+
+function _forceLogout() {
+  clearInterval(_countdownInterval);
+  clearAuth();
+  window.location.reload();
 }
-['mousedown','keydown','touchstart'].forEach(e=>document.addEventListener(e,resetTimers));
-resetTimers();
+
+function _hideWarning() {
+  const m = document.getElementById('session-modal');
+  if (m) m.classList.remove('show');
+  clearInterval(_countdownInterval);
+  _countdownInterval = null;
+}
+
+function _showWarning() {
+  const m = document.getElementById('session-modal');
+  const el = document.getElementById('session-countdown');
+  if (!m || !el) { _forceLogout(); return; }
+  let secs = Math.round(WARNING_MS / 1000);
+  el.textContent = secs;
+  m.classList.add('show');
+  clearInterval(_countdownInterval);
+  _countdownInterval = setInterval(() => {
+    secs--;
+    el.textContent = secs;
+    if (secs <= 0) { clearInterval(_countdownInterval); _forceLogout(); }
+  }, 1000);
+}
+
+function resetSessionTimer() {
+  _hideWarning();
+  clearTimeout(_inactivityTimer);
+  _inactivityTimer = setTimeout(_showWarning, INACTIVITY_MS - WARNING_MS);
+}
+
+// On page load: check token expiry immediately
+(function checkTokenOnLoad() {
+  const p = parseJwt(getToken());
+  if (!p || p.exp * 1000 < Date.now()) {
+    clearAuth();
+    // Don't reload — React will render Login on authed=false
+  }
+})();
+
+['mousemove','mousedown','keydown','click','touchstart','scroll'].forEach(e =>
+  document.addEventListener(e, resetSessionTimer, {passive: true})
+);
+resetSessionTimer();
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>

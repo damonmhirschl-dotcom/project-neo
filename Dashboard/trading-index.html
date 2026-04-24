@@ -320,9 +320,13 @@
 <body>
 <div id="app-loading"><div class="loading-spinner"></div><div class="loading-text">Loading dashboard…</div></div>
 <div id="root"></div>
-<div id="neo-session-warning" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#f59e0b;color:#000;padding:10px 16px;align-items:center;justify-content:space-between;font-size:0.85rem;font-weight:500;gap:12px;">
-  <span>Your session will expire in 1 minute due to inactivity.</span>
-  <button onclick="resetTimers()" style="background:rgba(0,0,0,0.15);border:none;cursor:pointer;padding:4px 12px;border-radius:4px;font-weight:600;font-size:0.82rem;">Dismiss</button>
+<div id="neo-session-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#1a1a2e;border:1px solid #ff4757;border-radius:4px;padding:28px 32px;width:300px;display:flex;flex-direction:column;gap:12px;text-align:center;">
+    <div style="font-family:monospace;font-size:.9rem;font-weight:600;color:#e8e8f0;">Session expiring</div>
+    <div id="neo-session-countdown" style="font-family:monospace;font-size:2rem;font-weight:600;color:#ff4757;">60</div>
+    <div style="font-size:.72rem;color:#6c7a89;">No activity detected. You will be logged out automatically.</div>
+    <button onclick="resetTimers()" style="background:#00d4aa;color:#000;font-family:monospace;font-size:.78rem;font-weight:600;border:none;border-radius:4px;padding:10px;cursor:pointer;">Stay logged in</button>
+  </div>
 </div>
 <script type="text/babel">
 
@@ -977,13 +981,26 @@ const WARNING_MS =  9 * 60 * 1000;
 let inactivityTimer = null;
 let warningTimer    = null;
 
+let _tradingCountdown = null;
 function showSessionWarning() {
-  const el = document.getElementById('neo-session-warning');
-  if (el) el.style.display = 'flex';
+  const m = document.getElementById('neo-session-modal');
+  const el = document.getElementById('neo-session-countdown');
+  if (!m) return;
+  let secs = 60;
+  if (el) el.textContent = secs;
+  m.style.display = 'flex';
+  clearInterval(_tradingCountdown);
+  _tradingCountdown = setInterval(() => {
+    secs--;
+    if (el) el.textContent = secs;
+    if (secs <= 0) { clearInterval(_tradingCountdown); expireSession(); }
+  }, 1000);
 }
 function hideSessionWarning() {
-  const el = document.getElementById('neo-session-warning');
-  if (el) el.style.display = 'none';
+  const m = document.getElementById('neo-session-modal');
+  if (m) m.style.display = 'none';
+  clearInterval(_tradingCountdown);
+  _tradingCountdown = null;
 }
 function expireSession() {
   stopInactivityTimer();
