@@ -1437,6 +1437,9 @@ class LearningModule:
             # Kelly fraction (activates after 50 trades)
             self.compute_kelly_fraction()
 
+            # Structural architecture diagnostics
+            self.diagnose_architecture()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
