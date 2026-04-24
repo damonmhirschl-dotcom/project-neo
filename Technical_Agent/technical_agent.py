@@ -808,12 +808,12 @@ class TechnicalAgent:
                 (df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)), 0
             ).where(df['low'].shift(1) - df['low'] > 0, 0)
 
-            atr = true_range.ewm(span=14).mean()
-            plus_di = 100 * (plus_dm.ewm(span=14).mean() / atr)
-            minus_di = 100 * (minus_dm.ewm(span=14).mean() / atr)
+            atr = true_range.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+            plus_di = 100 * (plus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr)
+            minus_di = 100 * (minus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr)
 
             dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, float('nan'))
-            _adx_val = dx.ewm(span=14).mean().iloc[-1]
+            _adx_val = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean().iloc[-1]
             indicators["adx"] = _adx_val if not pd.isna(_adx_val) else 20.0
 
             # RSI (14-period) — Wilder smoothing: com=13 (alpha=1/14), adjust=False (recursive)
@@ -1099,7 +1099,7 @@ class TechnicalAgent:
                         high_pc  = abs(df['high'] - df['close'].shift(1))
                         low_pc   = abs(df['low']  - df['close'].shift(1))
                         tr       = pd.concat([high_low, high_pc, low_pc], axis=1).max(axis=1)
-                        atr      = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+                        atr      = float(tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean().iloc[-1])
                     else:
                         atr = 0.0
 
