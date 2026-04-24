@@ -721,6 +721,19 @@ class IGBroker(BrokerInterface):
             logger.error(f"IGBroker.get_position_size({pair}): {e}")
         return 0.0
 
+    def get_min_deal_size(self, instrument: str) -> float:
+        """Return IG minimum deal size for instrument (in lots). Returns 0.1 if not found."""
+        try:
+            epic = self._epic(instrument)
+            details = self._get_market_details(epic)
+            rules = details.get("dealingRules", {})
+            min_entry = rules.get("minDealSize", {})
+            val = float(min_entry.get("value") or 0)
+            return val if val > 0 else 0.1
+        except Exception as e:
+            logger.warning(f"IGBroker.get_min_deal_size({instrument}): {e} — returning 0.1")
+            return 0.1
+
     # ── Account ─────────────────────────────────────────────────────────────
 
     def get_netliquidation(self, account_id: str = None) -> tuple:

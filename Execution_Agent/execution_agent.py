@@ -964,6 +964,18 @@ class TradeExecutor:
         result["details"]["requested_size"] = round(base_size, 2)
         result["details"]["varied_size"] = varied_size
 
+        # v0.1 partial exits: pre-flight minimum size check
+        try:
+            _min_deal_sz = self.broker.get_min_deal_size(instrument)
+            _half_size   = round(varied_size * 0.5, 2)
+            if _half_size < _min_deal_sz:
+                logger.warning(
+                    f"{instrument}: half-size {_half_size} < IG min deal size {_min_deal_sz} "
+                    f"— T1 partial exit will be skipped; full close at T2 via IG limit"
+                )
+        except Exception:
+            pass
+
         # Calculate stop with Rule 14 randomisation
         # Prefer 1D ATR x2.0 for swing trade stops; fall back to 1H ATR x1.5
         _entry_atr, _atr_tf = _fetch_atr_for_stop(self.db, instrument)
@@ -1016,6 +1028,17 @@ class TradeExecutor:
                                   current_price=_current_price,
                                   risk_amount_gbp=_risk_amount_gbp,
                                   stop_distance=_stop_dist)
+
+        # v0.1 partial exits: set IG limitLevel to T2 (4×ATR from pre-fill price)
+        _pip_prec_t2 = 3 if instrument.upper().endswith('JPY') else 5
+        if _entry_atr and _current_price:
+            _t2_dir = 1.0 if direction == 'long' else -1.0
+            _t2_pre = round(_current_price + _t2_dir * 4.0 * _entry_atr, _pip_prec_t2)
+            order['target_price'] = _t2_pre
+            logger.info(
+                f"{instrument} v0.1: IG limitLevel=T2={_t2_pre} "
+                f"(pre-fill price={_current_price:.5f} atr={_entry_atr:.5f})"
+            )
 
         # Capture intended entry price for execution_failures logging.
         # For LMT orders, this is the limit price set in _build_order.
@@ -1207,7 +1230,11 @@ class TradeExecutor:
             session_at_entry=_session_at_entry,
             agents_agreed=_agents_agreed,
             entry_rank_position=payload.get("entry_rank_position"),
-            trade_parameters=self._build_trade_parameters_helper(payload),
+            trade_parameters=(lambda p: {
+                **self._build_trade_parameters_helper(p),
+                'target_1_price': _atr_target_1,
+                'target_2_price': _atr_target_2,
+            })(payload),
         )
 
         if trade_id is None:
@@ -1974,7 +2001,8 @@ class ExecutionAgent:
             cur.execute("""
                 SELECT id, instrument, direction, entry_price, stop_price,
                        target_price, regime_at_entry, ibkr_order_id,
-                       position_size_usd, position_size, entry_time, ibkr_stop_order_id
+                       position_size_usd, position_size, entry_time, ibkr_stop_order_id,
+                       target_1_hit, target_1_closed_size, trade_parameters
                 FROM forex_network.trades
                 WHERE user_id = %s AND exit_time IS NULL
             """, (self.user_id,))
@@ -2098,38 +2126,50 @@ class ExecutionAgent:
                             if new_stop < current_stop:
                                 self._update_trailing_stop(trade, new_stop)
 
-            # ── Target price exit
-            target_price = trade.get("target_price")
+            # ── T1 partial exit monitoring (v0.1)
             _regime = (trade.get("regime_at_entry") or "").lower()
             _is_trending = "trend" in _regime
-            if target_price and not _is_trending:
-                # Trending regime: trailing stop handles exit — ignore fixed target
-                # Ranging/transitional/unknown: close at structure target
-                _tp_pos = ibkr_instruments.get(instrument, {})
-                _current = (
-                    _tp_pos.get("mktPrice")
-                    or _tp_pos.get("mkt_price")
-                    or _tp_pos.get("marketPrice")
-                )
-                if _current:
-                    _current = float(_current)
-                    _direction = trade.get("direction", "long")
-                    _target_hit = (
-                        (_direction == "long"  and _current >= float(target_price)) or
-                        (_direction == "short" and _current <= float(target_price))
+            _t1_hit = trade.get("target_1_hit", False)
+            if not _t1_hit and not _is_trending:
+                # Resolve T1 price: prefer trade_parameters['target_1_price'],
+                # fall back to target_price column (legacy/ATR-no-T2 trades)
+                _t1_price_raw = None
+                _tp_raw = trade.get("trade_parameters")
+                if _tp_raw:
+                    try:
+                        _tp_dict = _tp_raw if isinstance(_tp_raw, dict) else json.loads(_tp_raw)
+                        _t1_price_raw = _tp_dict.get("target_1_price")
+                    except Exception:
+                        pass
+                if _t1_price_raw is None:
+                    _t1_price_raw = trade.get("target_price")
+
+                if _t1_price_raw:
+                    _t1_pos = ibkr_instruments.get(instrument, {})
+                    _current = (
+                        _t1_pos.get("mktPrice")
+                        or _t1_pos.get("mkt_price")
+                        or _t1_pos.get("marketPrice")
+                        or _t1_pos.get("current_price")
                     )
-                    if _target_hit:
-                        logger.info(
-                            f"Target hit: {instrument} {_direction} "
-                            f"current={_current} target={target_price} regime={_regime}"
+                    if _current:
+                        _current  = float(_current)
+                        _t1_price = float(_t1_price_raw)
+                        _direction = trade.get("direction", "long")
+                        _t1_triggered = (
+                            (_direction == "long"  and _current >= _t1_price) or
+                            (_direction == "short" and _current <= _t1_price)
                         )
-                        self._close_position(
-                            trade, ibkr_instruments, close_reason="take_profit"
-                        )
-                        continue
-            elif target_price and _is_trending:
+                        if _t1_triggered:
+                            logger.info(
+                                f"T1 partial exit triggered: {instrument} {_direction} "
+                                f"current={_current:.5f} T1={_t1_price:.5f}"
+                            )
+                            self._close_partial_t1(trade, ibkr_instruments)
+                            continue
+            elif _is_trending:
                 logger.debug(
-                    f"Trending regime — skipping fixed target for {instrument}, "
+                    f"Trending regime — skipping T1 monitor for {instrument}, "
                     f"trailing stop active"
                 )
 
@@ -2300,6 +2340,122 @@ class ExecutionAgent:
             "exit_price_source": exit_price_source,
             "pnl": pnl_usd, "pnl_pips": pnl_pips,
             "reason": close_reason,
+        })
+
+    def _close_partial_t1(self, trade: Dict, ibkr_instruments: Dict) -> None:
+        """Partial exit at T1: close 50% of position, then move stop to breakeven.
+
+        Atomic sequence:
+          a) Close 50% via IG counter MARKET order (size = round(full_size * 0.5, 2))
+          b) On success, modify remaining stop to entry_price (breakeven)
+          c) Update DB: target_1_hit=true, target_1_closed_size, target_1_pnl, stop_price
+          d) Log system_events partial_exit_t1
+        If (a) fails: log error, do not modify stop, do not set target_1_hit.
+        If (a) succeeds but (b) fails: retry stop mod up to 3 times next cycle via
+          target_1_hit=true and stop_price != entry_price sentinel.
+        """
+        trade_id  = trade["id"]
+        instrument = trade["instrument"]
+        direction  = trade["direction"]
+        deal_id    = trade.get("ibkr_order_id", "")
+        entry_price = float(trade["entry_price"])
+
+        # Resolve current broker size
+        ig_pos    = ibkr_instruments.get(instrument) or {}
+        full_size = float(ig_pos.get("size", 0)) if isinstance(ig_pos, dict) else 0.0
+        if full_size <= 0:
+            logger.warning(
+                f"_close_partial_t1: no broker size for {instrument} trade {trade_id} "
+                f"— skipping (will retry next cycle)"
+            )
+            return
+
+        half_size = round(full_size * 0.5, 2)
+        if half_size <= 0:
+            logger.warning(f"_close_partial_t1: half_size={half_size} invalid for trade {trade_id}")
+            return
+
+        # ── Step a: Partial close ─────────────────────────────────────────────
+        _close_dir = "SELL" if direction == "long" else "BUY"
+        try:
+            result = self.broker.close_position(deal_id, half_size, _close_dir)
+        except Exception as e:
+            logger.error(f"_close_partial_t1: broker call failed for trade {trade_id}: {e}")
+            return
+
+        if result.get("error") or result.get("status") == "rejected":
+            logger.error(
+                f"_close_partial_t1 rejected for trade {trade_id}: "
+                f"{result.get('error') or result.get('status')}"
+            )
+            return
+
+        t1_fill   = float(result.get("fill_price") or 0)
+        t1_profit = result.get("profit")
+
+        pip_size  = 0.01 if instrument.upper().endswith('JPY') else 0.0001
+        dir_sign  = 1 if direction == "long" else -1
+        t1_pips   = round((t1_fill - entry_price) * dir_sign / pip_size, 1) if t1_fill > 0 else None
+
+        logger.info(
+            f"T1 partial close: {instrument} trade {trade_id} "
+            f"half_size={half_size} fill={t1_fill} pips={t1_pips} profit={t1_profit}"
+        )
+
+        # ── Step b: Breakeven stop modification ──────────────────────────────
+        stop_modified = False
+        for attempt in range(1, 4):
+            try:
+                mod_result = self.broker.modify_order(deal_id, {"stop_price": entry_price})
+                if "error" not in mod_result:
+                    stop_modified = True
+                    logger.info(
+                        f"Breakeven stop set: {instrument} trade {trade_id} → {entry_price}"
+                    )
+                    break
+                logger.warning(
+                    f"Stop mod attempt {attempt} failed for trade {trade_id}: {mod_result}"
+                )
+            except Exception as _me:
+                logger.error(f"Stop mod attempt {attempt} exception for trade {trade_id}: {_me}")
+            if attempt < 3:
+                import time as _t; _t.sleep(2)
+
+        if not stop_modified:
+            logger.error(
+                f"T1 partial: breakeven stop NOT set for trade {trade_id} after 3 attempts "
+                f"— will retry via stop_retry sentinel next cycle"
+            )
+
+        # ── Step c: DB update ─────────────────────────────────────────────────
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                UPDATE forex_network.trades
+                SET target_1_hit        = TRUE,
+                    target_1_hit_at     = %s,
+                    target_1_closed_size= %s,
+                    target_1_pnl        = %s,
+                    stop_price          = CASE WHEN %s THEN %s ELSE stop_price END
+                WHERE id = %s
+            """, (now, half_size, t1_profit, stop_modified, entry_price, trade_id))
+            self.db.commit()
+        except Exception as _e:
+            logger.error(f"_close_partial_t1 DB write failed for trade {trade_id}: {_e}")
+            self.db.rollback()
+        finally:
+            cur.close()
+
+        # ── Step d: System event ──────────────────────────────────────────────
+        self.events.write_order_event(trade_id, "partial_exit_t1", {
+            "instrument":            instrument,
+            "t1_size":               half_size,
+            "t1_fill":               t1_fill,
+            "t1_pnl_pips":           t1_pips,
+            "t1_profit":             t1_profit,
+            "stop_moved_to_breakeven": stop_modified,
+            "breakeven_stop":        entry_price,
         })
 
     def _update_trailing_stop(self, trade: Dict, new_stop: float):
@@ -2584,10 +2740,18 @@ class ExecutionAgent:
             transactions  = self.broker.get_recent_transactions(hours=4)
             position_size = float(trade.get("position_size") or 0)
             entry_price_f = float(trade.get("entry_price")   or 0)
+            # After T1 partial exit, remaining T2 close will have size = 50% of original.
+            # Build candidate sizes so the match still works.
+            _size_candidates = [position_size]
+            if trade.get("target_1_hit") and trade.get("target_1_closed_size"):
+                _remaining = round(position_size - float(trade["target_1_closed_size"]), 2)
+                if _remaining > 0:
+                    _size_candidates.append(_remaining)
             for t in transactions:
                 t_size = t.get("size")       or 0
                 t_open = t.get("open_level") or 0
-                if (t_size > 0 and abs(t_size - position_size) < 0.01
+                if (t_size > 0
+                        and any(abs(t_size - sz) < 0.01 for sz in _size_candidates)
                         and t_open > 0 and abs(t_open - entry_price_f) < 0.00005):
                     ig_txn_match = t
                     break
