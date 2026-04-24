@@ -311,6 +311,15 @@ class MacroAgent:
 
             score = round(score, 4)
 
+            # V1 Swing: explicit direction field — matches orchestrator's interim fallback threshold
+            MACRO_NEUTRAL_THRESHOLD = 0.15
+            if abs(score) < MACRO_NEUTRAL_THRESHOLD:
+                macro_direction = 'neutral'
+            elif score > 0:
+                macro_direction = 'long'
+            else:
+                macro_direction = 'short'
+
             if score > 0.05:
                 bias = 'bullish'
             elif score < -0.05:
@@ -326,6 +335,8 @@ class MacroAgent:
             confidence = round(min(1.0, avg_sig_count / 4.0), 3)
 
             payload = {
+                'score':                score,
+                'direction':            macro_direction,
                 'base_currency':        base,
                 'quote_currency':       quote,
                 'base_composite':       round(b_comp, 4),
