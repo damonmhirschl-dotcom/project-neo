@@ -1457,6 +1457,51 @@ function AuditTab({audit}) {
 }
 
 /* =====================================================
+   TAB: LM PROPOSALS
+   ===================================================== */
+function ProposalsTab({lm_proposals}) {
+  const rows = lm_proposals || [];
+
+  const typeColor = ptype => {
+    const t = (ptype||'').toLowerCase();
+    if (t.startsWith('architecture_')) return '#f59e0b';
+    if (t.startsWith('shadow_trade') || t.includes('shadow')) return '#3b82f6';
+    if (t.startsWith('rg_rejection') || t.includes('rejection')) return '#ef4444';
+    return '#9ca3af';
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">LM Proposals (last 24h)</span>
+        <span style={{fontFamily:'var(--mono)',fontSize:'.7rem',color:'var(--text3)',marginLeft:'auto'}}>{rows.length} proposal{rows.length!==1?'s':''}</span>
+      </div>
+      {!rows.length ? (
+        <div className="empty-state"><div className="em-icon">◌</div><span>No proposals in last 24h</span></div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Type</th><th>Instrument</th><th>Message</th><th>Time</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((p,i) => (
+                <tr key={i}>
+                  <td><span style={{color:typeColor(p.proposal_type),fontWeight:600,fontFamily:'var(--mono)',fontSize:'.65rem'}}>{p.proposal_type||'—'}</span></td>
+                  <td style={{fontFamily:'var(--mono)',fontWeight:600}}>{p.instrument||'SYSTEM'}</td>
+                  <td style={{maxWidth:'420px',wordBreak:'break-word',color:'var(--text2)'}}>{p.message||'—'}</td>
+                  <td className="ts" style={{whiteSpace:'nowrap'}}>{relTime(p.created_at)||'—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================
    MAIN APP
    ===================================================== */
 function App() {
@@ -1469,7 +1514,7 @@ function App() {
     stats:null, agents:[], convergence:[], signals:[], signals_full:[],
     decisions:[], currency_strength:[], learning:null, health:[],
     trades:[], open_positions:[], portfolio_exposure:null,
-    alerts:[], system:{}, drawdown:[],
+    alerts:[], system:{}, drawdown:[], lm_proposals:[],
   });
   const [proposals,setProposals] = useState([]);
   const [activeTab,setActiveTab] = useState('overview');
@@ -1493,6 +1538,7 @@ function App() {
         signals_full:      signals?.signals_full??d.signals_full,
         decisions:         signals?.decisions??d.decisions,
         currency_strength: signals?.currency_strength??d.currency_strength,
+        lm_proposals:      signals?.lm_proposals??d.lm_proposals,
         learning:          learning??d.learning,
         health:            health??d.health,
         providers,
@@ -1526,7 +1572,7 @@ function App() {
 
   if (!authed) return <Login onAuth={()=>setAuthed(true)}/>;
 
-  const {convergence,signals_full,decisions,currency_strength,learning,trades,open_positions,portfolio_exposure,audit}=data;
+  const {convergence,signals_full,decisions,currency_strength,learning,trades,open_positions,portfolio_exposure,audit,lm_proposals}=data;
 
   return (
     <div>
@@ -1540,6 +1586,7 @@ function App() {
             ['observation',  'Agent Observation'],
             ['trades',       'Trades'],
             ['audit',        'Audit Log'],
+            ['proposals',    'LM Proposals'],
           ].map(([key,lbl]) => (
             <button key={key} className={`tab-btn ${activeTab===key?'active':''}`} onClick={()=>setActiveTab(key)}>{lbl}</button>
           ))}
@@ -1579,6 +1626,11 @@ function App() {
         {/* AUDIT LOG TAB */}
         {activeTab === 'audit' && (
           <AuditTab audit={audit}/>
+        )}
+
+        {/* LM PROPOSALS TAB */}
+        {activeTab === 'proposals' && (
+          <ProposalsTab lm_proposals={lm_proposals}/>
         )}
 
       </div></div>{/* .dash / .page-wrap */}
