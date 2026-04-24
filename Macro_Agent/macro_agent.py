@@ -192,6 +192,66 @@ class MacroAgent:
     # Core scoring
     # ------------------------------------------------------------------
 
+    def _get_cot_adjustment(self, currency: str) -> float:
+        """
+        Returns a conviction multiplier based on COT speculator positioning.
+        >p90 (crowded long) → 0.5 (reduce conviction — priced in)
+        <p10 (crowded short) → 1.5 (increase conviction — underpositioned)
+        Otherwise → 1.0 (neutral)
+
+        Uses pct_signed_52w (signed 52-week percentile rank) from shared.cot_positioning.
+        For USD-base pairs (USDJPY, USDCAD, USDCHF), the sign is inverted so the
+        percentile reflects the non-USD currency's positioning.
+        """
+        CURRENCY_TO_COT = {
+            'EUR': 'EURUSD',
+            'GBP': 'GBPUSD',
+            'AUD': 'AUDUSD',
+            'JPY': 'USDJPY',
+            'CAD': 'USDCAD',
+            'CHF': 'USDCHF',
+            'USD': None,  # USD is the base — no direct COT adjustment
+            'NZD': None,  # NZD not covered by COT data
+        }
+        USD_BASE_PAIRS = {'USDJPY', 'USDCAD', 'USDCHF'}
+
+        pair_code = CURRENCY_TO_COT.get(currency)
+        if not pair_code:
+            return 1.0
+
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT pct_signed_52w
+                    FROM shared.cot_positioning
+                    WHERE pair_code = %s
+                    ORDER BY report_date DESC LIMIT 1
+                """, (pair_code,))
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    return 1.0
+
+            pct = float(row[0])
+            # Invert for USD-base pairs (e.g. USDJPY high pct = long USD = short JPY)
+            if pair_code in USD_BASE_PAIRS:
+                pct = 100.0 - pct
+
+            if pct >= 90:
+                logger.debug(
+                    f"COT crowded long {currency} ({pct:.0f}th pctile) — reducing conviction 0.5x"
+                )
+                return 0.5
+            elif pct <= 10:
+                logger.debug(
+                    f"COT crowded short {currency} ({pct:.0f}th pctile) — increasing conviction 1.5x"
+                )
+                return 1.5
+            else:
+                return 1.0
+        except Exception as e:
+            logger.warning(f"COT adjustment failed for {currency}: {e}")
+            return 1.0
+
     def _compute_scores(self) -> List[Dict]:
         """
         Read latest composite_score per currency, derive 20 pair signals.
@@ -231,6 +291,12 @@ class MacroAgent:
         if missing:
             logger.warning(f"Missing currency scores for: {missing} — affected pairs → neutral")
 
+        # Pre-compute COT conviction adjustments once per currency (avoids N×pairs DB calls)
+        cot_adjs: Dict[str, float] = {c: self._get_cot_adjustment(c) for c in self.CURRENCIES}
+        non_neutral = {c: v for c, v in cot_adjs.items() if v != 1.0}
+        if non_neutral:
+            logger.info(f"COT adjustments active: {non_neutral}")
+
         signals = []
         for pair in self.PAIRS:
             base, quote = self.PAIR_DERIVATION[pair]
@@ -241,8 +307,8 @@ class MacroAgent:
                 signals.append(self._neutral_pair_signal(pair, f"missing score for {base if base_row is None else quote}"))
                 continue
 
-            b_comp = float(base_row['composite_score'] or 0)
-            q_comp = float(quote_row['composite_score'] or 0)
+            b_comp = float(base_row['composite_score'] or 0) * cot_adjs.get(base, 1.0)
+            q_comp = float(quote_row['composite_score'] or 0) * cot_adjs.get(quote, 1.0)
             raw_diff = b_comp - q_comp
 
             score = math.tanh(raw_diff * 1.5)
@@ -282,11 +348,19 @@ class MacroAgent:
                 'quote_emp_score':      round(float(quote_row.get('employment_surprise_score') or 0), 4),
                 'base_signal_date':     str(base_row.get('signal_date', '')),
                 'quote_signal_date':    str(quote_row.get('signal_date', '')),
+                'base_cot_adj':         cot_adjs.get(base, 1.0),
+                'quote_cot_adj':        cot_adjs.get(quote, 1.0),
                 'method':               'deterministic_macro_v2',
                 # signal_contract stubs — required by shared/signal_validator.py
                 'reasoning':            (
                     f'Deterministic macro: pair_score={score:.3f} '
                     f'(base={b_comp:.3f}, quote={q_comp:.3f})'
+                    + (
+                        f' [COT adj: base={cot_adjs.get(base,1.0):.1f}x'
+                        f', quote={cot_adjs.get(quote,1.0):.1f}x]'
+                        if cot_adjs.get(base, 1.0) != 1.0 or cot_adjs.get(quote, 1.0) != 1.0
+                        else ''
+                    )
                 ),
             }
 
