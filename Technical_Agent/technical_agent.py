@@ -605,6 +605,61 @@ class TechnicalAgent:
                 logger.debug(f"Indicator calculation failed: {_e}")
         return inserted
 
+    def _fetch_live_bars(self, pair: str, n: int = 55) -> pd.DataFrame:
+        """Fetch the last n 1H bars from TraderMade timeseries for live RSI/ADX calculation.
+        Returns a DataFrame compatible with calculate_technical_indicators().
+        Falls back to get_historical_bars() on any error or insufficient bars.
+        Does NOT write to RDS — nightly Lambda handles persistence.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            # Fetch n+2 hours back to ensure n complete bars after rounding
+            start_dt = (now - timedelta(hours=n + 2)).replace(
+                minute=0, second=0, microsecond=0)
+            end_dt = now.replace(minute=0, second=0, microsecond=0)
+            if start_dt >= end_dt:
+                raise ValueError("start_dt >= end_dt")
+            resp = requests.get(
+                'https://marketdata.tradermade.com/api/v1/timeseries',
+                params={
+                    'currency':   pair,
+                    'api_key':    self.tradermade_key,
+                    'start_date': start_dt.strftime('%Y-%m-%d %H:%M'),
+                    'end_date':   end_dt.strftime('%Y-%m-%d %H:%M'),
+                    'format':     'records',
+                    'interval':   'hourly',
+                }, timeout=20)
+            resp.raise_for_status()
+            quotes = resp.json().get('quotes', [])
+            if len(quotes) < 20:
+                logger.warning(
+                    f"_fetch_live_bars: only {len(quotes)} bars for {pair} "
+                    f"— falling back to RDS")
+                return self.get_historical_bars(pair, '1H', 50)
+            rows = []
+            for q in quotes:
+                raw = q['date']
+                try:
+                    dt = datetime.strptime(raw, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    dt = datetime.strptime(raw, '%Y-%m-%d %H:%M')
+                rows.append({
+                    'ts':    dt.replace(tzinfo=timezone.utc),
+                    'open':  float(q['open']),
+                    'high':  float(q['high']),
+                    'low':   float(q['low']),
+                    'close': float(q['close']),
+                })
+            df = pd.DataFrame(rows).sort_values('ts').reset_index(drop=True)
+            df = df.tail(n).reset_index(drop=True)
+            logger.debug(
+                f"_fetch_live_bars: {len(df)} live 1H bars for {pair} "
+                f"(latest={df['ts'].iloc[-1]})")
+            return df
+        except Exception as e:
+            logger.warning(f"_fetch_live_bars failed for {pair}: {e} — falling back to RDS")
+            return self.get_historical_bars(pair, '1H', 50)
+
     def get_historical_bars(self, pair: str, timeframe: str = "1H", limit: int = 200) -> pd.DataFrame:
         """Get historical OHLCV bars from RDS; triggers TraderMade fallback when empty or stale."""
         def _fetch_from_rds():
@@ -1020,7 +1075,7 @@ class TechnicalAgent:
         for pair in self.PAIRS:
             try:
                 # ── fetch bars ───────────────────────────────────────────────
-                df = self.get_historical_bars(pair, '1H', 50)
+                df = self._fetch_live_bars(pair, n=55)
                 if df is None or df.empty or len(df) < 20:
                     raise ValueError(f"insufficient bars ({0 if df is None or df is False or (hasattr(df,'empty') and df.empty) else len(df)})")
 
