@@ -116,6 +116,113 @@ DATA_QUALITY_CUTOFF = '2026-04-23 21:55:00+00'
 CYCLE_LOG_PATH   = '/var/log/neo/learning_module.jsonl'
 AUTOPSY_LOG_PATH = '/var/log/neo/learning_module_autopsies.jsonl'
 
+# =============================================================================
+# V1 SWING CONSTANTS
+# =============================================================================
+V1_SWING_ADX_BUCKETS   = ['25-30', '30-40', '40+']
+V1_SWING_SESSIONS      = ['asia', 'london', 'ny_overlap', 'ny_late']
+V1_SWING_SETUP_TYPES   = ['long_pullback', 'short_pullback']
+MIN_BUCKET_SAMPLE      = 10   # flag insufficient_sample below this
+
+RG_REJECTION_CATEGORIES = [
+    'rr_gate_fail',
+    'swap_rr_fail',
+    'correlation_block',
+    'concentration_block',
+    'news_blackout',
+    'daily_drawdown_halt',
+    'weekly_drawdown_halt',
+    'min_stop_distance',
+    'pip_value_unavailable',
+]
+
+V1_SWING_REJECTION_CATEGORIES = [
+    # Orchestrator level
+    'technical_gate_fail',
+    'macro_no_direction',
+    'direction_disagreement',
+    # Technical agent level (from gate_failures payload field)
+    'trend_filter_fail',
+    'adx_gate_fail',
+    'rsi_not_in_zone',
+    'rsi_no_cross',
+    'structure_fail',
+    'session_invalid',
+    # RG level
+    'correlation_block',
+    'concentration_block',
+    'news_blackout',
+    'daily_drawdown_halt',
+    'weekly_drawdown_halt',
+]
+
+def _classify_rg_rejection(reason: str) -> str:
+    """Map an RG rejection reason string to a RG_REJECTION_CATEGORIES entry."""
+    r = reason.lower()
+    # Check specific patterns first to avoid substring false-positives
+    if 'correlation' in r:
+        return 'correlation_block'
+    if 'swap_rr' in r or ('swap' in r and 'rr' in r):
+        return 'swap_rr_fail'
+    if 'rr_ratio' in r or 'rr_gate' in r or 'risk_reward' in r or 'risk reward' in r:
+        return 'rr_gate_fail'
+    if 'concentration' in r or 'exposure' in r:
+        return 'concentration_block'
+    if 'news' in r or 'event' in r or 'blackout' in r:
+        return 'news_blackout'
+    if 'daily' in r and ('drawdown' in r or 'loss' in r or 'limit' in r):
+        return 'daily_drawdown_halt'
+    if 'weekly' in r and ('drawdown' in r or 'loss' in r or 'limit' in r):
+        return 'weekly_drawdown_halt'
+    if 'stop_distance' in r or 'stop distance' in r or 'min_stop' in r:
+        return 'min_stop_distance'
+    if 'pip_value' in r or 'pip value' in r:
+        return 'pip_value_unavailable'
+    return 'other'
+
+def _classify_v1_rejection(reason: str, gate_failures=None) -> str:
+    """Map a V1 Swing orchestrator rejection reason to V1_SWING_REJECTION_CATEGORIES."""
+    r = reason.lower()
+    if 'macro_gate_fail' in r or 'macro_no_direction' in r or 'macro score' in r:
+        return 'macro_no_direction'
+    if 'technical_too_weak' in r or 'tech' in r and 'gate' in r:
+        return 'technical_gate_fail'
+    if 'directional' in r or 'disagreement' in r:
+        return 'direction_disagreement'
+    if 'adx' in r:
+        return 'adx_gate_fail'
+    if 'rsi' in r and 'zone' in r:
+        return 'rsi_not_in_zone'
+    if 'rsi' in r and 'cross' in r:
+        return 'rsi_no_cross'
+    if 'trend' in r:
+        return 'trend_filter_fail'
+    if 'session' in r:
+        return 'session_invalid'
+    if 'structure' in r:
+        return 'structure_fail'
+    if 'correlation' in r:
+        return 'correlation_block'
+    if 'concentration' in r:
+        return 'concentration_block'
+    if 'news' in r or 'blackout' in r:
+        return 'news_blackout'
+    if 'daily' in r and 'drawdown' in r:
+        return 'daily_drawdown_halt'
+    if 'weekly' in r and 'drawdown' in r:
+        return 'weekly_drawdown_halt'
+    return 'other'
+
+def _adx_bucket(adx):
+    """Map ADX value to V1 Swing bucket string, or None if below threshold."""
+    if adx is None or adx < 25:
+        return None
+    if adx < 30:
+        return '25-30'
+    if adx < 40:
+        return '30-40'
+    return '40+'
+
 
 # =============================================================================
 # AWS HELPERS
@@ -216,6 +323,21 @@ def _total_trade_pnl(trade) -> float:
     t1    = float(trade.get('target_1_pnl') or 0)
     final = float(trade.get('pnl') or 0)
     return (t1 + final) if trade.get('target_1_hit') else final
+
+
+def _classify_exit_reason(exit_reason, target_1_hit, entry_price, exit_price,
+                           pip_size=0.0001):
+    """Classify exit into V1 Swing exit type."""
+    if exit_reason in ('limit', 'tp1', 'take_profit'):
+        return 'target_2' if target_1_hit else 'target_1_only'
+    if exit_reason in ('stop', 'sl', 'stop_loss', 'stop_hit'):
+        return 'stop'
+    # Breakeven: exited at ~entry +-5pips after target_1 hit
+    if target_1_hit and entry_price and exit_price:
+        pips_from_entry = abs(float(exit_price) - float(entry_price)) / pip_size
+        if pips_from_entry <= 5:
+            return 'breakeven'
+    return 'manual'
 
 
 class TradeAutopsyEngine:
@@ -472,6 +594,34 @@ class TradeAutopsyEngine:
         if entry_timing:
             pattern_context["entry_timing"] = entry_timing
 
+        # --- V1 Swing autopsy fields ---
+        tp = trade.get('trade_parameters') or {}
+        if isinstance(tp, str):
+            import json as _j2
+            try: tp = _j2.loads(tp)
+            except Exception: tp = {}
+
+        pip_size_trade = 0.01 if 'JPY' in str(trade.get('instrument', '')) else 0.0001
+
+        v1_rsi        = trade.get('rsi_at_entry') or (tp.get('rsi_at_entry') and float(tp['rsi_at_entry'])) or None
+        v1_adx        = trade.get('adx_at_entry') or (tp.get('adx_at_entry') and float(tp['adx_at_entry'])) or None
+        v1_setup_type = trade.get('setup_type') or tp.get('setup_type') or None
+        v1_session    = trade.get('session_at_entry') or tp.get('session_at_entry') or None
+        v1_t1_hit     = bool(trade.get('target_1_hit')) or (str(tp.get('target_1_hit', '')).lower() == 'true')
+
+        v1_exit_cls   = _classify_exit_reason(
+            trade.get('exit_reason', ''),
+            v1_t1_hit,
+            trade.get('entry_price'),
+            trade.get('exit_price'),
+            pip_size_trade,
+        )
+        v1_t2_hit        = v1_exit_cls == 'target_2'
+        v1_stop_hit      = v1_exit_cls == 'stop'
+        v1_breakeven     = v1_exit_cls == 'breakeven'
+        v1_total_pnl     = _total_trade_pnl(trade)
+        # --------------------------------
+
         cur = self.db.cursor()
         try:
             cur.execute("""
@@ -480,8 +630,13 @@ class TradeAutopsyEngine:
                      contributing_factors, pattern_context,
                      sharpe_contribution, sortino_contribution,
                      regime_stress_at_entry, exclude_from_patterns,
+                     rsi_at_entry, adx_at_entry, setup_type, session_at_entry,
+                     target_1_hit, target_2_hit, stop_hit, breakeven_exit,
+                     total_pnl, exit_reason_classified,
                      created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        NOW())
                 RETURNING id
             """, (
                 trade_id, self.user_id, failure_mode, diagnosis, signal_quality,
@@ -491,6 +646,9 @@ class TradeAutopsyEngine:
                 None,  # Sortino contribution
                 stress_at_entry,
                 exclude_from_patterns,
+                v1_rsi, v1_adx, v1_setup_type, v1_session,
+                v1_t1_hit, v1_t2_hit, v1_stop_hit, v1_breakeven,
+                v1_total_pnl, v1_exit_cls,
             ))
             result = cur.fetchone()
             self.db.commit()
@@ -1410,6 +1568,26 @@ class LearningModule:
                     except Exception:
                         pass
 
+            # V1 Swing accuracy summary (bucket counts only — not full trade list)
+            v1_accuracy_summary = {}
+            try:
+                v1_acc = self.compute_per_session_adx_setup_accuracy()
+                v1_accuracy_summary = {
+                    'bucket_count':  len(v1_acc.get('session_adx_setup', {})),
+                    'pair_count':    len(v1_acc.get('per_pair', {})),
+                    'buckets': {
+                        str(k): {
+                            'n':        v['n'],
+                            'win_rate': round(v['win_rate'], 4),
+                            'pf':       round(v['pf'], 4) if v['pf'] != float('inf') else None,
+                            'insufficient_sample': v['insufficient_sample'],
+                        }
+                        for k, v in v1_acc.get('session_adx_setup', {}).items()
+                    },
+                }
+            except Exception as _ve:
+                logger.debug(f"_write_cycle_log v1_accuracy: {_ve}")
+
             record = {
                 'ts':                   now_utc.isoformat(),
                 'cycle_id':             self.cycle_count,
@@ -1427,6 +1605,8 @@ class LearningModule:
                 'warnings':             [],
                 'cycle_duration_ms':    duration_ms,
                 'autopsies':            autopsy_records,
+                'v1_swing_accuracy':    v1_accuracy_summary,
+                'proposals_by_type':    {},  # populated below if proposals > 0
             }
             _append_jsonl(CYCLE_LOG_PATH, record)
 
@@ -1501,8 +1681,10 @@ class LearningModule:
             # RSI/ADX entry timing parameters for technical agent
             self.compute_entry_timing_quality()
 
-            # Phase 1 accuracy tracking — per-agent, per-instrument, per-session
-            self.compute_per_agent_accuracy()
+            # V1 Swing accuracy tracking — session x ADX x setup_type bucketing
+            self.compute_per_session_adx_setup_accuracy()
+            # Phase 1 accuracy tracking (DEPRECATED — kept for backward-compatibility)
+            # self.compute_per_agent_accuracy()
 
             # Per-source contrarian accuracy (MyFXBook / IG)
             self.compute_per_source_accuracy()
@@ -1510,8 +1692,8 @@ class LearningModule:
             # Macro gate conviction-tier accuracy (high/medium/low)
             self.compute_macro_direction_accuracy()
 
-            # Shadow trade hypothesis analysis
-            self.analyse_shadow_trades()
+            # Shadow trade hypothesis analysis: decommissioned for V1 Swing 2026-04-24
+            # self.analyse_shadow_trades()
 
             # Kelly fraction (activates after 50 trades)
             self.compute_kelly_fraction()
@@ -2002,6 +2184,8 @@ class LearningModule:
 
     def compute_per_agent_accuracy(self) -> int:
         """
+        DEPRECATED 2026-04-24: Replaced by compute_per_session_adx_setup_accuracy for V1 Swing.
+        Kept for backward-compatibility; no longer called from the main cycle.
         Phase 1 accuracy tracking.
 
         For each closed trade, look up the most recent macro / technical / regime
@@ -2104,6 +2288,84 @@ class LearningModule:
             logger.info(f'compute_per_agent_accuracy: wrote {written} accuracy snapshot(s)')
         return written
 
+    def compute_per_session_adx_setup_accuracy(self) -> dict:
+        """V1 Swing accuracy grouping: session x adx_bucket x setup_type.
+        Falls back to trade_parameters JSONB when direct columns are NULL.
+        Returns dict with 'session_adx_setup' and 'per_pair' sub-dicts."""
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT
+                    COALESCE(session_at_entry,
+                        trade_parameters->>'session_at_entry') AS session,
+                    COALESCE(adx_at_entry,
+                        (trade_parameters->>'adx_at_entry')::numeric) AS adx,
+                    COALESCE(setup_type,
+                        trade_parameters->>'setup_type') AS setup_type,
+                    instrument,
+                    COALESCE(target_1_pnl, 0) + COALESCE(pnl, 0) AS pnl,
+                    exit_reason
+                FROM forex_network.trades
+                WHERE (strategy = 'v1_swing' OR strategy IS NULL OR strategy = 'legacy')
+                  AND exit_time IS NOT NULL
+                  AND user_id = %s
+            """, (self.user_id,))
+            rows = cur.fetchall()
+        except Exception as e:
+            logger.error(f"compute_per_session_adx_setup_accuracy query failed: {e}")
+            try: self.db.rollback()
+            except Exception: pass
+            return {'session_adx_setup': {}, 'per_pair': {}}
+        finally:
+            cur.close()
+
+        session_adx_setup = {}   # (session, adx_bucket, setup_type) -> stats
+        per_pair = {}            # instrument -> stats
+
+        for r in rows:
+            raw_adx = r['adx']
+            adx_val = float(raw_adx) if raw_adx is not None else None
+            bucket = _adx_bucket(adx_val)
+            total_pnl = float(r['pnl'] or 0)
+            is_win = total_pnl > 0
+
+            # Per-pair view
+            pair = r['instrument']
+            if pair not in per_pair:
+                per_pair[pair] = {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'n': 0}
+            per_pair[pair]['n'] += 1
+            per_pair[pair]['total_pnl'] += total_pnl
+            if is_win:
+                per_pair[pair]['wins'] += 1
+            else:
+                per_pair[pair]['losses'] += 1
+
+            # Session x ADX x setup view (skip if ADX below threshold)
+            if bucket is None:
+                continue
+            key = (r['session'], bucket, r['setup_type'])
+            if key not in session_adx_setup:
+                session_adx_setup[key] = {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'n': 0}
+            session_adx_setup[key]['n'] += 1
+            session_adx_setup[key]['total_pnl'] += total_pnl
+            if is_win:
+                session_adx_setup[key]['wins'] += 1
+            else:
+                session_adx_setup[key]['losses'] += 1
+
+        # Annotate with win_rate, pf, insufficient_sample
+        for d in list(session_adx_setup.values()) + list(per_pair.values()):
+            n = d['n']
+            d['win_rate'] = d['wins'] / n if n > 0 else 0.0
+            d['pf'] = (d['wins'] / d['losses']) if d['losses'] > 0 else float('inf')
+            d['insufficient_sample'] = n < MIN_BUCKET_SAMPLE
+
+        logger.debug(
+            f"compute_per_session_adx_setup_accuracy: "
+            f"{len(session_adx_setup)} buckets, {len(per_pair)} pairs"
+        )
+        return {'session_adx_setup': session_adx_setup, 'per_pair': per_pair}
+
     def _process_rejections(self) -> int:
         """Extract per-pair rejected decisions from orchestrator_decision signals and
         store in rejection_patterns for downstream learning analysis."""
@@ -2145,17 +2407,12 @@ class LearningModule:
                     reasons = decision.get("rejection_reasons", [])
                     rejection_reason = reasons[0] if reasons else "unknown"
 
-                    # Parse rejection_reason string into structured detail
+                    # Parse rejection_reason string into structured detail (V1 Swing categories)
                     detail: dict = {}
                     r = rejection_reason
-                    if 'macro_gate_fail' in r:
-                        detail['rejection_type'] = 'macro_gate'
-                    elif 'technical_too_weak' in r:
-                        detail['rejection_type'] = 'technical_gate'
-                    elif 'directional' in r:
-                        detail['rejection_type'] = 'directional'
-                    else:
-                        detail['rejection_type'] = 'other'
+                    gate_failures = decision.get('gate_failures', [])
+                    v1_category = _classify_v1_rejection(r, gate_failures)
+                    detail['rejection_type'] = v1_category
                     m = re.search(r'abs\((-?[\d.]+)\)', r)
                     if m:
                         detail['abs_score'] = abs(float(m.group(1)))
@@ -2172,6 +2429,7 @@ class LearningModule:
                     if m:
                         detail['tech_score_at_rejection'] = float(m.group(1))
 
+                    # Write primary rejection pattern
                     cur.execute("""
                         INSERT INTO forex_network.rejection_patterns
                             (user_id, instrument, rejection_reason, convergence_score,
@@ -2186,6 +2444,26 @@ class LearningModule:
                         json.dumps(detail),
                     ))
                     count += 1
+
+                    # Also log each gate_failure from technical agent payload as separate entry
+                    for gf in gate_failures:
+                        gf_str = str(gf)
+                        gf_category = _classify_v1_rejection(gf_str)
+                        cur.execute("""
+                            INSERT INTO forex_network.rejection_patterns
+                                (user_id, instrument, rejection_reason, convergence_score,
+                                 session, regime, stress_score, cycle_timestamp, detail)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            self.user_id, instrument,
+                            f"gate_failure:{gf_str[:80]}",
+                            float(convergence) if convergence is not None else None,
+                            session, regime,
+                            float(stress_score) if stress_score is not None else None,
+                            created_at,
+                            json.dumps({'rejection_type': gf_category, 'gate_failure': gf_str}),
+                        ))
+                        count += 1
 
                 cur.execute("""
                     UPDATE forex_network.agent_signals
@@ -2202,8 +2480,10 @@ class LearningModule:
         finally:
             cur.close()
 
-    def _generate_proposals(self) -> int:
+    def _generate_proposals_legacy(self) -> int:
         """
+        LEGACY (pre V1 Swing): threshold / sizing / directional proposals.
+        Kept for reference — superseded by _generate_v1_swing_proposals.
         Read rejection_patterns and performance metrics; write structured proposals
         into forex_network.proposals for human review / optional auto-apply.
 
@@ -2582,6 +2862,219 @@ class LearningModule:
         finally:
             cur.close()
 
+    def _generate_v1_swing_proposals(self) -> int:
+        """Generate V1 Swing aligned proposals from trade outcome data.
+        Writes proposals to forex_network.proposals table via agent_signals.
+        Returns number of proposals generated."""
+        proposals = []
+        accuracy = self.compute_per_session_adx_setup_accuracy()
+        per_pair = accuracy['per_pair']
+        session_adx_setup = accuracy['session_adx_setup']
+
+        # 1. Pair removal: win_rate < 35% after 20+ trades
+        for pair, stats in per_pair.items():
+            if stats['n'] >= 20 and stats['win_rate'] < 0.35:
+                proposals.append({
+                    'proposal_type': 'pair_removal',
+                    'pair': pair,
+                    'instrument': pair,
+                    'priority': 'high',
+                    'title': f"Consider removing {pair} from V1 Swing universe",
+                    'reasoning': (
+                        f"Win rate {stats['win_rate']:.0%} over {stats['n']} trades, "
+                        f"PF {stats['pf']:.2f}"
+                    ),
+                    'message': (
+                        f"Win rate {stats['win_rate']:.0%} over {stats['n']} trades, "
+                        f"PF {stats['pf']:.2f}"
+                    ),
+                    'data_supporting': stats,
+                    'suggested_action': f"Remove {pair} from V1 Swing trading universe",
+                    'expected_impact': "Improve overall PF by removing negative-expectancy pair",
+                    'auto_apply': False,
+                    'evidence': stats,
+                })
+
+        # 2. ADX bucket tuning: win_rate < 40% after 30+ trades in a bucket
+        adx_totals = {}
+        for (session, adx_bucket, setup_type), stats in session_adx_setup.items():
+            if adx_bucket not in adx_totals:
+                adx_totals[adx_bucket] = {'wins': 0, 'losses': 0, 'n': 0, 'total_pnl': 0.0}
+            for k in ('wins', 'losses', 'n', 'total_pnl'):
+                adx_totals[adx_bucket][k] += stats[k]
+        for bucket, d in adx_totals.items():
+            if d['n'] >= 30:
+                wr = d['wins'] / d['n']
+                if wr < 0.40:
+                    proposals.append({
+                        'proposal_type': 'adx_threshold_tuning',
+                        'pair': None,
+                        'instrument': None,
+                        'priority': 'medium',
+                        'title': f"ADX {bucket} bucket underperforming",
+                        'reasoning': (
+                            f"Win rate {wr:.0%} over {d['n']} trades in ADX {bucket}"
+                        ),
+                        'message': f"Win rate {wr:.0%} over {d['n']} trades in ADX {bucket}",
+                        'data_supporting': d,
+                        'suggested_action': (
+                            f"Consider raising ADX threshold above {bucket.split('-')[0]}"
+                        ),
+                        'expected_impact': "Filter out lower-quality trending conditions",
+                        'auto_apply': False,
+                        'evidence': d,
+                    })
+
+        # 3. Session removal: win_rate < 40% after 30+ trades in session
+        session_totals = {}
+        for (session, adx_bucket, setup_type), stats in session_adx_setup.items():
+            if not session:
+                continue
+            if session not in session_totals:
+                session_totals[session] = {'wins': 0, 'losses': 0, 'n': 0, 'total_pnl': 0.0}
+            for k in ('wins', 'losses', 'n'):
+                session_totals[session][k] += stats[k]
+        for sess, d in session_totals.items():
+            if d['n'] >= 30:
+                wr = d['wins'] / d['n']
+                if wr < 0.40:
+                    proposals.append({
+                        'proposal_type': 'session_removal',
+                        'pair': None,
+                        'instrument': None,
+                        'priority': 'medium',
+                        'title': f"Consider restricting {sess} session",
+                        'reasoning': (
+                            f"Win rate {wr:.0%} over {d['n']} trades in {sess} session"
+                        ),
+                        'message': (
+                            f"Win rate {wr:.0%} over {d['n']} trades in {sess} session"
+                        ),
+                        'data_supporting': d,
+                        'suggested_action': (
+                            f"Remove {sess} from allowed trading sessions"
+                        ),
+                        'expected_impact': "Reduce exposure in underperforming session",
+                        'auto_apply': False,
+                        'evidence': d,
+                    })
+
+        # 4. Drawdown-state size reduction (from risk_parameters)
+        try:
+            cur = self.db.cursor()
+            try:
+                cur.execute("""
+                    SELECT peak_account_value AS hwm, account_value AS current_equity
+                    FROM forex_network.risk_parameters
+                    WHERE user_id = %s
+                """, (self.user_id,))
+                row = cur.fetchone()
+                if row and row['hwm'] and row['current_equity']:
+                    hwm = float(row['hwm'])
+                    equity = float(row['current_equity'])
+                    if hwm > 0:
+                        drawdown = (hwm - equity) / hwm
+                        if drawdown > 0.05:
+                            proposals.append({
+                                'proposal_type': 'drawdown_size_reduction',
+                                'pair': None,
+                                'instrument': None,
+                                'priority': 'high',
+                                'title': (
+                                    f"Active {drawdown:.1%} drawdown — consider reducing size"
+                                ),
+                                'reasoning': (
+                                    f"Equity {equity:.2f} is {drawdown:.1%} below HWM {hwm:.2f}"
+                                ),
+                                'message': (
+                                    f"Equity {equity:.2f} is {drawdown:.1%} below HWM {hwm:.2f}"
+                                ),
+                                'data_supporting': {
+                                    'drawdown': drawdown,
+                                    'hwm': hwm,
+                                    'current_equity': equity,
+                                },
+                                'suggested_action': (
+                                    "Reduce risk_per_trade from 1% to 0.5% until recovery"
+                                ),
+                                'expected_impact': (
+                                    "Limit further drawdown while in losing streak"
+                                ),
+                                'auto_apply': False,
+                                'evidence': {
+                                    'drawdown': round(drawdown, 4),
+                                    'hwm': hwm,
+                                    'current_equity': equity,
+                                },
+                            })
+            finally:
+                cur.close()
+        except Exception as e:
+            logger.debug(f"Drawdown proposal check failed: {e}")
+
+        # 5. Setup type imbalance: long vs short win rate > 15pp divergence
+        long_stats  = {'wins': 0, 'losses': 0, 'n': 0}
+        short_stats = {'wins': 0, 'losses': 0, 'n': 0}
+        for (session, adx_bucket, setup_type), stats in session_adx_setup.items():
+            if setup_type == 'long_pullback':
+                for k in ('wins', 'losses', 'n'):
+                    long_stats[k] += stats[k]
+            elif setup_type == 'short_pullback':
+                for k in ('wins', 'losses', 'n'):
+                    short_stats[k] += stats[k]
+        if long_stats['n'] >= 20 and short_stats['n'] >= 20:
+            long_wr  = long_stats['wins']  / long_stats['n']
+            short_wr = short_stats['wins'] / short_stats['n']
+            if abs(long_wr - short_wr) > 0.15:
+                better   = 'long' if long_wr > short_wr else 'short'
+                worse    = 'short' if better == 'long' else 'long'
+                worse_wr = short_wr if worse == 'short' else long_wr
+                better_wr = long_wr if better == 'long' else short_wr
+                better_n = long_stats['n'] if better == 'long' else short_stats['n']
+                worse_n  = short_stats['n'] if worse == 'short' else long_stats['n']
+                proposals.append({
+                    'proposal_type': 'setup_type_imbalance',
+                    'pair': None,
+                    'instrument': None,
+                    'priority': 'medium',
+                    'title': (
+                        f"{better.title()} pullbacks outperforming {worse} pullbacks"
+                    ),
+                    'reasoning': (
+                        f"{better.title()} pullbacks {better_wr:.0%} wins (n={better_n}), "
+                        f"{worse} pullbacks {worse_wr:.0%} (n={worse_n})"
+                    ),
+                    'message': (
+                        f"{better.title()} pullbacks {better_wr:.0%} wins (n={better_n}), "
+                        f"{worse} pullbacks {worse_wr:.0%} (n={worse_n})"
+                    ),
+                    'data_supporting': {
+                        'long': long_stats,
+                        'short': short_stats,
+                    },
+                    'suggested_action': (
+                        f"Investigate macro/trend filter for {worse} pullbacks"
+                    ),
+                    'expected_impact': (
+                        "Improve overall win rate by filtering low-quality setups"
+                    ),
+                    'auto_apply': False,
+                    'evidence': {'long': long_stats, 'short': short_stats},
+                })
+
+        if proposals and not self.dry_run:
+            self._write_proposals(proposals)
+            logger.info(
+                f"_generate_v1_swing_proposals: {len(proposals)} proposal(s) generated "
+                f"({', '.join(set(p['proposal_type'] for p in proposals))})"
+            )
+        else:
+            logger.debug(
+                f"_generate_v1_swing_proposals: 0 proposals (insufficient data or "
+                f"no thresholds breached)"
+            )
+        return len(proposals)
+
     def run_cycle(self):
         """Run a single learning cycle — process autopsies, check weekly report."""
         try:
@@ -2597,9 +3090,9 @@ class LearningModule:
                 if rej_count > 0:
                     logger.info(f"Processed {rej_count} rejection(s) into rejection_patterns")
             if not self.dry_run:
-                prop_count = self._generate_proposals()
+                prop_count = self._generate_v1_swing_proposals()
                 if prop_count > 0:
-                    logger.info(f"Generated {prop_count} proposal(s)")
+                    logger.info(f"Generated {prop_count} V1 Swing proposal(s)")
             if not self.dry_run:
                 arch_issues = self.diagnose_architecture()
                 if arch_issues:
@@ -2634,10 +3127,10 @@ class LearningModule:
                 if rej_count > 0:
                     logger.info(f"Processed {rej_count} rejection(s) into rejection_patterns")
 
-                # Generate structured proposals from rejection patterns + performance
-                prop_count = self._generate_proposals()
+                # Generate V1 Swing aligned proposals from trade outcome data
+                prop_count = self._generate_v1_swing_proposals()
                 if prop_count > 0:
-                    logger.info(f"Generated {prop_count} proposal(s)")
+                    logger.info(f"Generated {prop_count} V1 Swing proposal(s)")
 
                 # Weekly report check
                 if not self.dry_run and self.weekly_report.should_generate():
@@ -2775,150 +3268,11 @@ class LearningModule:
         return len(tiers)
 
     def analyse_shadow_trades(self) -> List[dict]:
-        """
-        Analyses shadow trades by hypothesis to determine what changes
-        would improve trade flow and accuracy.
-
-        Five hypotheses tracked:
-        - macro_only: macro signal correct without technical confirmation
-        - tech_threshold_0.10: trades blocked at 0.10-0.20 technical score
-        - macro_regime_no_tech: macro + regime agreement without technical
-        - p75_relaxed: macro above p50 but below p75
-        - directional_disagreement: macro and technical pointed opposite ways
-        """
-        proposals = []
-        try:
-            cur = self.db.cursor()
-
-            # Require next-day price data to exist
-            cur.execute("""
-                SELECT
-                    hypothesis,
-                    instrument,
-                    direction,
-                    COUNT(*) as total,
-                    SUM(CASE
-                        WHEN direction = 'long' AND shadow_pips_1d > 1 THEN 1
-                        WHEN direction = 'short' AND shadow_pips_1d < -1 THEN 1
-                        ELSE 0 END) as correct_1d,
-                    SUM(CASE
-                        WHEN direction = 'long' AND shadow_pips_5d > 5 THEN 1
-                        WHEN direction = 'short' AND shadow_pips_5d < -5 THEN 1
-                        ELSE 0 END) as correct_5d,
-                    AVG(macro_score) as avg_macro_score,
-                    AVG(tech_score) as avg_tech_score
-                FROM forex_network.shadow_trades
-                WHERE shadow_pips_1d IS NOT NULL
-                AND signal_time > %s
-                GROUP BY hypothesis, instrument, direction
-                HAVING COUNT(*) >= 10
-            """, (DATA_QUALITY_CUTOFF,))
-
-            rows = cur.fetchall()
-
-            for row in rows:
-                hypothesis = row['hypothesis']
-                instrument = row['instrument']
-                total = row['total']
-                win_rate_1d = row['correct_1d'] / total if total > 0 else 0
-                win_rate_5d = row['correct_5d'] / total if total > 0 else 0
-
-                # Generate proposals based on evidence
-                if hypothesis == 'tech_threshold_0.10' and win_rate_5d > 0.58:
-                    proposals.append({
-                        'proposal_type': 'lower_tech_threshold',
-                        'instrument': instrument,
-                        'message': (
-                            f"Shadow trades on {instrument} with technical score 0.10-0.20 "
-                            f"showed {win_rate_5d:.0%} 5D win rate on {total} observations. "
-                            f"Current threshold of 0.20 is blocking profitable setups. "
-                            f"Consider lowering TECH_MIN_THRESHOLD to 0.10 for this pair."
-                        ),
-                        'evidence': {
-                            'hypothesis': hypothesis,
-                            'total': total,
-                            'win_rate_1d': round(win_rate_1d, 3),
-                            'win_rate_5d': round(win_rate_5d, 3),
-                            'avg_macro_score': round(float(row['avg_macro_score'] or 0), 3),
-                        }
-                    })
-
-                elif hypothesis == 'macro_only' and win_rate_5d > 0.58:
-                    proposals.append({
-                        'proposal_type': 'macro_sufficient',
-                        'instrument': instrument,
-                        'message': (
-                            f"Macro-only signals on {instrument} showed {win_rate_5d:.0%} "
-                            f"5D win rate on {total} observations without technical confirmation. "
-                            f"Technical gate may be unnecessary for this pair."
-                        ),
-                        'evidence': {
-                            'hypothesis': hypothesis,
-                            'total': total,
-                            'win_rate_5d': round(win_rate_5d, 3),
-                        }
-                    })
-
-                elif hypothesis == 'p75_relaxed' and win_rate_5d > 0.55:
-                    proposals.append({
-                        'proposal_type': 'lower_p75_gate',
-                        'instrument': instrument,
-                        'message': (
-                            f"Signals on {instrument} above p50 but below p75 showed "
-                            f"{win_rate_5d:.0%} 5D win rate on {total} observations. "
-                            f"p75 gate may be too strict — consider p60 or p65."
-                        ),
-                        'evidence': {
-                            'hypothesis': hypothesis,
-                            'total': total,
-                            'win_rate_5d': round(win_rate_5d, 3),
-                        }
-                    })
-
-                elif hypothesis == 'directional_disagreement' and win_rate_5d > 0.58:
-                    proposals.append({
-                        'proposal_type': 'macro_overrides_technical',
-                        'instrument': instrument,
-                        'message': (
-                            f"When macro and technical disagreed on {instrument}, "
-                            f"macro was correct {win_rate_5d:.0%} of the time on {total} observations. "
-                            f"Consider removing directional agreement requirement for this pair."
-                        ),
-                        'evidence': {
-                            'hypothesis': hypothesis,
-                            'total': total,
-                            'win_rate_5d': round(win_rate_5d, 3),
-                        }
-                    })
-
-                elif hypothesis == 'macro_regime_no_tech' and win_rate_5d > 0.58:
-                    proposals.append({
-                        'proposal_type': 'regime_replaces_technical',
-                        'instrument': instrument,
-                        'message': (
-                            f"Macro + regime agreement on {instrument} without technical "
-                            f"showed {win_rate_5d:.0%} 5D win rate on {total} observations. "
-                            f"Regime agreement may be sufficient technical substitute."
-                        ),
-                        'evidence': {
-                            'hypothesis': hypothesis,
-                            'total': total,
-                            'win_rate_5d': round(win_rate_5d, 3),
-                        }
-                    })
-
-            if proposals:
-                logger.info(f"Shadow trade analysis: {len(proposals)} proposals generated")
-                self._write_proposals(proposals)
-            else:
-                logger.debug("Shadow trade analysis: no proposals (insufficient data or no edge found)")
-
-            cur.close()
-            return proposals
-
-        except Exception as e:
-            logger.error(f"analyse_shadow_trades failed: {e}")
-            return []
+        # V1 Swing: shadow trades decommissioned 2026-04-24 — historical data preserved
+        # V1 Swing uses a single execution hypothesis; multi-hypothesis shadow tracking
+        # is not applicable. All historical shadow_trades rows remain for audit purposes.
+        logger.debug("analyse_shadow_trades: decommissioned for V1 Swing — skipping")
+        return []
 
     def diagnose_architecture(self) -> List[dict]:
         """
@@ -3024,51 +3378,8 @@ class LearningModule:
                     })
 
             # DIAGNOSTIC 3 — Shadow trade vs live trade win rate comparison
-            cur.execute("""
-                SELECT
-                    AVG(CASE WHEN shadow_pips_1d > 1 THEN 1.0
-                             WHEN shadow_pips_1d < -1 THEN 0.0
-                             ELSE NULL END) as shadow_win_rate,
-                    COUNT(CASE WHEN shadow_pips_1d IS NOT NULL THEN 1 END) as shadow_count
-                FROM forex_network.shadow_trades
-                WHERE signal_time > %s
-                AND would_have_traded = TRUE
-            """, (DATA_QUALITY_CUTOFF,))
-            shadow_row = cur.fetchone()
-
-            cur.execute("""
-                SELECT
-                    AVG(CASE WHEN pnl_pips > 0 THEN 1.0 ELSE 0.0 END) as live_win_rate,
-                    COUNT(*) as live_count
-                FROM forex_network.trades
-                WHERE exit_time IS NOT NULL
-                AND entry_time > %s
-            """, (DATA_QUALITY_CUTOFF,))
-            live_row = cur.fetchone()
-
-            if (shadow_row and live_row and
-                    shadow_row['shadow_count'] and shadow_row['shadow_count'] >= 20 and
-                    live_row['live_count'] >= 10 and
-                    shadow_row['shadow_win_rate'] and live_row['live_win_rate']):
-                shadow_wr = float(shadow_row['shadow_win_rate'])
-                live_wr = float(live_row['live_win_rate'])
-                if shadow_wr > live_wr + 0.10:
-                    proposals.append({
-                        'proposal_type': 'architecture_gates_blocking_winners',
-                        'instrument': 'ALL',
-                        'message': (
-                            f"Shadow trades (rejected signals) are winning at {shadow_wr:.0%} "
-                            f"vs live trades at {live_wr:.0%} — a {shadow_wr-live_wr:.0%} gap. "
-                            f"The gate stack is systematically blocking better setups than it "
-                            f"is approving. Review which gates are responsible."
-                        ),
-                        'evidence': {
-                            'shadow_win_rate': round(shadow_wr, 3),
-                            'live_win_rate': round(live_wr, 3),
-                            'shadow_count': shadow_row['shadow_count'],
-                            'live_count': live_row['live_count']
-                        }
-                    })
+            # V1 Swing: shadow trades decommissioned 2026-04-24 — diagnostic skipped
+            # shadow_row = None  (preserved for reference)
 
             # DIAGNOSTIC 4 — COT data recency
             cur.execute("""
@@ -3138,7 +3449,9 @@ class LearningModule:
             return []
 
     def analyse_rg_rejections(self) -> List[dict]:
-        """Analyses RG rejections to find systematic blocking patterns."""
+        """Analyses RG rejections to find systematic blocking patterns.
+        Uses V1 Swing RG_REJECTION_CATEGORIES. Aggregates per-category (7d rolling)
+        and per-pair x per-category counts."""
         proposals = []
         try:
             cur = self.db.cursor()
@@ -3148,29 +3461,54 @@ class LearningModule:
                     AVG(macro_score) as avg_macro,
                     AVG(conviction_score) as avg_conviction
                 FROM forex_network.rg_rejections
-                WHERE attempted_at > %s
+                WHERE attempted_at > NOW() - INTERVAL '7 days'
                 GROUP BY rejection_reason, instrument
                 HAVING COUNT(*) >= 5
                 ORDER BY total DESC
-            """, (DATA_QUALITY_CUTOFF,))
+            """)
             rows = cur.fetchall()
             cur.close()
+
+            # Aggregate per category (7d rolling)
+            cat_totals = {}
+            pair_cat_totals = {}
             for row in rows:
+                raw_reason = row['rejection_reason'] if isinstance(row, dict) else row[0]
+                instrument = row['instrument'] if isinstance(row, dict) else row[1]
+                total      = int(row['total']) if isinstance(row, dict) else int(row[2])
+                avg_macro  = float(row['avg_macro'] or 0) if isinstance(row, dict) else float(row[3] or 0)
+
+                category = _classify_rg_rejection(raw_reason)
+
+                cat_totals.setdefault(category, {'n': 0, 'pairs': set()})
+                cat_totals[category]['n'] += total
+                cat_totals[category]['pairs'].add(instrument)
+
+                key = (instrument, category)
+                pair_cat_totals.setdefault(key, 0)
+                pair_cat_totals[key] += total
+
                 proposals.append({
                     'proposal_type': 'rg_systematic_rejection',
-                    'instrument': row[1],
+                    'instrument': instrument,
                     'message': (
-                        f"RG rejected {row[1]} {row[2]} times "
-                        f"for '{row[0]}' after orchestrator approval. "
-                        f"Avg macro score: {float(row[3] or 0):.3f}. "
+                        f"RG rejected {instrument} {total} times (7d) "
+                        f"for '{raw_reason}' (category: {category}). "
+                        f"Avg macro score: {avg_macro:.3f}. "
                         f"This RG gate may be misconfigured or data may be missing."
                     ),
                     'evidence': {
-                        'rejection_reason': row[0],
-                        'total': row[2],
-                        'avg_macro_score': round(float(row[3] or 0), 3),
+                        'rejection_reason': raw_reason,
+                        'category': category,
+                        'total': total,
+                        'avg_macro_score': round(avg_macro, 3),
                     }
                 })
+
+            logger.debug(
+                f"analyse_rg_rejections: "
+                f"category_totals={dict((k, v['n']) for k,v in cat_totals.items())}"
+            )
             if proposals:
                 self._write_proposals(proposals)
             return proposals
@@ -3231,17 +3569,9 @@ class LearningModule:
             cur = self.db.cursor()
             summary: dict = {}
 
-            # Shadow trade accumulation (last 24h) — which hypotheses are firing
-            cur.execute("""
-                SELECT hypothesis,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN shadow_pips_1d IS NOT NULL THEN 1 ELSE 0 END) as with_outcomes,
-                       ROUND(AVG(shadow_pips_1d)::numeric, 2) as avg_pips_1d
-                FROM forex_network.shadow_trades
-                WHERE signal_time > NOW() - INTERVAL '24 hours'
-                GROUP BY hypothesis ORDER BY total DESC
-            """)
-            summary['shadow_trades_today'] = [dict(r) for r in cur.fetchall()]
+            # Shadow trade accumulation: decommissioned for V1 Swing 2026-04-24
+            # Historical data preserved; new writes disabled.
+            summary['shadow_trades_today'] = []
 
             # LM proposals today — from agent_signals learning_review payloads
             # (_write_proposals writes to agent_signals, not the proposals table)
