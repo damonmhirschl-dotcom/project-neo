@@ -482,12 +482,23 @@ def handler(event, context):
                         # V1 Swing fields — sourced from tech_map (latest technical agent payload)
                         _tech_tp = tech_map.get(pair_raw, {})
                         _tech_score = dec.get('tech_score') or float(_tech_tp.get('score') or 0) or None
-                        _direction = dec.get('bias') or ''
+                        _raw_dir = (
+                            dec.get('macro_direction')
+                            or dec.get('direction')
+                            or (dec.get('macro_signal') or {}).get('direction')
+                            or dec.get('bias', 'neutral')
+                        )
+                        _direction = str(_raw_dir).lower() if _raw_dir else 'neutral'
+                        # Normalise legacy bullish/bearish labels during transition
+                        _direction = {'bullish': 'long', 'bearish': 'short'}.get(_direction, _direction)
                         _adx_4h_raw = _tech_tp.get('adx_4h') or _tech_tp.get('adx_14')
                         _rsi_21_raw = _tech_tp.get('rsi_4h') or _tech_tp.get('rsi_14')
                         _adx_4h = round(float(_adx_4h_raw), 1) if _adx_4h_raw is not None else None
                         _rsi_21 = round(float(_rsi_21_raw), 1) if _rsi_21_raw is not None else None
-                        _setup_type = _tech_tp.get('trend_structure') or _tech_tp.get('setup_type') or None
+                        # GAP: technical agent emits trend_structure ('bullish'/'bearish'),
+                        # not setup_type ('long_pullback'/'short_pullback').
+                        # setup_type is None until technical agent adds the field.
+                        _setup_type = _tech_tp.get('setup_type') or None
                         _gate_failures = _tech_tp.get('gate_failures') or []
                         _rej_list_card = dec.get('rejection_reasons') or []
                         _setup_gate_pass = not any('missing_signal' in str(r).lower() for r in _rej_list_card)
@@ -607,6 +618,16 @@ def handler(event, context):
             for dec in (payload.get("decisions") or []):
                 pair = dec.get("pair", "")
                 cd   = dec.get("convergence_detail") or {}
+                # Normalise direction: prefer explicit field, fall back to bias,
+                # then map legacy bullish/bearish to long/short
+                _dec_raw_dir = (
+                    dec.get('macro_direction')
+                    or dec.get('direction')
+                    or (dec.get('macro_signal') or {}).get('direction')
+                    or dec.get('bias', 'neutral')
+                )
+                _dec_direction = str(_dec_raw_dir).lower() if _dec_raw_dir else 'neutral'
+                _dec_direction = {'bullish': 'long', 'bearish': 'short'}.get(_dec_direction, _dec_direction)
                 hist = cd.get("historical_bonus") or {}
                 dc   = cd.get("directional_consensus") or {}
                 trend = hist.get("trend") or {}
@@ -656,10 +677,12 @@ def handler(event, context):
                     "open_positions":               open_pos,
                     "conv_history_6cycles":         conv_hist_str,
                     # V1 Swing fields — sourced from latest technical agent signal per pair
-                    "direction":                    dec.get("bias", ""),
+                    "direction":                    _dec_direction,
                     "adx_4h":                       round(float(_tech["adx_14"]), 1) if _tech.get("adx_14") is not None else None,
                     "rsi_21":                       round(float(_tech["rsi_14"]), 1) if _tech.get("rsi_14") is not None else None,
-                    "setup_type":                   _tech.get("trend_structure") or "",
+                    # GAP: technical agent emits trend_structure, not setup_type;
+                    # setup_type is empty until technical agent adds the field.
+                    "setup_type":                   _tech.get("setup_type") or "",
                     "setup_gate_pass":              not any("missing_signal" in r.lower() for r in _rej_list),
                     "rejection_stage":              _rejection_stage,
                     "rejection_reason":             _rej_list[0] if _rej_list else "",
