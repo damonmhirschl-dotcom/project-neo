@@ -9,7 +9,8 @@
 - 0 open trades
 - IG balance: £147,618.98 (paper mode)
 - DATA_QUALITY_CUTOFF: 2026-04-23 21:55:00 UTC
-- Architecture freeze: no changes until 50 clean closed trades
+- Architecture freeze lifted: 2026-04-24
+- System is a learning environment — changes are made based on evidence from shadow trades, diagnostics, and closed-trade outcomes
 
 ---
 
@@ -85,7 +86,7 @@ done
 6. Execution agent → IG paper trades
 
 ### Gate Stack (Orchestrator)
-- Layer 1: Macro gate — abs(macro_score) >= max(fixed_threshold, p75)
+- Layer 1: Macro gate — abs(macro_score) >= max(fixed_threshold, p50)
 - Layer 2: Technical gate — abs(tech_score) >= 0.10 (TECH_MIN_THRESHOLD)
 - Layer 3: Directional agreement (except MACRO_ONLY_PAIRS)
 - Layer 4: Convergence threshold check
@@ -116,7 +117,7 @@ AUDJPY, EURJPY, GBPJPY, CADJPY, EURAUD, USDJPY, EURUSD, GBPUSD, AUDUSD, EURGBP, 
 | Balanced | 0.2833 | 0.40% | 2.00% | 0.724 |
 | Aggressive | 0.2631 | 0.50% | 3.00% | 1.032 |
 
-### Percentile Gates (p75, tanh space)
+### Percentile Gates (p50, tanh space)
 | Pair | p75 |
 |---|---|
 | AUDJPY | 0.894 |
