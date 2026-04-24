@@ -1755,6 +1755,9 @@ class OrchestratorAgent:
                      p75_threshold, effective_threshold, would_have_traded)
                 VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (instrument, hypothesis, user_id,
+                             CAST(signal_time AT TIME ZONE 'UTC' AS date))
+                DO NOTHING
                 """,
                 (
                     pair, direction,
