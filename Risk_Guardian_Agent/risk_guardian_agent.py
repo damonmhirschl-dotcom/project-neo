@@ -837,6 +837,62 @@ class RiskGuardian:
         logger.error(f"_get_pip_value_gbp({instrument}): no rate available, returning None")
         return None
 
+    def _get_cot_size_multiplier(self, instrument: str) -> float:
+        """
+        Returns position size multiplier based on COT speculator positioning.
+        Research basis: professional tools use 80th pctile as warning, 95th as extreme.
+        Below 20th: increase size slightly (1.25x) — underpositioned, room to run
+        20-80th:    full size (1.0x)
+        80-95th:    reduce size (0.75x) — crowded, risk of reversal
+        Above 95th: significantly reduce size (0.50x) — extreme crowding
+
+        Uses pct_signed_52w from shared.cot_positioning (weekly CFTC data).
+        Inverts sign for USD-base pairs (USDJPY/USDCAD/USDCHF).
+        """
+        CURRENCY_TO_COT = {
+            'EUR': ('EURUSD', False), 'GBP': ('GBPUSD', False),
+            'AUD': ('AUDUSD', False), 'JPY': ('USDJPY', True),
+            'CAD': ('USDCAD', True),  'CHF': ('USDCHF', True),
+        }
+        PAIR_TO_BASE = {
+            'EURJPY': 'EUR', 'GBPJPY': 'GBP', 'AUDJPY': 'AUD',
+            'CADJPY': 'CAD', 'USDJPY': 'USD', 'EURUSD': 'EUR',
+            'GBPUSD': 'GBP', 'AUDUSD': 'AUD', 'EURGBP': 'EUR',
+            'EURAUD': 'EUR', 'NZDUSD': 'NZD', 'NZDJPY': 'NZD',
+            'USDCAD': 'USD', 'USDCHF': 'USD', 'GBPAUD': 'GBP',
+            'GBPCAD': 'GBP', 'GBPCHF': 'GBP', 'EURCAD': 'EUR',
+            'EURCHF': 'EUR', 'AUDNZD': 'AUD',
+        }
+        base_currency = PAIR_TO_BASE.get(instrument.upper())
+        if not base_currency or base_currency not in CURRENCY_TO_COT:
+            return 1.0  # NZD, USD — no direct COT contract
+
+        pair_code, invert = CURRENCY_TO_COT[base_currency]
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT pct_signed_52w FROM shared.cot_positioning
+                WHERE pair_code = %s ORDER BY report_date DESC LIMIT 1
+            """, (pair_code,))
+            row = cur.fetchone()
+            cur.close()
+            if not row or row['pct_signed_52w'] is None:
+                return 1.0
+            pct = float(row['pct_signed_52w'])
+            if invert:
+                pct = 100.0 - pct
+            if pct >= 95:
+                return 0.50
+            elif pct >= 80:
+                return 0.75
+            elif pct <= 20:
+                return 1.25
+            else:
+                return 1.0
+        except Exception as e:
+            logger.warning(f"COT size multiplier failed for {instrument}: {e}")
+            return 1.0
+
     def write_heartbeat(self):
         cur = self.db.cursor()
         try:
@@ -1236,6 +1292,23 @@ class RiskGuardian:
             current_price=_current_price_for_sizing,
             pip_value_gbp=pip_value_gbp,
         )
+
+        # Apply COT positioning adjustment to position size.
+        # Reduces size when speculator positioning is crowded (>80th pctile),
+        # increases slightly when underpositioned (<20th pctile).
+        cot_mult = self._get_cot_size_multiplier(instrument)
+        if cot_mult != 1.0:
+            sizing["conviction_risk_pct"] = round(sizing["conviction_risk_pct"] * cot_mult, 6)
+            sizing["risk_amount"]         = round(sizing["risk_amount"] * cot_mult, 2)
+            sizing["effective_risk_pct"]  = round(sizing["effective_risk_pct"] * cot_mult, 6)
+            if sizing.get("position_size") is not None:
+                sizing["position_size"] = round(sizing["position_size"] * cot_mult, 4)
+            sizing["cot_size_multiplier"] = cot_mult
+            logger.info(
+                f"COT size adjustment {instrument}: {cot_mult}x "
+                f"→ conviction_risk_pct={sizing['conviction_risk_pct']:.4f}"
+            )
+
         decision["risk_details"]["sizing"] = sizing
 
         # Promote stop_distance to decision top level so execution agent can

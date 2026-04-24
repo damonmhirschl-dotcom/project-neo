@@ -291,12 +291,6 @@ class MacroAgent:
         if missing:
             logger.warning(f"Missing currency scores for: {missing} — affected pairs → neutral")
 
-        # Pre-compute COT conviction adjustments once per currency (avoids N×pairs DB calls)
-        cot_adjs: Dict[str, float] = {c: self._get_cot_adjustment(c) for c in self.CURRENCIES}
-        non_neutral = {c: v for c, v in cot_adjs.items() if v != 1.0}
-        if non_neutral:
-            logger.info(f"COT adjustments active: {non_neutral}")
-
         signals = []
         for pair in self.PAIRS:
             base, quote = self.PAIR_DERIVATION[pair]
@@ -307,8 +301,8 @@ class MacroAgent:
                 signals.append(self._neutral_pair_signal(pair, f"missing score for {base if base_row is None else quote}"))
                 continue
 
-            b_comp = float(base_row['composite_score'] or 0) * cot_adjs.get(base, 1.0)
-            q_comp = float(quote_row['composite_score'] or 0) * cot_adjs.get(quote, 1.0)
+            b_comp = float(base_row['composite_score'] or 0)
+            q_comp = float(quote_row['composite_score'] or 0)
             raw_diff = b_comp - q_comp
 
             score = math.tanh(raw_diff * 1.5)
@@ -348,19 +342,11 @@ class MacroAgent:
                 'quote_emp_score':      round(float(quote_row.get('employment_surprise_score') or 0), 4),
                 'base_signal_date':     str(base_row.get('signal_date', '')),
                 'quote_signal_date':    str(quote_row.get('signal_date', '')),
-                'base_cot_adj':         cot_adjs.get(base, 1.0),
-                'quote_cot_adj':        cot_adjs.get(quote, 1.0),
                 'method':               'deterministic_macro_v2',
                 # signal_contract stubs — required by shared/signal_validator.py
                 'reasoning':            (
                     f'Deterministic macro: pair_score={score:.3f} '
                     f'(base={b_comp:.3f}, quote={q_comp:.3f})'
-                    + (
-                        f' [COT adj: base={cot_adjs.get(base,1.0):.1f}x'
-                        f', quote={cot_adjs.get(quote,1.0):.1f}x]'
-                        if cot_adjs.get(base, 1.0) != 1.0 or cot_adjs.get(quote, 1.0) != 1.0
-                        else ''
-                    )
                 ),
             }
 
