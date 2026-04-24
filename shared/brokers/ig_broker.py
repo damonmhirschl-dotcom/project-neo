@@ -61,6 +61,8 @@ class IGBroker(BrokerInterface):
         "AUDJPY": "CS.D.AUDJPY.MINI.IP",
         "CADJPY": "CS.D.CADJPY.MINI.IP",
         "NZDJPY": "CS.D.NZDJPY.MINI.IP",
+        "EURNZD": "CS.D.EURNZD.MINI.IP",
+        "AUDCAD": "CS.D.AUDCAD.MINI.IP",
     }
 
     # Quote currency (second leg) per instrument — required by IG currencyCode field.

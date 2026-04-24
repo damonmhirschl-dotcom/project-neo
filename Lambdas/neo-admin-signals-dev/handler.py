@@ -280,6 +280,7 @@ def handler(event, context):
     try:
         conn = _get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        strategy = (event.get('queryStringParameters') or {}).get('strategy', 'v1_swing')
 
         # ── 1a. Most-recent signals per (agent, instrument, user) — used for overview aggregation.
         #        No TTL filter: most recent signal IS the current analysis until replaced.
@@ -294,6 +295,17 @@ def handler(event, context):
             ORDER BY agent_name, instrument, created_at DESC
         """)
         raw = cur.fetchall()
+
+        # ── Build tech_map for V1 Swing field lookup in decisions[] ─────────
+        # Keys: raw instrument string (e.g. "GBPUSD") -> technical agent payload dict.
+        tech_map = {}
+        for _r in raw:
+            if _r["agent_name"] == "technical" and _r["instrument"]:
+                _p = _r["payload"]
+                if isinstance(_p, str):
+                    try: _p = __import__("json").loads(_p)
+                    except: _p = {}
+                tech_map[_r["instrument"]] = _p or {}
 
         # ── 1b. Latest signals within 4 h — for observation panel (shows agents
         #        even when quiet-market price-skip cycles let the TTL expire)
@@ -313,9 +325,9 @@ def handler(event, context):
         #        convergence signals and dilute the average shown in the dashboard.
         per_pair = {}
         for r in raw:
-            if r["agent_name"] not in ("macro", "technical", "regime"):  # FIX 1
+            if r["agent_name"] not in ("macro", "technical"):
                 continue
-            if r["instrument"] is None:  # FIX 2 — skip system-wide regime signals
+            if r["instrument"] is None:
                 continue
             pair = _pair(r["instrument"])
             per_pair.setdefault(pair, {
@@ -330,7 +342,7 @@ def handler(event, context):
             if b in e["bias_counter"]:
                 e["bias_counter"][b] += 1
 
-        _WEIGHTS = {"macro": 0.35, "technical": 0.45, "regime": 0.20}
+        _WEIGHTS = {"macro": 0.40, "technical": 0.60}  # V1 Swing: regime decommissioned
         aggregated = []
         for pair, e in per_pair.items():
             if not e["agent_scores"]:
@@ -426,7 +438,7 @@ def handler(event, context):
                        if k in payload and payload[k] is not None}
 
                 if decisions:
-                    _WEIGHTS = {"macro": 0.35, "technical": 0.45, "regime": 0.20}
+                    _WEIGHTS = {"macro": 0.40, "technical": 0.60}  # V1 Swing: regime decommissioned
                     for dec in decisions:
                         pair_raw = dec.get("pair", "")
                         pair_disp = _pair(pair_raw) or pair_raw
@@ -467,18 +479,42 @@ def handler(event, context):
                         # Strip convergence_detail (already flattened into signal_scores above)
                         # and proposals (raw pair proposals, not displayed) to keep payload small.
                         _dec_slim = {k: v for k, v in dec.items() if k != "convergence_detail"}
+                        # V1 Swing fields — sourced from tech_map (latest technical agent payload)
+                        _tech_tp = tech_map.get(pair_raw, {})
+                        _tech_score = dec.get('tech_score') or float(_tech_tp.get('score') or 0) or None
+                        _direction = dec.get('bias') or ''
+                        _adx_4h_raw = _tech_tp.get('adx_4h') or _tech_tp.get('adx_14')
+                        _rsi_21_raw = _tech_tp.get('rsi_4h') or _tech_tp.get('rsi_14')
+                        _adx_4h = round(float(_adx_4h_raw), 1) if _adx_4h_raw is not None else None
+                        _rsi_21 = round(float(_rsi_21_raw), 1) if _rsi_21_raw is not None else None
+                        _setup_type = _tech_tp.get('trend_structure') or _tech_tp.get('setup_type') or None
+                        _gate_failures = _tech_tp.get('gate_failures') or []
+                        _rej_list_card = dec.get('rejection_reasons') or []
+                        _setup_gate_pass = not any('missing_signal' in str(r).lower() for r in _rej_list_card)
+                        _rejection_stage = next((k for k, v in (dec.get('checks') or {}).items() if v == 'FAIL'), None)
                         card_payload = {
                             **ctx,
-                            "decision":          dec_str,
-                            "reasoning":         reasoning,
-                            "signal_scores":     signal_scores or None,
-                            "approved":          dec.get("approved"),
-                            "convergence":       dec.get("convergence"),
-                            "rejection_reasons": dec.get("rejection_reasons"),
-                            "checks":            dec.get("checks"),
-                            "size_multiplier":   dec.get("size_multiplier"),
+                            "decision":           dec_str,
+                            "reasoning":          reasoning,
+                            "signal_scores":      signal_scores or None,
+                            "approved":           dec.get("approved"),
+                            "convergence":        dec.get("convergence"),  # kept for one cycle
+                            "rejection_reasons":  dec.get("rejection_reasons"),
+                            "rejection_stage":    dec.get("rejection_stage"),
+                            "rejection_reason":   dec.get("rejection_reason"),
+                            "checks":             dec.get("checks"),
+                            "size_multiplier":    dec.get("size_multiplier"),
+                            # V1 Swing display fields
+                            "direction":          _direction,
+                            "tech_score":         _tech_score,
+                            "tech_gate_failures": _gate_failures,
+                            "adx_4h":             _adx_4h,
+                            "rsi_21":             _rsi_21,
+                            "setup_type":         _setup_type,
+                            "setup_gate_pass":    _setup_gate_pass,
+                            "rejection_stage":    _rejection_stage,
                             # Slim decision for raw payload view (convergence_detail stripped)
-                            "decisions":         [_dec_slim],
+                            "decisions":          [_dec_slim],
                         }
                         signals_full.append({
                             **base,
@@ -575,6 +611,11 @@ def handler(event, context):
                 dc   = cd.get("directional_consensus") or {}
                 trend = hist.get("trend") or {}
 
+                _tech = tech_map.get(pair, {})
+                _checks = dec.get("checks") or {}
+                _rej_list = dec.get("rejection_reasons") or []
+                _rejection_stage = next((k for k, v in _checks.items() if v == "FAIL"), None)
+
                 mp = pers_map.get((uid, pair, "macro"), {})
                 tp = pers_map.get((uid, pair, "technical"), {})
 
@@ -608,15 +649,48 @@ def handler(event, context):
                     "technical_confidence":         round(float(cd.get("technical_confidence") or 0), 4),
                     "technical_bias":               cd.get("technical_bias") or "",
                     "technical_persistence_cycles": tp.get("cycles", 0),
-                    "regime_score":                 round(float(cd.get("regime_score") or 0), 4),
-                    "regime_confidence":            round(float(cd.get("regime_confidence") or 0), 4),
-                    # stress_score omitted when None (regime agent decommissioned post-V1-Swing)
+                    # stress_score omitted when None (regime agent decommissioned)
                     **({"stress_score": float(stress_score)} if stress_score is not None else {}),
-                    "stress_state":                 stress_state,
                     "current_session":              session,
                     "day_of_week":                  dow,
                     "open_positions":               open_pos,
                     "conv_history_6cycles":         conv_hist_str,
+                    # V1 Swing fields — sourced from latest technical agent signal per pair
+                    "direction":                    dec.get("bias", ""),
+                    "adx_4h":                       round(float(_tech["adx_14"]), 1) if _tech.get("adx_14") is not None else None,
+                    "rsi_21":                       round(float(_tech["rsi_14"]), 1) if _tech.get("rsi_14") is not None else None,
+                    "setup_type":                   _tech.get("trend_structure") or "",
+                    "setup_gate_pass":              not any("missing_signal" in r.lower() for r in _rej_list),
+                    "rejection_stage":              _rejection_stage,
+                    "rejection_reason":             _rej_list[0] if _rej_list else "",
+                })
+
+        # ── 5. Proposals from LM (agent_signals table, filtered by strategy in payload) ──
+        cur.execute("""
+            SELECT payload, created_at
+            FROM forex_network.agent_signals
+            WHERE agent_name = 'learning'
+              AND signal_type = 'learning_review'
+              AND created_at > NOW() - INTERVAL '24 hours'
+            ORDER BY created_at DESC
+            LIMIT 5
+        """)
+        lm_raw = cur.fetchall()
+        lm_proposals = []
+        for row in lm_raw:
+            p = row["payload"]
+            if isinstance(p, str):
+                try: p = json.loads(p)
+                except: p = {}
+            for prop in (p.get("proposals") or []):
+                # Filter by strategy if prop carries it; else include all (legacy)
+                prop_strat = prop.get("strategy") or prop.get("proposal_strategy")
+                if prop_strat and prop_strat != strategy:
+                    continue
+                lm_proposals.append({
+                    **prop,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "agent": prop.get("agent_name") or "learning",
                 })
 
         _payload = {
@@ -625,6 +699,7 @@ def handler(event, context):
             "signals_full":      signals_full,
             "decisions":         decisions,
             "currency_strength": currency_strength,
+            "lm_proposals":      lm_proposals,
         }
         _body_bytes = json.dumps(_payload, default=_json_default).encode("utf-8")
         logger.info(

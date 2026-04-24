@@ -1706,6 +1706,68 @@ class LearningModule:
 
         return count
 
+    def _write_v1_proposals_to_table(self, proposals: list) -> int:
+        """Write V1 Swing proposals to forex_network.proposals with strategy=v1_swing.
+        Called by _generate_v1_swing_proposals in addition to _write_proposals.
+        Returns number of rows inserted (deduplicates by type+instrument+pending).
+        """
+        PARAM_MAP = {
+            "pair_removal":            "pair_filter",
+            "adx_threshold_tuning":    "adx_threshold",
+            "session_removal":         "session_filter",
+            "drawdown_size_reduction": "max_risk_pct",
+            "setup_type_imbalance":    "setup_filter",
+        }
+        written = 0
+        cur = self.db.cursor()
+        try:
+            for prop in proposals:
+                ptype = prop.get("proposal_type", "v1_swing_observation")
+                instr = prop.get("instrument")
+                param = PARAM_MAP.get(ptype, ptype)
+                evidence = prop.get("evidence") or prop.get("data_supporting") or {}
+                n_trades = evidence.get("n") or evidence.get("n_trades") if isinstance(evidence, dict) else None
+                metric_val = (evidence.get("win_rate") or evidence.get("drawdown")) if isinstance(evidence, dict) else None
+                # Dedup: skip if pending v1_swing proposal of same type+instrument exists
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM forex_network.proposals
+                    WHERE user_id = %s AND proposal_type = %s
+                      AND COALESCE(instrument, '<nil>') = COALESCE(%s, '<nil>')
+                      AND status = 'pending' AND strategy = 'v1_swing'
+                    """,
+                    (str(self.user_id), ptype, instr),
+                )
+                if int(cur.fetchone()["cnt"]) > 0:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO forex_network.proposals
+                        (proposal_type, user_id, instrument, parameter,
+                         n_trades, metric, metric_value, confidence,
+                         reasoning, status, strategy)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 'v1_swing')
+                    """,
+                    (
+                        ptype, str(self.user_id), instr, param,
+                        int(n_trades) if n_trades is not None else None,
+                        "win_rate" if metric_val is not None else ptype,
+                        round(float(metric_val), 4) if metric_val is not None else None,
+                        prop.get("priority", "medium"),
+                        prop.get("reasoning") or prop.get("message") or "",
+                    ),
+                )
+                written += 1
+            self.db.commit()
+            if written:
+                logger.info(f"_write_v1_proposals_to_table: {written} proposal(s) written")
+        except Exception as e:
+            logger.error(f"_write_v1_proposals_to_table failed: {e}")
+            self.db.rollback()
+        finally:
+            cur.close()
+        return written
+
     def _write_proposals(self, proposals: List[Dict]):
         """Write performance-based proposals as a signal."""
         cur = self.db.cursor()
@@ -2595,11 +2657,11 @@ class LearningModule:
                         (proposal_type, user_id, instrument, parameter,
                          current_value, proposed_value, direction,
                          n_trades, metric, metric_value, confidence, reasoning,
-                         status, auto_revert_hours)
+                         status, auto_revert_hours, strategy)
                     VALUES ('threshold_adjustment', %s, %s, 'convergence_threshold',
                             %s, %s, 'decrease',
                             %s, 'rejection_rate', 100.0,
-                            'medium', %s, 'pending', 48)
+                            'medium', %s, 'pending', 48, 'v1_swing')
                 """, (
                     self.user_id, instrument,
                     current_thr, proposed_thr,
@@ -2643,11 +2705,11 @@ class LearningModule:
                             (proposal_type, user_id, instrument, parameter,
                              current_value, proposed_value, direction,
                              n_trades, metric, metric_value, confidence, reasoning,
-                             status, auto_revert_hours)
+                             status, auto_revert_hours, strategy)
                         VALUES ('position_sizing', %s, NULL, 'max_risk_pct',
                                 %s, %s, 'decrease',
                                 %s, 'sortino', %s,
-                                'medium', %s, 'pending', 72)
+                                'medium', %s, 'pending', 72, 'v1_swing')
                     """, (
                         self.user_id,
                         current_risk,    # stored as fraction (e.g. 0.0300)
@@ -2725,11 +2787,11 @@ class LearningModule:
                                 (proposal_type, user_id, instrument, parameter,
                                  current_value, proposed_value, direction,
                                  n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours)
+                                 status, auto_revert_hours, strategy)
                             VALUES ('tech_gate_too_strict', %s, %s, 'TECH_MIN_THRESHOLD',
                                     NULL, NULL, 'decrease',
                                     %s, 'macro_correct_rate', %s,
-                                    'medium', %s, 'pending', 72)
+                                    'medium', %s, 'pending', 72, 'v1_swing')
                         """, (
                             self.user_id, instrument, total,
                             round(macro_rate, 4),
@@ -2759,11 +2821,11 @@ class LearningModule:
                                 (proposal_type, user_id, instrument, parameter,
                                  current_value, proposed_value, direction,
                                  n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours)
+                                 status, auto_revert_hours, strategy)
                             VALUES ('technical_catching_reversal', %s, %s, NULL,
                                     NULL, NULL, NULL,
                                     %s, 'tech_correct_rate', %s,
-                                    'medium', %s, 'pending', 72)
+                                    'medium', %s, 'pending', 72, 'v1_swing')
                         """, (
                             self.user_id, instrument, total,
                             round(tech_rate, 4),
@@ -2829,11 +2891,11 @@ class LearningModule:
                                 (proposal_type, user_id, instrument, parameter,
                                  current_value, proposed_value, direction,
                                  n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours)
+                                 status, auto_revert_hours, strategy)
                             VALUES ('macro_gate_too_strict', %s, %s, 'MACRO_THRESHOLD',
                                     NULL, NULL, 'decrease',
                                     %s, 'macro_correct_rate', %s,
-                                    'medium', %s, 'pending', 72)
+                                    'medium', %s, 'pending', 72, 'v1_swing')
                         """, (
                             self.user_id, instrument, total,
                             round(macro_rate, 4),
@@ -3064,6 +3126,7 @@ class LearningModule:
 
         if proposals and not self.dry_run:
             self._write_proposals(proposals)
+            self._write_v1_proposals_to_table(proposals)  # also write to proposals table
             logger.info(
                 f"_generate_v1_swing_proposals: {len(proposals)} proposal(s) generated "
                 f"({', '.join(set(p['proposal_type'] for p in proposals))})"

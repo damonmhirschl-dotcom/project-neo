@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-PAIRS     = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+PAIRS     = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURNZD", "AUDCAD"]
 TIMEFRAMES = ["1D", "1H", "15M"]
 REGION    = "eu-west-2"
 TM_BASE   = "https://marketdata.tradermade.com/api/v1/timeseries"

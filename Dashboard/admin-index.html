@@ -182,6 +182,8 @@ tr:hover td{background:var(--panel2)}
 .proposal-box{background:var(--amber-dim);border:1px solid #f59e0b33;border-radius:var(--r);padding:8px;margin-top:8px}
 .proposal-ttl{font-family:var(--mono);font-size:.62rem;font-weight:600;color:var(--amber);margin-bottom:3px}
 .proposal-body{font-size:.62rem;color:var(--amber);opacity:.8;line-height:1.5}
+.prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
+.prop-card{background:var(--panel2);border:1px solid var(--border);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:0}
 
 /* REGIME & STRESS */
 .gauge-wrap{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
@@ -515,7 +517,7 @@ function Login({onAuth}) {
   if (stage==='newpass') return (
     <Card title="Set new password" sub="Required on first sign-in">
       <form onSubmit={submitNewPass} style={{display:'flex',flexDirection:'column',gap:12}}>
-        <div className="login-field"><label>New password</label><input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)}/></div>
+        <div className="login-field"><label htmlFor="new-password">New password</label><input id="new-password" name="new-password" type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} autoComplete="new-password"/></div>
         {err&&<div className="login-err">{err}</div>}
         <button className="login-btn" disabled={loading||!newPass}>{loading?'Saving…':'Set password'}</button>
       </form>
@@ -524,7 +526,7 @@ function Login({onAuth}) {
   return (
     <Card title="Project Neo" sub="Admin dashboard · eu-west-2">
       <form onSubmit={submitPassword} style={{display:'flex',flexDirection:'column',gap:12}}>
-        <div className="login-field"><label htmlFor="username">Username</label><input id="username" name="username" value={user} onChange={e=>setUser(e.target.value)} autoComplete="username"/></div>
+        <div className="login-field"><label htmlFor="username">Username</label><input id="username" name="username" type="text" value={user} onChange={e=>setUser(e.target.value)} autoComplete="username"/></div>
         <div className="login-field"><label htmlFor="password">Password</label><input id="password" name="password" type="password" value={pass} onChange={e=>setPass(e.target.value)} autoComplete="current-password"/></div>
         {err&&<div className="login-err">{err}</div>}
         <button className="login-btn" disabled={loading||!user||!pass}>{loading?'Signing in…':'Sign in'}</button>
@@ -579,15 +581,9 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
             <span className="val">{positions.length}</span>
           </div>
           <div className="header-stat">
-            <span className="lbl">Stress</span>
-            <span className="val"><span className={`stress-badge ${stressCls}`}>{(stressState||'—').toUpperCase()}</span></span>
+            <span className="lbl">Strategy</span>
+            <span className="val mono-sm" style={{color:'var(--green)',fontWeight:600}}>V1 SWING</span>
           </div>
-          {latestDec.stress_score!=null && (
-            <div className="header-stat">
-              <span className="lbl">Stress score</span>
-              <span className="val mono-sm">{fmt(latestDec.stress_score,1)}</span>
-            </div>
-          )}
         </div>
         <div className="header-right">
           <span className="ts">{clock}</span>
@@ -606,49 +602,59 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
 function ConvergencePanel({convergence,decisions}) {
   const pairDec = latestDecisions(decisions);
   const maxCycle = decisions&&decisions.length ? Math.max(...decisions.map(d=>d.cycle_number||0)) : 0;
-
-  const rows = (convergence||[])
-    .map(c => {
-      const d = pairDec[c.pair] || {};
-      return {...c, macro:d.macro_score, tech:d.technical_score, bias:d.bias};
-    })
-    .sort((a,b)=>Math.abs(b.score||0)-Math.abs(a.score||0));
+  // V1 Swing: show per-pair approved/rejected cards with entry context fields
+  const PRIMARY=['EUR/USD','GBP/USD','USD/JPY','AUD/USD','EUR/JPY','GBP/JPY','AUD/JPY','CAD/JPY','EUR/GBP','EUR/AUD'];
+  const rows = PRIMARY.map(pair => {
+    const d = pairDec[pair] || null;
+    return { pair, d };
+  }).filter(r => r.d !== null);
 
   if (!rows.length) return (
     <div className="panel">
-      <div className="panel-hdr"><span className="panel-title">Convergence Scores</span></div>
+      <div className="panel-hdr"><span className="panel-title">V1 Swing Decisions</span></div>
       <div className="empty-state"><div className="em-icon">◌</div><span>Waiting for signal data</span></div>
     </div>
   );
 
-  const maxAbs = Math.max(...rows.map(r=>Math.abs(r.score||0)), 0.01);
-
   return (
     <div className="panel">
       <div className="panel-hdr">
-        <span className="panel-title">Convergence Scores</span>
+        <span className="panel-title">V1 Swing Decisions</span>
         <span className="panel-sub">cycle {maxCycle} · {rows.length} pairs</span>
       </div>
-      <div className="conv-hdr-row">
-        <span className="conv-hdr-cell">Pair</span>
-        <span className="conv-hdr-cell">Score</span>
-        <span className="conv-hdr-cell r">Macro</span>
-        <span className="conv-hdr-cell r">Tech</span>
-        <span className="conv-hdr-cell r">Bias</span>
-      </div>
       <div>
-        {rows.map(r => {
-          const cls = sgn(r.score||0);
-          const pct = Math.round(Math.abs(r.score||0)/maxAbs*100);
+        {rows.map(({pair, d}) => {
+          const approved = d.approved;
+          const dir = d.direction || d.bias || '—';
+          const adx = d.adx_4h ?? d.macro_score ?? null;
+          const rsi = d.rsi_21 ?? null;
+          const setup = d.setup_type || '—';
+          const techPass = d.setup_gate_pass;
+          const macroScore = d.macro_score;
+          const conv = d.final_convergence ?? d.convergence ?? null;
+          const rejReasons = d.rejection_reasons;
+          const gateFailures = d.tech_gate_failures || [];
+          const firstFailure = gateFailures[0] || (rejReasons ? String(rejReasons).split(';')[0].trim() : '');
           return (
-            <div key={r.pair} className="conv-row">
-              <span className="conv-pair">{r.pair}</span>
-              <div className="conv-bar-wrap">
-                <div className={`conv-bar-fill ${cls}-fill`} style={{width:`${pct}%`}}/>
+            <div key={pair} className="conv-row" style={{flexDirection:'column',alignItems:'flex-start',padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{display:'flex',width:'100%',alignItems:'center',justifyContent:'space-between',marginBottom:3}}>
+                <span className="conv-pair" style={{fontWeight:700}}>{pair}</span>
+                <span className={`dir-badge ${approved?'dir-bull':'dir-bear'}`} style={{fontSize:'.58rem'}}>{approved?'APPROVED':'REJECTED'}</span>
               </div>
-              <span className={`conv-score ${cls}`}>{fmt(r.score,3)}</span>
-              <span className="conv-sub">{r.macro!=null?fmt(r.macro,2):'—'} / {r.tech!=null?fmt(r.tech,2):'—'}</span>
-              <div className={`dir-badge dir-${cls}`}>{cls==='bull'?'BULL':cls==='bear'?'BEAR':'NEUT'}</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'2px 8px',width:'100%',fontSize:'.62rem'}}>
+                <span><span className="text-dim">Dir:</span> <span className={dir==='long'?'dir-long':dir==='short'?'dir-short':''}>{(dir||'—').toLowerCase()}</span></span>
+                <span><span className="text-dim">ADX(4H):</span> {adx!=null?fmt(adx,1):'—'}</span>
+                <span><span className="text-dim">RSI(21):</span> {rsi!=null?fmt(rsi,1):'—'}</span>
+                <span><span className="text-dim">Setup:</span> {setup!=='—'?setup.replace(/_/g,' '):'-'}</span>
+                <span><span className="text-dim">Tech:</span> <span className={techPass===true?'text-green':techPass===false?'text-red':'text-dim'}>{techPass===true?'pass':techPass===false?'fail':'—'}</span></span>
+                <span><span className="text-dim">Macro:</span> {macroScore!=null?(macroScore>=0?'+':'')+fmt(macroScore,2):'—'}</span>
+              </div>
+              {!approved && firstFailure && (
+                <div style={{fontSize:'.58rem',color:'var(--text3)',marginTop:2}}>{firstFailure.slice(0,60)}</div>
+              )}
+              {approved && conv!=null && (
+                <div style={{fontSize:'.58rem',color:'var(--text3)',marginTop:2}}>conv: {fmt(conv,3)}</div>
+              )}
             </div>
           );
         })}
@@ -718,7 +724,6 @@ function MacroSignalsPanel({decisions,signals_full,currency_strength}) {
 
       <div className="sec-hdr first">Market context</div>
       {[
-        ['Stress score', sample.stress_score!=null ? `${fmt(sample.stress_score,1)} (${sample.stress_state||'—'})` : '—', stressInfo(sample.stress_state).color],
         ['Session', sessionInfo(sample.current_session).label, 'var(--text1)'],
         ['Active cycle', sample.cycle_number ? `#${sample.cycle_number}` : '—', 'var(--text1)'],
       ].map(([lbl,val,clr])=>(
@@ -928,31 +933,25 @@ function TechnicalSignalsPanel({signals_full,decisions}) {
   const PRIMARY=['EUR/USD','GBP/USD','USD/JPY','AUD/USD','EUR/JPY','GBP/JPY','AUD/JPY','CAD/JPY','EUR/GBP','EUR/AUD'];
   const pairDec = latestDecisions(decisions);
 
-  const regimeMap={};
-  (signals_full||[]).filter(s=>s.agent_name==='regime'&&s.pair).forEach(s=>{
-    if (!regimeMap[s.pair]||new Date(s.created_at)>new Date(regimeMap[s.pair].created_at)) regimeMap[s.pair]=s;
-  });
-
   return (
     <div className="panel">
       <div className="panel-hdr">
         <span className="panel-title">Technical Signals</span>
-        <span className="panel-sub">10 primary pairs</span>
+        <span className="panel-sub">V1 Swing · 10 pairs</span>
       </div>
       <div className="tech-hdr-row">
         <span className="tech-hdr-cell">Pair</span>
         <span className="tech-hdr-cell" style={{textAlign:'center'}}>Tech</span>
         <span className="tech-hdr-cell" style={{textAlign:'center'}}>ADX</span>
-        <span className="tech-hdr-cell">Regime</span>
+        <span className="tech-hdr-cell">Setup</span>
         <span className="tech-hdr-cell" style={{textAlign:'right'}}>Status</span>
       </div>
       {PRIMARY.map(pair=>{
         const d=pairDec[pair]||{};
-        const r=regimeMap[pair];
         const techScore=d.technical_score??null;
-        const adx=r?.payload?.adx??null;
-        const regime=r?.payload?.regime||r?.payload?.decision||null;
-        const regimePct=adx?Math.min(100,Math.round(adx/50*100)):0;
+        const adx=d.adx_4h??null;
+        const setup=d.setup_type||null;
+        const adxPct=adx?Math.min(100,Math.round(adx/50*100)):0;
         const rej=(d.rejection_reasons||'').toLowerCase();
         const hasTech=techScore!=null&&Math.abs(techScore)>0.1;
         const cls=sgn(techScore||0);
@@ -964,10 +963,10 @@ function TechnicalSignalsPanel({signals_full,decisions}) {
             </span>
             <span className="tech-val text-dim">{adx?fmt(adx,0):'—'}</span>
             <div className="regime-bar">
-              <div className={`regime-fill fill-${regime||''}`} style={{width:`${regimePct}%`}}/>
+              <div className={`regime-fill fill-${cls}`} style={{width:`${adxPct}%`}}/>
             </div>
             <div className={`dir-badge ${hasTech?`dir-${cls}`:'dir-neut'}`} style={{textAlign:'right',fontSize:'.57rem'}}>
-              {hasTech?(regime||'SIG').toUpperCase().replace('_',' ').slice(0,7):rej.includes('missing_signal')?'ABSENT':'—'}
+              {hasTech?(setup||'SIG').toUpperCase().replace(/_/g,' ').slice(0,7):rej.includes('missing_signal')?'ABSENT':'—'}
             </div>
           </div>
         );
@@ -1057,19 +1056,9 @@ function RegimeStressPanel({decisions,signals_full}) {
   const pairDec = latestDecisions(decisions);
   const sample=Object.values(pairDec)[0]||{};
 
-  const stressScore=sample.stress_score??null;
-  const stressState=sample.stress_state??null;
   const session=sample.current_session??null;
+  const openPos=sample.open_positions??null;
   const {cls:sessCls,label:sessLabel}=sessionInfo(session);
-  const {cls:stressCls}=stressInfo(stressState);
-
-  const gaugePct=stressScore!=null?Math.min(100,Math.round(stressScore/60*100)):0;
-  const gaugeClass=stressScore==null?'gauge-low':stressScore>40?'gauge-high':stressScore>20?'gauge-med':'gauge-low';
-
-  const regimeMap={};
-  (signals_full||[]).filter(s=>s.agent_name==='regime'&&s.pair).forEach(s=>{
-    if (!regimeMap[s.pair]||new Date(s.created_at)>new Date(regimeMap[s.pair].created_at)) regimeMap[s.pair]=s;
-  });
 
   const orchSig=(signals_full||[]).find(s=>s.agent_name==='orchestrator');
   const tb=orchSig?.payload?.threshold_breakdown||{};
@@ -1077,17 +1066,17 @@ function RegimeStressPanel({decisions,signals_full}) {
   return (
     <div className="panel">
       <div className="panel-hdr">
-        <span className="panel-title">Regime &amp; Stress</span>
+        <span className="panel-title">V1 Swing Status</span>
         <span className={`session-badge ${sessCls}`}>{sessLabel}</span>
       </div>
 
-      <div className="sec-hdr first">Stress gauge</div>
+      <div className="sec-hdr first">Open positions</div>
       <div className="gauge-wrap">
-        <span className={`gauge-lbl ${stressScore==null?'text-dim':stressScore>40?'text-red':stressScore>20?'text-amber':'text-green'}`}>
-          {stressScore!=null?fmt(stressScore,1):'—'}
+        <span className="gauge-lbl" style={{color:'var(--text1)',fontSize:'1.1rem',fontWeight:700}}>
+          {openPos!=null?openPos:'—'}
         </span>
-        <div className="gauge-bar"><div className={`gauge-fill ${gaugeClass}`} style={{width:`${gaugePct}%`}}/></div>
-        <span className={`stress-badge ${stressCls}`}>{(stressState||'—').toUpperCase()}</span>
+        <div className="gauge-bar"><div className="gauge-fill gauge-low" style={{width:'0%'}}/></div>
+        <span className="stress-badge stress-low">V1 SWING</span>
       </div>
 
       {Object.keys(tb).length>0 && (
@@ -1095,7 +1084,6 @@ function RegimeStressPanel({decisions,signals_full}) {
           <div className="sec-hdr">Threshold breakdown</div>
           {[
             ['Base threshold', tb.base_threshold],
-            ['Stress adj', tb.stress_adjustment],
             ['Effective', tb.effective_threshold],
             ['Size mult', tb.combined_size_multiplier],
           ].filter(([,v])=>v!=null).map(([lbl,val])=>(
@@ -1108,15 +1096,15 @@ function RegimeStressPanel({decisions,signals_full}) {
         </>
       )}
 
-      <div className="sec-hdr">Regime — primary 10</div>
+      <div className="sec-hdr">Setup quality — primary 10</div>
       {PRIMARY.map(pair=>{
-        const r=regimeMap[pair];
-        const regime=r?.payload?.regime||r?.payload?.decision||null;
-        const adx=r?.payload?.adx;
+        const d=pairDec[pair]||{};
+        const adx=d.adx_4h??null;
+        const setup=d.setup_type||null;
         return (
           <div key={pair} className="regime-pair-row">
             <span className="regime-pair">{pair}</span>
-            <span className={`regime-val r-${regime||''}`}>{regime?regime.replace(/_/g,' ').toUpperCase():'—'}</span>
+            <span className={`regime-val r-${setup?'trending':'ranging'}`}>{setup?setup.replace(/_/g,' ').toUpperCase():'—'}</span>
             <span className="mono-sm text-dim" style={{textAlign:'right'}}>{adx?'ADX '+fmt(adx,0):'—'}</span>
           </div>
         );
@@ -1463,42 +1451,132 @@ function AuditTab({audit}) {
 /* =====================================================
    TAB: LM PROPOSALS
    ===================================================== */
-function ProposalsTab({lm_proposals}) {
-  const rows = lm_proposals || [];
+function ProposalsTab({lm_proposals, proposals}) {
+  const rows = (lm_proposals && lm_proposals.length ? lm_proposals : proposals) || [];
+  const [filterAgent,    setFilterAgent]    = React.useState('all');
+  const [filterPriority, setFilterPriority] = React.useState('all');
+  const [filterPair,     setFilterPair]     = React.useState('all');
+  const [expanded,       setExpanded]       = React.useState({});
 
-  const typeColor = ptype => {
-    const t = (ptype||'').toLowerCase();
-    if (t.startsWith('architecture_')) return '#f59e0b';
-    if (t.startsWith('shadow_trade') || t.includes('shadow')) return '#3b82f6';
-    if (t.startsWith('rg_rejection') || t.includes('rejection')) return '#ef4444';
-    return '#9ca3af';
+  const PRI_ORDER = {high:0, medium:1, low:2};
+  const uniq = (arr) => ['all', ...new Set(arr.filter(Boolean)).values()].sort();
+  const agentOpts = uniq(rows.map(p => p.agent || 'learning'));
+  const pairOpts  = uniq(rows.map(p => p.instrument));
+
+  const filtered = rows
+    .filter(p => filterAgent    === 'all' || (p.agent||'learning') === filterAgent)
+    .filter(p => filterPriority === 'all' || (p.priority||'low')   === filterPriority)
+    .filter(p => filterPair     === 'all' || p.instrument           === filterPair)
+    .slice()
+    .sort((a,b) => {
+      const pd = (PRI_ORDER[a.priority]??2) - (PRI_ORDER[b.priority]??2);
+      return pd !== 0 ? pd : new Date(b.created_at) - new Date(a.created_at);
+    });
+
+  const priBadge = (pri) => {
+    const p = (pri||'low').toLowerCase();
+    const [bg,fg] = p==='high'   ? ['var(--red-dim)',   'var(--red)']
+                  : p==='medium' ? ['var(--amber-dim)', 'var(--amber)']
+                                 : ['var(--border)',    'var(--text3)'];
+    return <span style={{background:bg,color:fg,fontFamily:'var(--mono)',fontSize:'.57rem',fontWeight:600,padding:'2px 6px',borderRadius:'var(--r)',textTransform:'uppercase',letterSpacing:'.06em'}}>{p}</span>;
   };
+
+  const agentBadge = (a) => (
+    <span style={{fontFamily:'var(--mono)',fontSize:'.57rem',color:'var(--text3)',border:'1px solid var(--border2)',borderRadius:'var(--r)',padding:'1px 5px',flexShrink:0}}>{a||'learning'}</span>
+  );
+
+  const SecLabel = ({t}) => (
+    <div style={{fontFamily:'var(--mono)',fontSize:'.57rem',fontWeight:600,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--text3)',marginBottom:3}}>{t}</div>
+  );
+
+  const Sec = ({label,text}) => text ? (
+    <div style={{marginBottom:8}}>
+      <SecLabel t={label}/>
+      <div style={{fontSize:'.68rem',color:'var(--text2)',lineHeight:1.55,wordWrap:'break-word',overflowWrap:'anywhere',whiteSpace:'normal'}}>{text}</div>
+    </div>
+  ) : null;
+
+  const fmtData = (raw) => {
+    if (!raw) return null;
+    try {
+      const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Object.entries(obj).map(([k,v]) => `${k}: ${v}`).join(' · ');
+    } catch { return String(raw); }
+  };
+
+  const selStyle = {background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:'var(--r)',color:'var(--text2)',fontFamily:'var(--mono)',fontSize:'.65rem',padding:'3px 7px',cursor:'pointer',outline:'none'};
 
   return (
     <div className="panel">
-      <div className="panel-hdr">
+      <div className="panel-hdr" style={{marginBottom:12}}>
         <span className="panel-title">LM Proposals (last 24h)</span>
-        <span style={{fontFamily:'var(--mono)',fontSize:'.7rem',color:'var(--text3)',marginLeft:'auto'}}>{rows.length} proposal{rows.length!==1?'s':''}</span>
+        <span style={{fontFamily:'var(--mono)',fontSize:'.7rem',color:'var(--text3)',marginLeft:'auto'}}>{filtered.length}/{rows.length}</span>
       </div>
-      {!rows.length ? (
-        <div className="empty-state"><div className="em-icon">◌</div><span>No proposals in last 24h</span></div>
+
+      <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center',marginBottom:14}}>
+        {[['Agent',    agentOpts,                          filterAgent,    setFilterAgent],
+          ['Priority', ['all','high','medium','low'],      filterPriority, setFilterPriority],
+          ['Pair',     pairOpts,                           filterPair,     setFilterPair]
+        ].map(([lbl,opts,val,setter]) => (
+          <label key={lbl} style={{display:'flex',alignItems:'center',gap:5}}>
+            <span style={{fontFamily:'var(--mono)',fontSize:'.58rem',color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.06em'}}>{lbl}</span>
+            <select value={val} onChange={e=>setter(e.target.value)} style={selStyle}>
+              {opts.map(o=><option key={o} value={o}>{o==='all'?'All':o}</option>)}
+            </select>
+          </label>
+        ))}
+      </div>
+
+      {!filtered.length ? (
+        <div className="empty-state">
+          <div className="em-icon">◌</div>
+          <span>{rows.length ? 'No proposals match filters' : 'No proposals in last 24h'}</span>
+        </div>
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Type</th><th>Instrument</th><th>Message</th><th>Time</th>
-            </tr></thead>
-            <tbody>
-              {rows.map((p,i) => (
-                <tr key={i}>
-                  <td><span style={{color:typeColor(p.proposal_type),fontWeight:600,fontFamily:'var(--mono)',fontSize:'.65rem'}}>{p.proposal_type||'—'}</span></td>
-                  <td style={{fontFamily:'var(--mono)',fontWeight:600}}>{p.instrument||'SYSTEM'}</td>
-                  <td style={{maxWidth:'420px',wordBreak:'break-word',color:'var(--text2)'}}>{p.message||'—'}</td>
-                  <td className="ts" style={{whiteSpace:'nowrap'}}>{relTime(p.created_at)||'—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="prop-grid">
+          {filtered.map((p,i) => {
+            const reasoning  = p.reasoning || p.message || '';
+            const needsClamp = reasoning.length > 300;
+            const isExp      = !!expanded[i];
+            return (
+              <div key={i} className="prop-card">
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:6}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontFamily:'var(--mono)',fontSize:'.7rem',fontWeight:600,color:'var(--text1)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                      {p.agent||'learning'}{p.instrument ? ' · '+p.instrument : ''}
+                    </div>
+                    <div style={{fontFamily:'var(--mono)',fontSize:'.6rem',color:'var(--text3)',marginTop:1}}>{p.proposal_type||p.type||'—'}</div>
+                  </div>
+                  {priBadge(p.priority)}
+                </div>
+
+                {p.title && p.title !== (p.proposal_type||p.type) && (
+                  <h4 style={{margin:'0 0 8px',fontSize:'.72rem',fontWeight:600,color:'var(--text1)',lineHeight:1.4,wordWrap:'break-word',overflowWrap:'anywhere',whiteSpace:'normal'}}>{p.title}</h4>
+                )}
+
+                {reasoning && (
+                  <div style={{marginBottom:8}}>
+                    <SecLabel t="Reasoning"/>
+                    <div style={{fontSize:'.68rem',color:'var(--text2)',lineHeight:1.55,wordWrap:'break-word',overflowWrap:'anywhere',whiteSpace:'normal',...(needsClamp&&!isExp?{display:'-webkit-box',WebkitLineClamp:4,WebkitBoxOrient:'vertical',overflow:'hidden'}:{})}}>{reasoning}</div>
+                    {needsClamp && (
+                      <button onClick={()=>setExpanded(x=>({...x,[i]:!isExp}))} style={{background:'none',border:'none',color:'var(--green)',fontFamily:'var(--mono)',fontSize:'.6rem',cursor:'pointer',padding:'3px 0',marginTop:1}}>
+                        {isExp ? 'Show less ▲' : 'Show more ▼'}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <Sec label="Data" text={fmtData(p.data_supporting)}/>
+                <Sec label="Suggested Action" text={p.suggested_action}/>
+                <Sec label="Expected Impact" text={p.expected_impact}/>
+
+                <div style={{marginTop:'auto',paddingTop:8,borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
+                  <span className="ts">{relTime(p.created_at)||'—'}</span>
+                  {agentBadge(p.agent)}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1634,7 +1712,7 @@ function App() {
 
         {/* LM PROPOSALS TAB */}
         {activeTab === 'proposals' && (
-          <ProposalsTab lm_proposals={lm_proposals}/>
+          <ProposalsTab lm_proposals={lm_proposals} proposals={proposals}/>
         )}
 
       </div></div>{/* .dash / .page-wrap */}
