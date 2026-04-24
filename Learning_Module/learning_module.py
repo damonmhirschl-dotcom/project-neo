@@ -1431,6 +1431,12 @@ class LearningModule:
             # Macro gate conviction-tier accuracy (high/medium/low)
             self.compute_macro_direction_accuracy()
 
+            # Shadow trade hypothesis analysis
+            self.analyse_shadow_trades()
+
+            # Kelly fraction (activates after 50 trades)
+            self.compute_kelly_fraction()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
@@ -2556,6 +2562,194 @@ class LearningModule:
 
         cur.close()
         return len(tiers)
+
+    def analyse_shadow_trades(self) -> List[dict]:
+        """
+        Analyses shadow trades by hypothesis to determine what changes
+        would improve trade flow and accuracy.
+
+        Five hypotheses tracked:
+        - macro_only: macro signal correct without technical confirmation
+        - tech_threshold_0.10: trades blocked at 0.10-0.20 technical score
+        - macro_regime_no_tech: macro + regime agreement without technical
+        - p75_relaxed: macro above p50 but below p75
+        - directional_disagreement: macro and technical pointed opposite ways
+        """
+        proposals = []
+        try:
+            cur = self.db.cursor()
+
+            # Require next-day price data to exist
+            cur.execute("""
+                SELECT
+                    hypothesis,
+                    instrument,
+                    direction,
+                    COUNT(*) as total,
+                    SUM(CASE
+                        WHEN direction = 'long' AND shadow_pips_1d > 1 THEN 1
+                        WHEN direction = 'short' AND shadow_pips_1d < -1 THEN 1
+                        ELSE 0 END) as correct_1d,
+                    SUM(CASE
+                        WHEN direction = 'long' AND shadow_pips_5d > 5 THEN 1
+                        WHEN direction = 'short' AND shadow_pips_5d < -5 THEN 1
+                        ELSE 0 END) as correct_5d,
+                    AVG(macro_score) as avg_macro_score,
+                    AVG(tech_score) as avg_tech_score
+                FROM forex_network.shadow_trades
+                WHERE shadow_pips_1d IS NOT NULL
+                AND signal_time > %s
+                GROUP BY hypothesis, instrument, direction
+                HAVING COUNT(*) >= 10
+            """, (DATA_QUALITY_CUTOFF,))
+
+            rows = cur.fetchall()
+
+            for row in rows:
+                hypothesis = row['hypothesis']
+                instrument = row['instrument']
+                total = row['total']
+                win_rate_1d = row['correct_1d'] / total if total > 0 else 0
+                win_rate_5d = row['correct_5d'] / total if total > 0 else 0
+
+                # Generate proposals based on evidence
+                if hypothesis == 'tech_threshold_0.10' and win_rate_5d > 0.58:
+                    proposals.append({
+                        'proposal_type': 'lower_tech_threshold',
+                        'instrument': instrument,
+                        'message': (
+                            f"Shadow trades on {instrument} with technical score 0.10-0.20 "
+                            f"showed {win_rate_5d:.0%} 5D win rate on {total} observations. "
+                            f"Current threshold of 0.20 is blocking profitable setups. "
+                            f"Consider lowering TECH_MIN_THRESHOLD to 0.10 for this pair."
+                        ),
+                        'evidence': {
+                            'hypothesis': hypothesis,
+                            'total': total,
+                            'win_rate_1d': round(win_rate_1d, 3),
+                            'win_rate_5d': round(win_rate_5d, 3),
+                            'avg_macro_score': round(float(row['avg_macro_score'] or 0), 3),
+                        }
+                    })
+
+                elif hypothesis == 'macro_only' and win_rate_5d > 0.58:
+                    proposals.append({
+                        'proposal_type': 'macro_sufficient',
+                        'instrument': instrument,
+                        'message': (
+                            f"Macro-only signals on {instrument} showed {win_rate_5d:.0%} "
+                            f"5D win rate on {total} observations without technical confirmation. "
+                            f"Technical gate may be unnecessary for this pair."
+                        ),
+                        'evidence': {
+                            'hypothesis': hypothesis,
+                            'total': total,
+                            'win_rate_5d': round(win_rate_5d, 3),
+                        }
+                    })
+
+                elif hypothesis == 'p75_relaxed' and win_rate_5d > 0.55:
+                    proposals.append({
+                        'proposal_type': 'lower_p75_gate',
+                        'instrument': instrument,
+                        'message': (
+                            f"Signals on {instrument} above p50 but below p75 showed "
+                            f"{win_rate_5d:.0%} 5D win rate on {total} observations. "
+                            f"p75 gate may be too strict — consider p60 or p65."
+                        ),
+                        'evidence': {
+                            'hypothesis': hypothesis,
+                            'total': total,
+                            'win_rate_5d': round(win_rate_5d, 3),
+                        }
+                    })
+
+                elif hypothesis == 'directional_disagreement' and win_rate_5d > 0.58:
+                    proposals.append({
+                        'proposal_type': 'macro_overrides_technical',
+                        'instrument': instrument,
+                        'message': (
+                            f"When macro and technical disagreed on {instrument}, "
+                            f"macro was correct {win_rate_5d:.0%} of the time on {total} observations. "
+                            f"Consider removing directional agreement requirement for this pair."
+                        ),
+                        'evidence': {
+                            'hypothesis': hypothesis,
+                            'total': total,
+                            'win_rate_5d': round(win_rate_5d, 3),
+                        }
+                    })
+
+                elif hypothesis == 'macro_regime_no_tech' and win_rate_5d > 0.58:
+                    proposals.append({
+                        'proposal_type': 'regime_replaces_technical',
+                        'instrument': instrument,
+                        'message': (
+                            f"Macro + regime agreement on {instrument} without technical "
+                            f"showed {win_rate_5d:.0%} 5D win rate on {total} observations. "
+                            f"Regime agreement may be sufficient technical substitute."
+                        ),
+                        'evidence': {
+                            'hypothesis': hypothesis,
+                            'total': total,
+                            'win_rate_5d': round(win_rate_5d, 3),
+                        }
+                    })
+
+            if proposals:
+                logger.info(f"Shadow trade analysis: {len(proposals)} proposals generated")
+                self._write_proposals(proposals)
+            else:
+                logger.debug("Shadow trade analysis: no proposals (insufficient data or no edge found)")
+
+            cur.close()
+            return proposals
+
+        except Exception as e:
+            logger.error(f"analyse_shadow_trades failed: {e}")
+            return []
+
+    def compute_kelly_fraction(self) -> dict:
+        """
+        Computes Kelly fraction from actual win rate and R:R ratio.
+        Only runs when 50+ clean closed trades exist.
+        Returns: {kelly_fraction, half_kelly, win_rate, avg_rr, trade_count}
+        """
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT COUNT(*) as total,
+                    SUM(CASE WHEN pnl_pips > 0 THEN 1 ELSE 0 END) as winners,
+                    AVG(CASE WHEN pnl_pips > 0 THEN pnl_pips END) as avg_win,
+                    ABS(AVG(CASE WHEN pnl_pips < 0 THEN pnl_pips END)) as avg_loss
+                FROM forex_network.trades
+                WHERE exit_time IS NOT NULL
+                AND entry_time > %s
+                AND pnl_pips IS NOT NULL
+            """, (DATA_QUALITY_CUTOFF,))
+            row = cur.fetchone()
+            cur.close()
+            if not row or row['total'] < 50:
+                logger.debug(f"Kelly fraction: {row['total'] if row else 0} trades, need 50")
+                return {}
+            win_rate = row['winners'] / row['total']
+            avg_win = float(row['avg_win'] or 0)
+            avg_loss = float(row['avg_loss'] or 1)
+            odds = avg_win / avg_loss if avg_loss > 0 else 0
+            kelly = win_rate - (1 - win_rate) / odds if odds > 0 else 0
+            half_kelly = kelly / 2
+            result = {
+                'kelly_fraction': round(kelly, 4),
+                'half_kelly': round(half_kelly, 4),
+                'win_rate': round(win_rate, 4),
+                'avg_rr': round(odds, 3),
+                'trade_count': row['total']
+            }
+            logger.info(f"Kelly fraction: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"compute_kelly_fraction failed: {e}")
+            return {}
 
 
 # =============================================================================

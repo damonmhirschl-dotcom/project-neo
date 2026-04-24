@@ -1710,14 +1710,23 @@ class OrchestratorAgent:
         self, pair: str, bias: str,
         macro_score: float, tech_score: float, regime_score: float,
         rejection_reason: str,
+        hypothesis: str = None,
+        macro_gate_passed: bool = None,
+        tech_gate_passed: bool = None,
+        regime_agrees: bool = None,
+        cot_multiplier: float = None,
+        p75_threshold: float = None,
+        effective_threshold: float = None,
+        would_have_traded: bool = None,
     ) -> None:
-        """Record a macro-convicted but technically-rejected signal as a shadow trade.
-        price_at_signal is populated nightly by backfill_shadow_trades.py from
-        historical_prices. Tracks technical_too_weak and directional_disagreement
-        rejections to measure how often macro alone was correct."""
+        """Record a shadow trade hypothesis row.
+        hypothesis maps the 5 learning hypotheses (macro_only, tech_threshold_0.10,
+        macro_regime_no_tech, p75_relaxed, directional_disagreement).
+        price_at_signal/pips populated nightly by backfill_shadow_trades.py."""
         if not self.db or not pair:
             return
-        direction = (bias or "")[:5]  # 'bulli' or 'beari' — matches rejected_signals convention
+        direction = (bias or "")[:5]  # 'bulli' or 'beari'
+        hyp = (hypothesis or rejection_reason or "unknown")[:50]
         try:
             cur = self.db.cursor()
             cur.execute(
@@ -1725,16 +1734,28 @@ class OrchestratorAgent:
                 INSERT INTO forex_network.shadow_trades
                     (instrument, direction, signal_time,
                      macro_score, tech_score, regime_score,
-                     rejection_reason, user_id)
-                VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s)
+                     rejection_reason, user_id,
+                     hypothesis, macro_gate_passed, tech_gate_passed,
+                     regime_agrees, cot_multiplier,
+                     p75_threshold, effective_threshold, would_have_traded)
+                VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     pair, direction,
                     float(macro_score) if macro_score is not None else None,
                     float(tech_score) if tech_score is not None else None,
                     float(regime_score) if regime_score is not None else None,
-                    rejection_reason[:50],
+                    rejection_reason[:50] if rejection_reason else None,
                     str(self.user_id),
+                    hyp,
+                    macro_gate_passed,
+                    tech_gate_passed,
+                    regime_agrees,
+                    float(cot_multiplier) if cot_multiplier is not None else None,
+                    float(p75_threshold) if p75_threshold is not None else None,
+                    float(effective_threshold) if effective_threshold is not None else None,
+                    would_have_traded,
                 ),
             )
             cur.close()
@@ -2231,20 +2252,23 @@ class OrchestratorAgent:
         # All gates, checks, and side-effects below are unchanged.
         _scored.sort(key=lambda x: abs(x[1]), reverse=True)
 
-        # Load p75 pair-spread thresholds once — replaces per-pair PERCENTILE_CONT queries.
+        # Load p50/p75 pair-spread thresholds once — replaces per-pair PERCENTILE_CONT queries.
         # Populated weekly by scripts/compute_macro_percentiles.py.
-        # Key: pair (e.g. 'EURJPY'), value: p75 of abs(base.composite - quote.composite) over 25yr.
+        # Key: pair (e.g. 'EURJPY'), value: percentile of abs(base.composite - quote.composite) over 25yr.
         _macro_p75: Dict[str, float] = {}
+        _macro_p50: Dict[str, float] = {}
         try:
             _pct_cur = self.db.cursor()
             _pct_cur.execute(
-                "SELECT pair, p75 FROM forex_network.macro_percentile_thresholds"
+                "SELECT pair, p50, p75 FROM forex_network.macro_percentile_thresholds"
             )
             for _row in _pct_cur.fetchall():
-                _macro_p75[_row['pair'].strip()] = float(_row['p75'])
+                _k = _row['pair'].strip()
+                _macro_p75[_k] = float(_row['p75'])
+                _macro_p50[_k] = float(_row['p50'])
             _pct_cur.close()
             if _macro_p75:
-                logger.debug(f"Loaded p75 macro thresholds for {len(_macro_p75)} pairs")
+                logger.debug(f"Loaded p50/p75 macro thresholds for {len(_macro_p75)} pairs")
         except Exception as _pct_e:
             logger.warning(f"macro_percentile_thresholds unavailable: {_pct_e} — fixed threshold only")
 
@@ -2358,37 +2382,114 @@ class OrchestratorAgent:
                     payload={"rejection_reasons": [_reason], "conflict_category": _cat},
                 )
 
+            # ── Common shadow-hypothesis context ─────────────────────────────
+            _p50 = _macro_p50.get(pair)
+            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
+            _regime_direction = 'long' if _regime_score_val > 0 else 'short'
+            _macro_direction_pre = 'long' if _macro_score > 0 else 'short'
+            _regime_agrees_pre = (_regime_direction == _macro_direction_pre)
+
             if abs(_macro_score) < _effective_macro_threshold:
                 _p75_info = f"p75={_p75:.3f}" if _p75 is not None else "no p75 data"
                 _gate_reject(
                     f"macro_gate_fail: abs({_macro_score:.3f}) < {_effective_macro_threshold:.3f} "
                     f"(fixed={MACRO_THRESHOLD:.3f}, {_p75_info})"
                 )
+                # Hypothesis D — p75_relaxed: above p50 but below p75 effective threshold
+                if _p50 is not None and abs(_macro_score) >= _p50:
+                    self._write_shadow_trade(
+                        pair, bias, _macro_score, _tech_score,
+                        _regime_score_val, 'macro_gate_fail',
+                        hypothesis='p75_relaxed',
+                        macro_gate_passed=False,
+                        tech_gate_passed=(abs(_tech_score) >= TECH_MIN_THRESHOLD),
+                        regime_agrees=_regime_agrees_pre,
+                        p75_threshold=_p75,
+                        effective_threshold=_effective_macro_threshold,
+                        would_have_traded=True,
+                    )
                 continue
 
             _macro_direction = 'long' if _macro_score > 0 else 'short'
+            _regime_agrees = (_regime_direction == _macro_direction)
 
             # Layer 2 — technical trigger
             if abs(_tech_score) < TECH_MIN_THRESHOLD:
                 _gate_reject(
                     f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
                 )
+                # Hypothesis A — macro_only: macro passed, tech too weak
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
-                    detail.get("regime_score"), 'technical_too_weak',
+                    _regime_score_val, 'technical_too_weak',
+                    hypothesis='macro_only',
+                    macro_gate_passed=True,
+                    tech_gate_passed=False,
+                    regime_agrees=_regime_agrees,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=True,
                 )
+                # Hypothesis C — macro_regime_no_tech: macro+regime agree, tech absent
+                if _regime_agrees:
+                    self._write_shadow_trade(
+                        pair, bias, _macro_score, _tech_score,
+                        _regime_score_val, 'technical_too_weak',
+                        hypothesis='macro_regime_no_tech',
+                        macro_gate_passed=True,
+                        tech_gate_passed=False,
+                        regime_agrees=True,
+                        p75_threshold=_p75,
+                        effective_threshold=_effective_macro_threshold,
+                        would_have_traded=True,
+                    )
                 continue
 
             _tech_direction = 'long' if _tech_score > 0 else 'short'
+            # Hypothesis B — tech_threshold_0.10: tech in 0.10-0.20 range (sub-old-threshold)
+            if 0.10 <= abs(_tech_score) < 0.20:
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    _regime_score_val, 'tech_in_0.10_0.20_range',
+                    hypothesis='tech_threshold_0.10',
+                    macro_gate_passed=True,
+                    tech_gate_passed=True,
+                    regime_agrees=_regime_agrees,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=(_tech_direction == _macro_direction),
+                )
+
             if _tech_direction != _macro_direction:
                 _gate_reject(
                     f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
                     f"vs tech={_tech_direction} ({_tech_score:+.3f})"
                 )
+                # Hypothesis E — directional_disagreement: both convicted, opposite directions
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
-                    detail.get("regime_score"), 'directional_disagreement',
+                    _regime_score_val, 'directional_disagreement',
+                    hypothesis='directional_disagreement',
+                    macro_gate_passed=True,
+                    tech_gate_passed=True,
+                    regime_agrees=_regime_agrees,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=False,
                 )
+                # Hypothesis C — macro_regime_no_tech: macro+regime agree despite tech opposing
+                if _regime_agrees:
+                    self._write_shadow_trade(
+                        pair, bias, _macro_score, _tech_score,
+                        _regime_score_val, 'directional_disagreement',
+                        hypothesis='macro_regime_no_tech',
+                        macro_gate_passed=True,
+                        tech_gate_passed=True,
+                        regime_agrees=True,
+                        p75_threshold=_p75,
+                        effective_threshold=_effective_macro_threshold,
+                        would_have_traded=True,
+                    )
                 continue
 
             # Layer 3 — all existing session, stress, R:R, spread checks in evaluate_pair

@@ -64,6 +64,21 @@ def run():
         p1d = fetch_price_after(cur, instrument, signal_time + timedelta(hours=24))
         p5d = fetch_price_after(cur, instrument, signal_time + timedelta(days=5))
 
+        sp_4h = pips(p0, p4h, instrument, direction)
+        sp_1d = pips(p0, p1d, instrument, direction)
+        sp_5d = pips(p0, p5d, instrument, direction)
+
+        # shadow_outcome: correct/incorrect/neutral based on 1d pip move > 1 pip threshold
+        if sp_1d is not None:
+            if sp_1d > 1:
+                shadow_outcome = 'correct'
+            elif sp_1d < -1:
+                shadow_outcome = 'incorrect'
+            else:
+                shadow_outcome = 'neutral'
+        else:
+            shadow_outcome = None
+
         cur.execute("""
             UPDATE forex_network.shadow_trades
             SET price_at_signal = %s,
@@ -72,13 +87,17 @@ def run():
                 price_5d  = %s,
                 pips_4h   = %s,
                 pips_1d   = %s,
-                pips_5d   = %s
+                pips_5d   = %s,
+                shadow_pips_4h = %s,
+                shadow_pips_1d = %s,
+                shadow_pips_5d = %s,
+                shadow_outcome = %s
             WHERE id = %s
         """, (
             p0, p4h, p1d, p5d,
-            pips(p0, p4h, instrument, direction),
-            pips(p0, p1d, instrument, direction),
-            pips(p0, p5d, instrument, direction),
+            sp_4h, sp_1d, sp_5d,
+            sp_4h, sp_1d, sp_5d,
+            shadow_outcome,
             row_id,
         ))
         updated += 1
