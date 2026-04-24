@@ -94,6 +94,27 @@ STATIC_CORRELATIONS = {
     ("USDCAD", "USDCHF"):  0.55,
     ("USDCAD", "USDJPY"):  0.60,
     ("USDCHF", "USDJPY"):  0.76,
+    # JPY-cross vs JPY-cross (15 pairs) — 60-day daily returns from historical_prices 2026-04-24
+    ("AUDJPY", "CADJPY"):  0.32,
+    ("AUDJPY", "EURJPY"):  0.64,
+    ("AUDJPY", "GBPJPY"):  0.70,
+    ("AUDJPY", "NZDJPY"):  0.83,
+    ("AUDJPY", "USDJPY"): -0.10,
+    ("CADJPY", "EURJPY"):  0.40,
+    ("CADJPY", "GBPJPY"):  0.42,
+    ("CADJPY", "NZDJPY"):  0.22,
+    ("CADJPY", "USDJPY"):  0.74,
+    ("EURJPY", "GBPJPY"):  0.79,
+    ("EURJPY", "NZDJPY"):  0.64,
+    ("EURJPY", "USDJPY"):  0.07,
+    ("GBPJPY", "NZDJPY"):  0.71,
+    ("GBPJPY", "USDJPY"):  0.03,
+    ("NZDJPY", "USDJPY"): -0.24,
+    # Same-base JPY-cross vs USD-major (shared non-USD leg)
+    ("AUDJPY", "AUDUSD"):  0.81,
+    ("EURJPY", "EURUSD"):  0.58,
+    ("GBPJPY", "GBPUSD"):  0.65,
+    ("NZDJPY", "NZDUSD"):  0.81,
 }
 
 # correlation_threshold is read from forex_network.risk_parameters per user (see DB migration patch)
