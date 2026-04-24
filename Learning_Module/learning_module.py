@@ -204,6 +204,20 @@ class DatabaseConnection:
 # =============================================================================
 # TRADE AUTOPSY ENGINE
 # =============================================================================
+def _total_trade_pnl(trade) -> float:
+    """Return full realised P&L for a trade, including any T1 partial-exit profit.
+
+    When target_1_hit=True, the trade closed in two legs:
+      leg-1: target_1_pnl (50% at T1)
+      leg-2: pnl          (remaining 50% at T2 or breakeven stop)
+    Both legs must be summed to get the true trade outcome.
+    Callers that only read `pnl` will misclassify breakeven-stop trades as losses.
+    """
+    t1    = float(trade.get('target_1_pnl') or 0)
+    final = float(trade.get('pnl') or 0)
+    return (t1 + final) if trade.get('target_1_hit') else final
+
+
 class TradeAutopsyEngine:
     """Analyses closed trades and writes structured autopsies."""
 
@@ -218,6 +232,7 @@ class TradeAutopsyEngine:
             cur.execute("""
                 SELECT t.id, t.instrument, t.direction, t.entry_price, t.exit_price,
                        t.entry_time, t.exit_time, t.exit_reason, t.pnl,
+                       t.target_1_pnl, t.target_1_hit, t.pnl_pips,
                        t.position_size_usd, t.spread_at_entry, t.stop_price,
                        t.slippage_pips, t.fill_pct, t.is_partial_fill
                 FROM forex_network.trades t
@@ -396,7 +411,7 @@ class TradeAutopsyEngine:
         # Use pnl (GBP monetary) as primary; fall back to pnl_pips for cross pairs
         # where IG transaction matching failed and pnl column is NULL.
         if trade.get("pnl") is not None:
-            pnl = float(trade["pnl"])
+            pnl = _total_trade_pnl(trade)   # includes T1 partial-exit profit
             is_win = pnl > 0
         elif trade.get("pnl_pips") is not None:
             pnl = float(trade["pnl_pips"])
@@ -1645,13 +1660,13 @@ class LearningModule:
             SELECT
                 ta.pattern_context->'entry_timing'->>'session_at_entry'  AS session,
                 (ta.pattern_context->'entry_timing'->>'entry_lag_minutes')::float AS lag,
-                t.pnl
+                COALESCE(t.target_1_pnl, 0) + COALESCE(t.pnl, 0) AS effective_pnl
             FROM forex_network.trade_autopsies ta
             JOIN forex_network.trades t ON ta.trade_id = t.id
             WHERE ta.user_id = %s
               AND ta.pattern_context->'entry_timing' IS NOT NULL
               AND t.exit_time IS NOT NULL
-              AND t.pnl IS NOT NULL
+              AND (t.pnl IS NOT NULL OR t.target_1_pnl IS NOT NULL)
         """, (self.user_id,))
 
         if not rows:
@@ -1671,8 +1686,8 @@ class LearningModule:
                 continue
             key = f"{row['session'] or 'unknown'}|{_bucket(row['lag'])}"
             stats[key]["total"] += 1
-            stats[key]["pnl_sum"] += float(row["pnl"] or 0)
-            if float(row["pnl"] or 0) > 0:
+            stats[key]["pnl_sum"] += float(row["effective_pnl"] or 0)
+            if float(row["effective_pnl"] or 0) > 0:
                 stats[key]["wins"] += 1
 
         # Reference: win_rate of 0-15min bucket per session
@@ -1896,13 +1911,13 @@ class LearningModule:
                 SELECT
                     t.instrument,
                     t.direction,
-                    t.pnl,
+                    COALESCE(t.target_1_pnl, 0) + COALESCE(t.pnl, 0) AS effective_pnl,
                     (t.entry_context->'ssi_ig'->>'short_pct')::float      AS ig_short_pct,
                     (t.entry_context->'ssi_myfxbook'->>'short_pct')::float AS mfx_short_pct
                 FROM forex_network.trades t
                 WHERE t.user_id   = %s
                   AND t.exit_time IS NOT NULL
-                  AND t.pnl       IS NOT NULL
+                  AND (t.pnl IS NOT NULL OR t.target_1_pnl IS NOT NULL)
                   AND (
                       t.entry_context->'ssi_ig'       IS NOT NULL
                    OR t.entry_context->'ssi_myfxbook' IS NOT NULL
@@ -1926,7 +1941,7 @@ class LearningModule:
         for row in rows:
             instrument = row['instrument']
             direction  = (row['direction'] or '').lower()
-            pnl        = float(row['pnl'] or 0)
+            pnl        = float(row['effective_pnl'] or 0)
 
             for source, short_pct in [
                 ('ig_sentiment', row['ig_short_pct']),
@@ -2005,11 +2020,12 @@ class LearningModule:
                     t.session_at_entry                                        AS session,
                     COUNT(*)                                                  AS total_trades,
                     SUM(CASE
-                            WHEN (s.score > 0 AND t.pnl > 0)
-                              OR (s.score < 0 AND t.pnl < 0)
+                            WHEN (s.score > 0 AND (COALESCE(t.target_1_pnl,0)+COALESCE(t.pnl,0)) > 0)
+                              OR (s.score < 0 AND (COALESCE(t.target_1_pnl,0)+COALESCE(t.pnl,0)) < 0)
                             THEN 1 ELSE 0 END)                               AS correct_direction,
-                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)              AS wins,
-                    AVG(t.pnl)                                               AS avg_pnl
+                    SUM(CASE WHEN (COALESCE(t.target_1_pnl,0)+COALESCE(t.pnl,0)) > 0
+                             THEN 1 ELSE 0 END)                              AS wins,
+                    AVG(COALESCE(t.target_1_pnl,0)+COALESCE(t.pnl,0))      AS avg_pnl
                 FROM forex_network.trades t
                 CROSS JOIN (VALUES ('macro'), ('technical'), ('regime')) AS a(agent_name)
                 JOIN LATERAL (
@@ -2023,7 +2039,7 @@ class LearningModule:
                 ) s ON TRUE
                 WHERE t.user_id  = %s
                   AND t.exit_time IS NOT NULL
-                  AND t.pnl       IS NOT NULL
+                  AND (t.pnl IS NOT NULL OR t.target_1_pnl IS NOT NULL)
                 GROUP BY a.agent_name, t.instrument, t.session_at_entry
                 HAVING COUNT(*) >= 5
             """, (self.user_id,))
