@@ -1527,9 +1527,17 @@ class RiskGuardian:
                 f"❌ REJECTED: {instrument} {direction} — "
                 f"{'; '.join(decision['rejection_reasons'][:2])}"
             )
+            self._write_rg_rejection(
+                instrument=instrument,
+                rejection_reasons=decision["rejection_reasons"],
+                payload=payload,
+                market_context=market_context or {},
+            )
 
-        # Propagate target_price and entry_rank_position from orchestrator payload
-        decision["target_price"] = payload.get("target_price")
+        # Propagate target_price — use the derived/validated value from CHECK 7,
+        # not the raw orchestrator payload (which may be null if technical agent
+        # didn't set it and we fell back to deriving it from stop_distance × min_rr).
+        decision["target_price"] = _target_price
         decision["entry_rank_position"] = payload.get("entry_rank_position")
 
         # Snapshot risk parameters into payload so execution agent can persist them
@@ -1578,6 +1586,37 @@ class RiskGuardian:
         finally:
             cur.close()
 
+
+    def _write_rg_rejection(self, instrument: str, rejection_reasons: List[str],
+                             payload: Dict[str, Any], market_context: Dict[str, Any]):
+        """Write RG rejection to rg_rejections table for learning module analysis."""
+        if self.dry_run:
+            return
+        cur = self.db.cursor()
+        try:
+            for reason in rejection_reasons:
+                cur.execute("""
+                    INSERT INTO forex_network.rg_rejections
+                        (instrument, user_id, rejection_reason, rejection_detail,
+                         macro_score, tech_score, conviction_score, convergence_score, stress_score)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    instrument,
+                    self.user_id,
+                    reason[:100],
+                    json.dumps({"reasons": rejection_reasons, "payload_keys": list(payload.keys())}, default=float),
+                    payload.get("macro_score"),
+                    payload.get("tech_score"),
+                    payload.get("conviction_score", payload.get("convergence")),
+                    payload.get("convergence"),
+                    market_context.get("stress_score"),
+                ))
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"_write_rg_rejection failed: {e}")
+            self.db.rollback()
+        finally:
+            cur.close()
 
     def _write_system_alert(self, alert_type: str, severity: str, details: dict):
         """Write a system alert to forex_network.system_alerts.

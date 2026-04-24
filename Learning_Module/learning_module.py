@@ -1443,6 +1443,9 @@ class LearningModule:
             # Structural architecture diagnostics
             self.diagnose_architecture()
 
+            # RG systematic rejection patterns
+            self.analyse_rg_rejections()
+
         return count
 
     def _write_proposals(self, proposals: List[Dict]):
@@ -3029,6 +3032,47 @@ class LearningModule:
 
         except Exception as e:
             logger.error(f"diagnose_architecture failed: {e}")
+            return []
+
+    def analyse_rg_rejections(self) -> List[dict]:
+        """Analyses RG rejections to find systematic blocking patterns."""
+        proposals = []
+        try:
+            cur = self.db.cursor()
+            cur.execute("""
+                SELECT rejection_reason, instrument,
+                    COUNT(*) as total,
+                    AVG(macro_score) as avg_macro,
+                    AVG(conviction_score) as avg_conviction
+                FROM forex_network.rg_rejections
+                WHERE attempted_at > %s
+                GROUP BY rejection_reason, instrument
+                HAVING COUNT(*) >= 5
+                ORDER BY total DESC
+            """, (DATA_QUALITY_CUTOFF,))
+            rows = cur.fetchall()
+            cur.close()
+            for row in rows:
+                proposals.append({
+                    'proposal_type': 'rg_systematic_rejection',
+                    'instrument': row[1],
+                    'message': (
+                        f"RG rejected {row[1]} {row[2]} times "
+                        f"for '{row[0]}' after orchestrator approval. "
+                        f"Avg macro score: {float(row[3] or 0):.3f}. "
+                        f"This RG gate may be misconfigured or data may be missing."
+                    ),
+                    'evidence': {
+                        'rejection_reason': row[0],
+                        'total': row[2],
+                        'avg_macro_score': round(float(row[3] or 0), 3),
+                    }
+                })
+            if proposals:
+                self._write_proposals(proposals)
+            return proposals
+        except Exception as e:
+            logger.error(f"analyse_rg_rejections failed: {e}")
             return []
 
     def compute_kelly_fraction(self) -> dict:
