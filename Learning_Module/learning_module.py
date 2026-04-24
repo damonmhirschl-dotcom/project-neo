@@ -22,6 +22,7 @@ Run:
 """
 
 import os
+import re
 import sys
 sys.path.insert(0, '/root/Project_Neo_Damon')
 import json
@@ -506,7 +507,10 @@ class TradeAutopsyEngine:
             cur.execute("""
                 SELECT account_value, peak_account_value,
                        drawdown_step_level, size_multiplier,
-                       step_down_drawdown_pct
+                       step_down_drawdown_pct,
+                       min_risk_pct, curve_exponent, max_convergence_reference,
+                       stress_threshold_score, stress_multiplier,
+                       min_risk_reward_ratio, max_usd_units, correlation_threshold
                 FROM forex_network.risk_parameters
                 WHERE user_id = %s
             """, (self.user_id,))
@@ -1932,17 +1936,45 @@ class LearningModule:
                     reasons = decision.get("rejection_reasons", [])
                     rejection_reason = reasons[0] if reasons else "unknown"
 
+                    # Parse rejection_reason string into structured detail
+                    detail: dict = {}
+                    r = rejection_reason
+                    if 'macro_gate_fail' in r:
+                        detail['rejection_type'] = 'macro_gate'
+                    elif 'technical_too_weak' in r:
+                        detail['rejection_type'] = 'technical_gate'
+                    elif 'directional' in r:
+                        detail['rejection_type'] = 'directional'
+                    else:
+                        detail['rejection_type'] = 'other'
+                    m = re.search(r'abs\((-?[\d.]+)\)', r)
+                    if m:
+                        detail['abs_score'] = abs(float(m.group(1)))
+                    m = re.search(r'fixed=([\d.]+)', r)
+                    if m:
+                        detail['fixed_threshold'] = float(m.group(1))
+                    m = re.search(r'p75=([\d.]+)', r)
+                    if m:
+                        detail['p75_threshold'] = float(m.group(1))
+                    m = re.search(r'macro=([+-]?[\d.]+)', r)
+                    if m:
+                        detail['macro_score_at_rejection'] = float(m.group(1))
+                    m = re.search(r'tech=([+-]?[\d.]+)', r)
+                    if m:
+                        detail['tech_score_at_rejection'] = float(m.group(1))
+
                     cur.execute("""
                         INSERT INTO forex_network.rejection_patterns
                             (user_id, instrument, rejection_reason, convergence_score,
-                             session, regime, stress_score, cycle_timestamp)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                             session, regime, stress_score, cycle_timestamp, detail)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.user_id, instrument, rejection_reason,
                         float(convergence) if convergence is not None else None,
                         session, regime,
                         float(stress_score) if stress_score is not None else None,
                         created_at,
+                        json.dumps(detail),
                     ))
                     count += 1
 
@@ -2004,6 +2036,33 @@ class LearningModule:
         cur = self.db.cursor()
         written = 0
         try:
+            # ── Load all risk_parameters once ─────────────────────────────────────
+            cur.execute("""
+                SELECT convergence_threshold, max_risk_pct, min_risk_pct,
+                       curve_exponent, max_convergence_reference,
+                       stress_threshold_score, stress_multiplier,
+                       min_risk_reward_ratio, max_usd_units, correlation_threshold
+                FROM forex_network.risk_parameters
+                WHERE user_id = %s
+            """, (self.user_id,))
+            rp_full = cur.fetchone()
+            if not rp_full:
+                return 0
+            rp_conv_thr  = float(rp_full['convergence_threshold'])
+            rp_max_risk  = float(rp_full['max_risk_pct'])
+            rp_min_risk  = float(rp_full['min_risk_pct'] or 0.0025)
+            logger.debug(
+                f"[{self.user_id}] _generate_proposals risk_params: "
+                f"conv_thr={rp_conv_thr:.4f} max_risk={rp_max_risk:.4f} "
+                f"min_risk={rp_min_risk:.4f} curve_exp={rp_full['curve_exponent']} "
+                f"max_conv_ref={rp_full['max_convergence_reference']} "
+                f"stress_thr={rp_full['stress_threshold_score']} "
+                f"stress_mult={rp_full['stress_multiplier']} "
+                f"min_rr={rp_full['min_risk_reward_ratio']} "
+                f"max_units={rp_full['max_usd_units']} "
+                f"corr_thr={rp_full['correlation_threshold']}"
+            )
+
             # ── Threshold adjustment proposals ────────────────────────────────────
             # FIX 1: Exclude gate rejections at the SQL level so they never
             #        contribute to the n / avg_conv that drives threshold proposals.
@@ -2027,14 +2086,7 @@ class LearningModule:
                 n          = int(row['n'])
                 avg_conv   = float(row['avg_conv'] or 0)
 
-                cur.execute("""
-                    SELECT convergence_threshold FROM forex_network.risk_parameters
-                    WHERE user_id = %s
-                """, (self.user_id,))
-                rp = cur.fetchone()
-                if not rp:
-                    continue
-                current_thr = float(rp['convergence_threshold'])
+                current_thr = rp_conv_thr
 
                 # Only propose if the cluster sits within 0.10 below current threshold
                 if not (current_thr - 0.10 <= avg_conv < current_thr):
@@ -2084,55 +2136,49 @@ class LearningModule:
 
             if sortino is not None and trade_count >= 10 and float(sortino) < SORTINO_TARGET_LIVE:
                 sortino = float(sortino)
+                current_risk = rp_max_risk   # fraction, e.g. 0.03
+
+                # Dedup: skip if pending proposal already exists
                 cur.execute("""
-                    SELECT max_risk_pct FROM forex_network.risk_parameters
-                    WHERE user_id = %s
+                    SELECT COUNT(*) AS cnt FROM forex_network.proposals
+                    WHERE user_id = %s AND parameter = 'max_risk_pct'
+                      AND status = 'pending'
                 """, (self.user_id,))
-                rp = cur.fetchone()
-                if rp:
-                    current_risk = float(rp['max_risk_pct'])   # fraction, e.g. 0.03
+                if int(cur.fetchone()['cnt']) == 0:
+                    # FIX 2: compute proposed value as a FRACTION, never a percentage.
+                    # Reduce by 0.5 percentage points expressed as a fraction delta.
+                    proposed_risk = round(current_risk - 0.005, 4)   # e.g. 0.03 → 0.025
+                    proposed_risk = max(proposed_risk, rp_min_risk)   # floor from risk_parameters
 
-                    # Dedup: skip if pending proposal already exists
                     cur.execute("""
-                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                        WHERE user_id = %s AND parameter = 'max_risk_pct'
-                          AND status = 'pending'
-                    """, (self.user_id,))
-                    if int(cur.fetchone()['cnt']) == 0:
-                        # FIX 2: compute proposed value as a FRACTION, never a percentage.
-                        # Reduce by 0.5 percentage points expressed as a fraction delta.
-                        proposed_risk = round(current_risk - 0.005, 4)   # e.g. 0.03 → 0.025
-                        proposed_risk = max(proposed_risk, 0.0025)        # floor 0.25%
-
-                        cur.execute("""
-                            INSERT INTO forex_network.proposals
-                                (proposal_type, user_id, instrument, parameter,
-                                 current_value, proposed_value, direction,
-                                 n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours)
-                            VALUES ('position_sizing', %s, NULL, 'max_risk_pct',
-                                    %s, %s, 'decrease',
-                                    %s, 'sortino', %s,
-                                    'medium', %s, 'pending', 72)
-                        """, (
-                            self.user_id,
-                            current_risk,    # stored as fraction (e.g. 0.0300)
-                            proposed_risk,   # stored as fraction (e.g. 0.0250) — FIX 2
-                            trade_count,
-                            round(sortino, 4),
-                            (
-                                f"Sortino {sortino:.2f} over {trade_count} trades is below "
-                                f"go-live minimum ({SORTINO_TARGET_LIVE}). Reducing max_risk_pct "
-                                f"from {current_risk*100:.2f}% to {proposed_risk*100:.2f}% "
-                                f"({current_risk:.4f} → {proposed_risk:.4f} fraction). "
-                                f"Auto-reverts in 72 h."
-                            ),
-                        ))
-                        written += 1
-                        logger.info(
-                            f"Sizing proposal: max_risk_pct {current_risk:.4f} → {proposed_risk:.4f} "
-                            f"(sortino={sortino:.2f}, trades={trade_count})"
-                        )
+                        INSERT INTO forex_network.proposals
+                            (proposal_type, user_id, instrument, parameter,
+                             current_value, proposed_value, direction,
+                             n_trades, metric, metric_value, confidence, reasoning,
+                             status, auto_revert_hours)
+                        VALUES ('position_sizing', %s, NULL, 'max_risk_pct',
+                                %s, %s, 'decrease',
+                                %s, 'sortino', %s,
+                                'medium', %s, 'pending', 72)
+                    """, (
+                        self.user_id,
+                        current_risk,    # stored as fraction (e.g. 0.0300)
+                        proposed_risk,   # stored as fraction (e.g. 0.0250) — FIX 2
+                        trade_count,
+                        round(sortino, 4),
+                        (
+                            f"Sortino {sortino:.2f} over {trade_count} trades is below "
+                            f"go-live minimum ({SORTINO_TARGET_LIVE}). Reducing max_risk_pct "
+                            f"from {current_risk*100:.2f}% to {proposed_risk*100:.2f}% "
+                            f"({current_risk:.4f} → {proposed_risk:.4f} fraction). "
+                            f"Auto-reverts in 72 h."
+                        ),
+                    ))
+                    written += 1
+                    logger.info(
+                        f"Sizing proposal: max_risk_pct {current_risk:.4f} → {proposed_risk:.4f} "
+                        f"(sortino={sortino:.2f}, trades={trade_count})"
+                    )
 
             # ── DIRECTIONAL DISAGREEMENT ANALYSIS ────────────────────────────────
             # When macro and technical disagree (rejection_stage='directional'),
@@ -2418,8 +2464,14 @@ class LearningModule:
                     t.direction,
                     t.pnl_pips,
                     t.entry_time,
-                    (t.trade_parameters->>'macro_score')::float   AS macro_score,
-                    (t.trade_parameters->>'pair_score_p75')::float AS pair_score_p75
+                    (t.trade_parameters->>'macro_score')::float            AS macro_score,
+                    (t.trade_parameters->>'pair_score_p75')::float          AS pair_score_p75,
+                    (t.trade_parameters->>'tech_score')::float              AS tech_score,
+                    (t.trade_parameters->>'regime_score')::float            AS regime_score,
+                    (t.trade_parameters->>'effective_macro_threshold')::float AS effective_macro_threshold,
+                    (t.trade_parameters->>'conviction_risk_pct')::float     AS conviction_risk_pct,
+                    (t.trade_parameters->>'atr_14')::float                  AS atr_14,
+                    (t.trade_parameters->>'r_r_ratio')::float               AS r_r_ratio
                 FROM forex_network.trades t
                 WHERE t.user_id = %s
                   AND t.exit_time IS NOT NULL
