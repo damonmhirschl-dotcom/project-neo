@@ -475,9 +475,12 @@ function Login({onAuth}) {
   const submitSetup = async e => {
     e.preventDefault(); setErr(''); setLoading(true);
     try {
-      // VerifySoftwareToken returns a new Session — must use it for the subsequent challenge response.
+      // VerifySoftwareToken verifies the code and returns a new Session.
+      // RespondToAuthChallenge for MFA_SETUP only needs USERNAME — do NOT re-send
+      // the code here; it was already consumed by VerifySoftwareToken and Cognito
+      // will reject it as "Invalid code received for user".
       const v = await cogCall('VerifySoftwareToken',{Session:session,UserCode:code.trim()});
-      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'MFA_SETUP',Session:v.Session,ChallengeResponses:{USERNAME:user,SOFTWARE_TOKEN_MFA_CODE:code.trim()}});
+      const d = await cogCall('RespondToAuthChallenge',{ClientId:CONFIG.CLIENT_ID,ChallengeName:'MFA_SETUP',Session:v.Session,ChallengeResponses:{USERNAME:user}});
       if (d.AuthenticationResult) storeAuth(d); else setErr('Verification failed.');
     } catch(e2){setErr(e2.message);}finally{setLoading(false);}
   };
