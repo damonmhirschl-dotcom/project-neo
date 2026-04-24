@@ -758,26 +758,56 @@ class RiskGuardian:
         self.cycle_count = 0
         self.processed_count = 0
 
-    def _fetch_atr(self, instrument: str, timeframe: str = "15M") -> Optional[float]:
-        """Read the most recent ATR-14 from price_metrics for the given instrument.
+    def _fetch_atr(self, instrument: str, timeframe: str = None) -> Optional[float]:
+        """Read ATR-14 from price_metrics with fallback chain: 1D → 1H → 15M → hardcoded.
 
-        This is the canonical fallback for atr_14 when the orchestrator payload
-        does not carry it (confirmed absent as of 2026-04-20).  Returns None if
-        no row exists (PositionSizer handles None gracefully).
+        When timeframe is specified, only that timeframe is tried (no chain fallback).
+        Recommended stop multipliers: 2.0 for 1D ATR, 1.5 for 1H/15M ATR.
+        Hardcoded emergency fallback: JPY pairs=1.5 (150 pips), others=0.0150.
         """
+        timeframes = [timeframe] if timeframe else ["1D", "1H", "15M"]
+        for tf in timeframes:
+            cur = self.db.cursor()
+            try:
+                cur.execute("""
+                    SELECT atr_14 FROM forex_network.price_metrics
+                    WHERE instrument = %s AND timeframe = %s
+                    ORDER BY ts DESC LIMIT 1
+                """, (instrument, tf))
+                row = cur.fetchone()
+                if row and row["atr_14"] is not None and float(row["atr_14"]) > 0:
+                    return float(row["atr_14"])
+            except Exception as e:
+                logger.warning(f"_fetch_atr failed for {instrument}/{tf}: {e}")
+            finally:
+                cur.close()
+
+        if timeframe:
+            return None  # single-timeframe request — no chain fallback
+
+        # Hardcoded emergency fallback when all price_metrics rows are absent
+        fallback = 1.5 if instrument.upper().endswith("JPY") else 0.0150
+        logger.warning(
+            f"_fetch_atr({instrument}): no price_metrics data in any timeframe — "
+            f"using hardcoded fallback atr={fallback}"
+        )
+        return fallback
+
+    def _fetch_live_price(self, instrument: str) -> Optional[float]:
+        """Fetch the most recent LIVE close price from historical_prices."""
         cur = self.db.cursor()
         try:
             cur.execute("""
-                SELECT atr_14 FROM forex_network.price_metrics
-                WHERE instrument = %s AND timeframe = %s
+                SELECT close FROM forex_network.historical_prices
+                WHERE instrument = %s AND timeframe = 'LIVE'
                 ORDER BY ts DESC LIMIT 1
-            """, (instrument, timeframe))
+            """, (instrument,))
             row = cur.fetchone()
-            if row and row["atr_14"] is not None:
-                return float(row["atr_14"])
+            if row and row["close"] and float(row["close"]) > 0:
+                return float(row["close"])
             return None
         except Exception as e:
-            logger.warning(f"_fetch_atr failed for {instrument}/{timeframe}: {e}")
+            logger.warning(f"_fetch_live_price failed for {instrument}: {e}")
             return None
         finally:
             cur.close()
@@ -821,8 +851,8 @@ class RiskGuardian:
             """, (gbp_cross,))
             row = cur.fetchone()
             cur.close()
-            if row and row[0] and float(row[0]) > 0:
-                return pip_mult / float(row[0])
+            if row and row["close"] and float(row["close"]) > 0:
+                return pip_mult / float(row["close"])
         except Exception as e:
             logger.warning(f"_get_pip_value_gbp: DB fetch for {gbp_cross} failed: {e}")
 
@@ -1281,6 +1311,13 @@ class RiskGuardian:
         conv_score_for_sizing   = float(payload.get("conviction_score", payload.get("convergence", 0.0)))
         stress_score_for_sizing = float((market_context or {}).get("stress_score", 0.0))
         _current_price_for_sizing = payload.get("current_price")
+        if _current_price_for_sizing is None:
+            _current_price_for_sizing = self._fetch_live_price(instrument)
+            if _current_price_for_sizing:
+                logger.info(
+                    f"{instrument}: current_price missing from payload — "
+                    f"fetched from LIVE historical_prices: {_current_price_for_sizing}"
+                )
         pip_value_gbp = self._get_pip_value_gbp(instrument, _current_price_for_sizing)
         sizing = PositionSizer.calculate(
             risk_params=risk_params,
@@ -1344,9 +1381,23 @@ class RiskGuardian:
         # CHECK 7: R:R validation + RG2 — Swap cost R:R check
         # =================================================================
         _target_price = payload.get("target_price")
-        _current_price_rr = payload.get("current_price")
+        # Use the already-fetched current_price (with LIVE fallback applied above)
+        _current_price_rr = _current_price_for_sizing
         _stop_distance_rr = decision.get("stop_distance")
         min_rr = float(risk_params.get('min_risk_reward_ratio', 1.5))
+
+        # When target_price is missing, derive the minimum acceptable target from
+        # current_price ± stop_distance × min_rr so R:R check can proceed.
+        if _target_price is None and _current_price_rr and _stop_distance_rr:
+            if direction == "long":
+                _target_price = _current_price_rr + _stop_distance_rr * min_rr
+            else:
+                _target_price = _current_price_rr - _stop_distance_rr * min_rr
+            logger.info(
+                f"{instrument}: target_price missing from payload — "
+                f"derived minimum target ({direction}): {_target_price:.5f} "
+                f"(entry={_current_price_rr}, stop_dist={_stop_distance_rr}, min_rr={min_rr})"
+            )
 
         if _target_price is None:
             decision["rejection_reasons"].append("no_target_price — cannot evaluate R:R")
