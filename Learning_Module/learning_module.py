@@ -1460,11 +1460,33 @@ class LearningModule:
                         NOW() + INTERVAL '24 hours')
             """, (AGENT_NAME, self.user_id, json.dumps({"proposals": proposals})))
             self.db.commit()
+            for proposal in proposals:
+                evidence = proposal.get('evidence', {})
+                if (evidence.get('win_rate_5d', 0) > 0.65 or
+                        str(proposal.get('proposal_type', '')).startswith('architecture_')):
+                    self._notify_high_confidence_proposal(proposal)
         except Exception as e:
             logger.error(f"Proposals write failed: {e}")
             self.db.rollback()
         finally:
             cur.close()
+
+    def _notify_high_confidence_proposal(self, proposal: dict) -> None:
+        try:
+            sm = boto3.client('secretsmanager', region_name='eu-west-2')
+            secret = json.loads(sm.get_secret_value(SecretId='platform/alerts/sms')['SecretString'])
+            topic_arn = secret.get('sns_topic_arn')
+            if not topic_arn:
+                return
+            sns = boto3.client('sns', region_name='eu-west-2')
+            msg = (f"Project Neo — High Confidence Proposal\n"
+                   f"Type: {proposal.get('proposal_type')}\n"
+                   f"Pair: {proposal.get('instrument')}\n"
+                   f"Message: {str(proposal.get('message', ''))[:200]}")
+            sns.publish(TopicArn=topic_arn, Message=msg, Subject='Neo LM — High Confidence Proposal')
+            logger.info(f"SNS notification sent for {proposal.get('proposal_type')}")
+        except Exception as e:
+            logger.warning(f"SNS notification failed: {e}")
 
     # ------------------------------------------------------------------
     # Internal DB helper
