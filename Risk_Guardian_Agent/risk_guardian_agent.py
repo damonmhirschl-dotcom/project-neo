@@ -115,6 +115,157 @@ STATIC_CORRELATIONS = {
     ("EURJPY", "EURUSD"):  0.58,
     ("GBPJPY", "GBPUSD"):  0.65,
     ("NZDJPY", "NZDUSD"):  0.81,
+    # Additional 60-day correlations — auto-added for full 20-pair universe coverage
+    ("AUDJPY", "AUDNZD"): +0.55,
+    ("AUDJPY", "EURAUD"): -0.87,
+    ("AUDJPY", "EURCAD"): +0.26,
+    ("AUDJPY", "EURCHF"): +0.24,
+    ("AUDJPY", "EURGBP"): -0.11,
+    ("AUDJPY", "EURUSD"): +0.50,
+    ("AUDJPY", "GBPAUD"): -0.82,
+    ("AUDJPY", "GBPCAD"): +0.30,
+    ("AUDJPY", "GBPCHF"): +0.27,
+    ("AUDJPY", "GBPUSD"): +0.53,
+    ("AUDJPY", "NZDUSD"): +0.62,
+    ("AUDJPY", "USDCAD"): -0.54,
+    ("AUDJPY", "USDCHF"): -0.37,
+    ("AUDNZD", "AUDUSD"): +0.37,
+    ("AUDNZD", "CADJPY"): +0.20,
+    ("AUDNZD", "EURAUD"): -0.64,
+    ("AUDNZD", "EURCAD"): -0.07,
+    ("AUDNZD", "EURCHF"): +0.19,
+    ("AUDNZD", "EURGBP"): -0.05,
+    ("AUDNZD", "EURJPY"): +0.11,
+    ("AUDNZD", "EURUSD"): -0.03,
+    ("AUDNZD", "GBPAUD"): -0.61,
+    ("AUDNZD", "GBPCAD"): -0.04,
+    ("AUDNZD", "GBPCHF"): +0.20,
+    ("AUDNZD", "GBPJPY"): +0.16,
+    ("AUDNZD", "GBPUSD"): +0.01,
+    ("AUDNZD", "NZDJPY"): +0.02,
+    ("AUDNZD", "NZDUSD"): -0.04,
+    ("AUDNZD", "USDCAD"): +0.00,
+    ("AUDNZD", "USDCHF"): +0.18,
+    ("AUDNZD", "USDJPY"): +0.11,
+    ("AUDUSD", "CADJPY"): -0.13,
+    ("AUDUSD", "EURAUD"): -0.75,
+    ("AUDUSD", "EURCAD"): +0.55,
+    ("AUDUSD", "EURCHF"): +0.28,
+    ("AUDUSD", "EURGBP"): -0.11,
+    ("AUDUSD", "EURJPY"): +0.47,
+    ("AUDUSD", "GBPAUD"): -0.68,
+    ("AUDUSD", "GBPCAD"): +0.60,
+    ("AUDUSD", "GBPCHF"): +0.33,
+    ("AUDUSD", "GBPJPY"): +0.53,
+    ("AUDUSD", "NZDJPY"): +0.76,
+    ("CADJPY", "EURAUD"): -0.16,
+    ("CADJPY", "EURCAD"): -0.67,
+    ("CADJPY", "EURCHF"): -0.41,
+    ("CADJPY", "EURGBP"): -0.09,
+    ("CADJPY", "EURUSD"): -0.33,
+    ("CADJPY", "GBPAUD"): -0.12,
+    ("CADJPY", "GBPCAD"): -0.59,
+    ("CADJPY", "GBPCHF"): -0.29,
+    ("CADJPY", "GBPUSD"): -0.27,
+    ("CADJPY", "NZDUSD"): -0.26,
+    ("CADJPY", "USDCAD"): -0.34,
+    ("CADJPY", "USDCHF"): +0.09,
+    ("EURAUD", "EURCAD"): -0.07,
+    ("EURAUD", "EURCHF"): -0.20,
+    ("EURAUD", "EURGBP"): +0.25,
+    ("EURAUD", "EURJPY"): -0.20,
+    ("EURAUD", "EURUSD"): -0.27,
+    ("EURAUD", "GBPAUD"): +0.88,
+    ("EURAUD", "GBPCAD"): -0.19,
+    ("EURAUD", "GBPCHF"): -0.33,
+    ("EURAUD", "GBPJPY"): -0.39,
+    ("EURAUD", "GBPUSD"): -0.36,
+    ("EURAUD", "NZDJPY"): -0.64,
+    ("EURAUD", "NZDUSD"): -0.51,
+    ("EURAUD", "USDCAD"): +0.37,
+    ("EURAUD", "USDCHF"): +0.17,
+    ("EURAUD", "USDJPY"): +0.17,
+    ("EURCAD", "EURCHF"): +0.56,
+    ("EURCAD", "EURGBP"): +0.21,
+    ("EURCAD", "EURJPY"): +0.37,
+    ("EURCAD", "EURUSD"): +0.81,
+    ("EURCAD", "GBPAUD"): -0.17,
+    ("EURCAD", "GBPCAD"): +0.84,
+    ("EURCAD", "GBPCHF"): +0.34,
+    ("EURCAD", "GBPJPY"): +0.23,
+    ("EURCAD", "GBPUSD"): +0.68,
+    ("EURCAD", "NZDJPY"): +0.36,
+    ("EURCAD", "NZDUSD"): +0.65,
+    ("EURCAD", "USDCAD"): -0.08,
+    ("EURCAD", "USDCHF"): -0.47,
+    ("EURCAD", "USDJPY"): -0.70,
+    ("EURCHF", "EURGBP"): +0.07,
+    ("EURCHF", "EURJPY"): +0.12,
+    ("EURCHF", "EURUSD"): +0.28,
+    ("EURCHF", "GBPAUD"): -0.26,
+    ("EURCHF", "GBPCAD"): +0.48,
+    ("EURCHF", "GBPCHF"): +0.78,
+    ("EURCHF", "GBPJPY"): +0.10,
+    ("EURCHF", "GBPUSD"): +0.23,
+    ("EURCHF", "NZDJPY"): +0.17,
+    ("EURCHF", "NZDUSD"): +0.22,
+    ("EURCHF", "USDCAD"): +0.22,
+    ("EURCHF", "USDCHF"): +0.29,
+    ("EURCHF", "USDJPY"): -0.24,
+    ("EURGBP", "EURJPY"): +0.17,
+    ("EURGBP", "EURUSD"): +0.10,
+    ("EURGBP", "GBPAUD"): -0.24,
+    ("EURGBP", "GBPCAD"): -0.35,
+    ("EURGBP", "GBPCHF"): -0.56,
+    ("EURGBP", "GBPJPY"): -0.46,
+    ("EURGBP", "GBPUSD"): -0.32,
+    ("EURGBP", "NZDJPY"): -0.14,
+    ("EURGBP", "NZDUSD"): -0.09,
+    ("EURGBP", "USDCAD"): +0.05,
+    ("EURGBP", "USDCHF"): -0.04,
+    ("EURGBP", "USDJPY"): +0.02,
+    ("EURJPY", "GBPAUD"): -0.27,
+    ("EURJPY", "GBPCAD"): +0.28,
+    ("EURJPY", "GBPCHF"): +0.02,
+    ("EURJPY", "GBPUSD"): +0.49,
+    ("EURJPY", "NZDUSD"): +0.45,
+    ("EURJPY", "USDCAD"): -0.53,
+    ("EURJPY", "USDCHF"): -0.49,
+    ("EURUSD", "GBPAUD"): -0.30,
+    ("EURUSD", "GBPCAD"): +0.73,
+    ("EURUSD", "GBPCHF"): +0.20,
+    ("EURUSD", "GBPJPY"): +0.48,
+    ("EURUSD", "NZDJPY"): +0.63,
+    ("GBPAUD", "GBPCAD"): -0.02,
+    ("GBPAUD", "GBPCHF"): -0.06,
+    ("GBPAUD", "GBPJPY"): -0.16,
+    ("GBPAUD", "GBPUSD"): -0.19,
+    ("GBPAUD", "NZDJPY"): -0.57,
+    ("GBPAUD", "NZDUSD"): -0.45,
+    ("GBPAUD", "USDCAD"): +0.32,
+    ("GBPAUD", "USDCHF"): +0.16,
+    ("GBPAUD", "USDJPY"): +0.14,
+    ("GBPCAD", "GBPCHF"): +0.63,
+    ("GBPCAD", "GBPJPY"): +0.48,
+    ("GBPCAD", "GBPUSD"): +0.84,
+    ("GBPCAD", "NZDJPY"): +0.42,
+    ("GBPCAD", "NZDUSD"): +0.68,
+    ("GBPCAD", "USDCAD"): -0.11,
+    ("GBPCAD", "USDCHF"): -0.45,
+    ("GBPCAD", "USDJPY"): -0.68,
+    ("GBPCHF", "GBPJPY"): +0.38,
+    ("GBPCHF", "GBPUSD"): +0.42,
+    ("GBPCHF", "NZDJPY"): +0.23,
+    ("GBPCHF", "NZDUSD"): +0.26,
+    ("GBPCHF", "USDCAD"): +0.14,
+    ("GBPCHF", "USDCHF"): +0.24,
+    ("GBPCHF", "USDJPY"): -0.23,
+    ("GBPJPY", "NZDUSD"): +0.49,
+    ("GBPJPY", "USDCAD"): -0.52,
+    ("GBPJPY", "USDCHF"): -0.43,
+    ("GBPUSD", "NZDJPY"): +0.65,
+    ("NZDJPY", "USDCAD"): -0.59,
+    ("NZDJPY", "USDCHF"): -0.56,
 }
 
 # correlation_threshold is read from forex_network.risk_parameters per user (see DB migration patch)
@@ -140,6 +291,47 @@ SLIPPAGE_THRESHOLDS = {
     "GBPUSD": 4, "USDCHF": 4,
     "AUDUSD": 5, "USDCAD": 5, "NZDUSD": 5,
 }
+
+# Currency → country code mapping for economic_releases news blackout
+CURRENCY_COUNTRY_MAP = {
+    "USD": ["US"],
+    "EUR": ["EU", "DE", "FR", "ES", "IT"],
+    "GBP": ["GB"],
+    "JPY": ["JP"],
+    "CHF": ["CH"],
+    "AUD": ["AU"],
+    "CAD": ["CA"],
+    "NZD": ["NZ"],
+}
+
+# High-impact event indicators (matched to actual economic_releases.indicator strings)
+# that trigger a ±4h news blackout. USD events block ALL pairs.
+HIGH_IMPACT_BLACKOUT_INDICATORS = frozenset({
+    # US Federal Reserve
+    "Fed Interest Rate Decision", "Fed Press Conference",
+    "FOMC Minutes", "FOMC Economic Projections",
+    # US key data
+    "Non Farm Payrolls", "Unemployment Rate",
+    "Core Inflation Rate MoM", "Inflation Rate MoM",
+    "Core Inflation Rate YoY", "Inflation Rate YoY",
+    "GDP Growth Rate QoQ Adv", "GDP Growth Rate QoQ 2nd Est",
+    # Bank of England
+    "BoE Interest Rate Decision", "GDP MoM",
+    # ECB
+    "ECB Interest Rate Decision", "ECB Press Conference",
+    "Deposit Facility Rate",
+    # Bank of Japan
+    "BoJ Interest Rate Decision",
+    # Bank of Canada
+    "BoC Interest Rate Decision", "BoC Monetary Policy Report",
+    # RBA
+    "RBA Interest Rate Decision",
+    # GDP — major economies (flash/prel moves markets)
+    "GDP Growth Rate QoQ Flash", "GDP Growth Rate YoY Flash",
+    "GDP Growth Rate QoQ Prel", "GDP Growth Rate YoY Prel",
+    # Inflation — major economies
+    "Inflation Rate YoY", "Inflation Rate YoY Flash",
+})
 
 FX_PAIRS = [
     # USD pairs
@@ -440,7 +632,7 @@ class RiskDataReader:
                 FROM forex_network.trades
                 WHERE user_id = %s
                   AND exit_time IS NOT NULL
-                  AND exit_time >= NOW() - INTERVAL '7 days'
+                  AND exit_time >= date_trunc('week', NOW() AT TIME ZONE 'UTC')
             """, (self.user_id,))
             row = cur.fetchone()
             weekly_pnl = float(row["weekly_pnl"]) if row else 0.0
@@ -541,7 +733,7 @@ class RiskDataReader:
 class CorrelationChecker:
     """Enforces correlation-based position blocking."""
 
-    def __init__(self, user_id: str, threshold: float = 0.75):
+    def __init__(self, user_id: str, threshold: float = 0.70):
         self.user_id = user_id
         self.threshold = threshold
 
@@ -807,7 +999,7 @@ class RiskGuardian:
         self.reader = RiskDataReader(self.db, user_id)
         self._validator = SignalValidator()
         _rp = self.reader.read_risk_parameters() or {}
-        _corr_thresh = _rp.get("correlation_threshold", 0.75) or 0.75
+        _corr_thresh = _rp.get("correlation_threshold", 0.70) or 0.70
         self.correlation_checker = CorrelationChecker(user_id, threshold=float(_corr_thresh))
         self.session_id = str(uuid.uuid4())
         self.cycle_count = 0
@@ -1097,6 +1289,21 @@ class RiskGuardian:
         decision["checks"]["kill_switch"] = "PASS"
 
         # =================================================================
+        # CHECK 1.5: Active drawdown halt from system_events
+        # =================================================================
+        _active_halt = self._check_active_halt()
+        if _active_halt:
+            _halt_type = _active_halt["event_type"]
+            _halt_until = _active_halt.get("halt_until")
+            decision["rejection_reasons"].append(
+                f"{_halt_type}: active halt until {_halt_until or 'manual_review'}"
+            )
+            decision["checks"]["drawdown_halt"] = "FAIL"
+            self._write_decision(decision)
+            return decision
+        decision["checks"]["drawdown_halt"] = "PASS"
+
+        # =================================================================
         # CHECK 2: Circuit breaker (RG1 related)
         # =================================================================
         if risk_params.get("circuit_breaker_active"):
@@ -1144,6 +1351,11 @@ class RiskGuardian:
                 self._write_decision(decision)
                 return decision
             elif weekly_loss_pct >= weekly_limit:
+                # Write halt to system_events — halt_until=None means manual review required
+                self._write_drawdown_halt(
+                    "weekly_drawdown_halt", None,
+                    f"weekly_dd_{weekly_loss_pct:.1f}pct_limit_{weekly_limit:.1f}pct"
+                )
                 decision["rejection_reasons"].append(
                     f"weekly_drawdown_exceeded: {weekly_loss_pct:.3f}% >= limit {weekly_limit}%"
                 )
@@ -1186,6 +1398,13 @@ class RiskGuardian:
             self._write_decision(decision)
             return decision
         elif daily_loss_pct >= daily_limit:
+            # Write halt to system_events — execution agent reads this to close all positions
+            _tomorrow_utc = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+                             ).replace(hour=0, minute=0, second=0, microsecond=0)
+            self._write_drawdown_halt(
+                "daily_drawdown_halt", _tomorrow_utc,
+                f"daily_dd_{daily_loss_pct:.1f}pct_limit_{daily_limit:.1f}pct"
+            )
             decision["rejection_reasons"].append(
                 f"daily_loss_exceeded: {daily_loss_pct:.3f}% >= limit {daily_limit}%"
             )
@@ -1225,6 +1444,8 @@ class RiskGuardian:
 
         # Per-currency cap — read from DB max_usd_units, shared by pre-check and CHECK 4.5.
         _curr_cap = int(risk_params.get("max_usd_units", 3))
+        # Directional concentration cap (same-side currency exposure): spec = 2
+        _conc_cap = int(risk_params.get("currency_concentration_cap", 2))
 
         # -----------------------------------------------------------------
         # CHECK 4 pre-check: shared-currency directional concentration
@@ -1265,31 +1486,50 @@ class RiskGuardian:
         _proposed_shorts = _short_currencies(instrument, direction)
         _conc_breaches = []
         for _c in _proposed_longs:
-            if _long_counts.get(_c, 0) + 1 > _curr_cap:
+            if _long_counts.get(_c, 0) + 1 > _conc_cap:
                 _conc_breaches.append(
-                    f"{_c}:long={_long_counts.get(_c,0)+1}/{_curr_cap}"
+                    f"{_c}:long={_long_counts.get(_c,0)+1}/{_conc_cap}"
                 )
         for _c in _proposed_shorts:
-            if _short_counts.get(_c, 0) + 1 > _curr_cap:
+            if _short_counts.get(_c, 0) + 1 > _conc_cap:
                 _conc_breaches.append(
-                    f"{_c}:short={_short_counts.get(_c,0)+1}/{_curr_cap}"
+                    f"{_c}:short={_short_counts.get(_c,0)+1}/{_conc_cap}"
                 )
         if _conc_breaches:
             decision["rejection_reasons"].append(
                 f"shared_currency_concentration: {instrument} {direction} would stack "
-                f"same-direction exposure beyond cap (cap={_curr_cap}): "
+                f"same-direction exposure beyond cap (cap={_conc_cap}): "
                 f"{', '.join(_conc_breaches)}"
             )
             decision["checks"]["correlation"] = "FAIL"
             decision["risk_details"]["shared_currency_concentration"] = _conc_breaches
-            log_event('CAP_BLOCK', f'{instrument} {direction} blocked — shared_currency_concentration cap={_curr_cap}',
+            log_event('CAP_BLOCK', f'{instrument} {direction} blocked — shared_currency_concentration cap={_conc_cap}',
                 category='RISK', agent='risk_guardian', user_id=str(self.user_id), instrument=instrument,
                 payload={'breaches': _conc_breaches, 'cap': _curr_cap, 'direction': direction})
             warn("risk_guardian", "CAP_BLOCK", "Currency concentration cap breach",
-                 pair=instrument, direction=direction, cap=_curr_cap,
+                 pair=instrument, direction=direction, cap=_conc_cap,
                  breaches=str(_conc_breaches)[:120])
         else:
             decision["risk_details"]["shared_currency_concentration"] = "PASS"
+
+        # =================================================================
+        # CHECK 4.3: News blackout (high-impact event ±4h window)
+        # =================================================================
+        _now_utc = datetime.datetime.now(datetime.timezone.utc)
+        _blackout, _event_desc, _mins = self._is_news_blackout(instrument, _now_utc)
+        if _blackout:
+            decision["rejection_reasons"].append(
+                f"news_blackout: {instrument} blocked due to {_event_desc} "
+                f"({_mins:+d}min from now)"
+            )
+            decision["checks"]["news_blackout"] = "FAIL"
+            log_event("NEWS_BLACKOUT", f"{instrument} blocked: {_event_desc}",
+                category="RISK", agent="risk_guardian", user_id=str(self.user_id),
+                instrument=instrument,
+                payload={"event": _event_desc, "minutes_to_event": _mins})
+            self._write_decision(decision)
+            return decision
+        decision["checks"]["news_blackout"] = "PASS"
 
         corr_passed, corr_reasons = self.correlation_checker.check(
             instrument=instrument,
@@ -1691,6 +1931,134 @@ class RiskGuardian:
         # Write decision
         self._write_decision(decision)
         return decision
+
+    def _write_drawdown_halt(self, event_type: str,
+                               halt_until: Optional[datetime.datetime],
+                               halt_reason: str) -> None:
+        """Write a drawdown halt event to system_events.
+        daily_drawdown_halt: halt_until = tomorrow 00:00 UTC (auto-resumes).
+        weekly_drawdown_halt: halt_until = None (manual review required).
+        """
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO forex_network.system_events
+                    (event_time, category, agent, user_id, event_type,
+                     message, payload, halt_until, halt_reason)
+                VALUES (NOW(), 'RISK', 'risk_guardian', %s, %s, %s, %s, %s, %s)
+            """, (
+                self.user_id,
+                event_type,
+                f'{event_type}: {halt_reason}',
+                json.dumps({"halt_reason": halt_reason, "user_id": str(self.user_id)}),
+                halt_until,
+                halt_reason,
+            ))
+            self.db.commit()
+            logger.warning(
+                f"Drawdown halt written: {event_type} "
+                f"halt_until={halt_until or 'manual_review'} reason={halt_reason}"
+            )
+        except Exception as e:
+            logger.error(f"_write_drawdown_halt failed: {e}")
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+        finally:
+            cur.close()
+
+    def _check_active_halt(self) -> Optional[Dict]:
+        """Check system_events for an active drawdown halt for this user.
+        Returns the most recent active halt row, or None if no active halt.
+        A daily halt expires at halt_until; a weekly halt has halt_until=NULL
+        and requires manual clearing of the system_events row.
+        """
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT event_type, halt_until, halt_reason, event_time
+                FROM forex_network.system_events
+                WHERE user_id = %s
+                  AND event_type IN ('daily_drawdown_halt', 'weekly_drawdown_halt')
+                  AND (halt_until IS NULL OR halt_until > NOW())
+                ORDER BY event_time DESC LIMIT 1
+            """, (self.user_id,))
+            return cur.fetchone()
+        except Exception as e:
+            logger.warning(f"_check_active_halt failed: {e}")
+            return None  # Fail open — halt check failure should not block trading
+        finally:
+            cur.close()
+
+    def _is_news_blackout(
+        self, instrument: str, now_utc: datetime.datetime
+    ) -> Tuple[bool, Optional[str], Optional[int]]:
+        """Check if instrument is within a ±4h news blackout window.
+
+        USD events block ALL pairs (FOMC/NFP moves the entire FX market).
+        Other currencies only block pairs that contain that currency.
+        Queries economic_releases for high-impact events within the window.
+        Fails open on DB error (news data outage should not halt trading).
+
+        Returns: (in_blackout, event_description, minutes_to_event)
+        """
+        pair = instrument.upper()
+        legs = CURRENCY_EXPOSURE_MAP.get(pair, ())
+        if len(legs) != 2:
+            return False, None, None
+        base_ccy, quote_ccy = legs
+
+        # Collect relevant country codes for this pair
+        relevant_countries: List[str] = []
+        for ccy in [base_ccy, quote_ccy]:
+            for country in CURRENCY_COUNTRY_MAP.get(ccy, []):
+                if country not in relevant_countries:
+                    relevant_countries.append(country)
+        # USD events affect all pairs — always include US
+        for country in CURRENCY_COUNTRY_MAP.get("USD", []):
+            if country not in relevant_countries:
+                relevant_countries.append(country)
+
+        if not relevant_countries:
+            return False, None, None
+
+        window_start = now_utc - datetime.timedelta(hours=4)
+        window_end   = now_utc + datetime.timedelta(hours=4)
+
+        cur = self.db.cursor()
+        try:
+            cur.execute("""
+                SELECT indicator, release_time, country
+                FROM forex_network.economic_releases
+                WHERE country = ANY(%s)
+                  AND impact_level = 'high'
+                  AND indicator = ANY(%s)
+                  AND release_time BETWEEN %s AND %s
+                ORDER BY ABS(EXTRACT(EPOCH FROM (release_time - %s)))
+                LIMIT 1
+            """, (
+                relevant_countries,
+                list(HIGH_IMPACT_BLACKOUT_INDICATORS),
+                window_start,
+                window_end,
+                now_utc,
+            ))
+            row = cur.fetchone()
+            if row:
+                event_time = row["release_time"]
+                minutes = int((event_time - now_utc).total_seconds() / 60)
+                desc = (
+                    f"{row['indicator']} ({row['country']}) "
+                    f"at {event_time.strftime('%Y-%m-%d %H:%M UTC')}"
+                )
+                return True, desc, minutes
+            return False, None, None
+        except Exception as e:
+            logger.warning(f"_is_news_blackout query failed for {instrument}: {e}")
+            return False, None, None  # Fail open
+        finally:
+            cur.close()
 
     def _write_decision(self, decision: Dict[str, Any]):
         """Write risk guardian decision as a signal."""
