@@ -978,15 +978,15 @@ class ConvergenceCalculator:
         Compute convergence score for a single pair.
 
         Formula (matches spec):
-            convergence = Σ(agent_score × agent_weight) over reporting agents
-                          whose confidence ≥ MIN_AGENT_CONFIDENCE
+            convergence = Σ(agent_score × agent_weight) over all reporting agents
 
         Deliberate choices:
-          1. Confidence is NOT multiplied into the score. Confidence is a gate
-             (drop the signal if below the floor) and reported separately as
-             avg_confidence. Previously `score × confidence × weight` squashed
-             convergence below reachable thresholds when the LLM returned
-             modest confidences (0.3–0.5).
+          1. Confidence is NOT multiplied into the score and NOT used as a gate.
+             Confidence is reported in convergence_detail for observability only.
+             Low-confidence signals (< 0.15) are flagged with {agent}_low_conf
+             in convergence_detail but still contribute their score.
+             Previously `score × confidence × weight` squashed convergence below
+             reachable thresholds when the LLM returned modest confidences (0.3–0.5).
           2. No division by total_weight. Prior code rescaled surviving
              contributions when an agent was missing, silently boosting
              convergence the wrong way. Degradation is handled on the
@@ -1002,8 +1002,6 @@ class ConvergenceCalculator:
 
         Returns (convergence_score, bias, confidence, detail_dict).
         """
-        MIN_AGENT_CONFIDENCE = 0.20
-
         detail: Dict[str, Any] = {"pair": pair}
         directional_sum = 0.0        # macro + technical weighted contributions only
         regime_score_captured = None  # captured separately; applied as multiplier
@@ -1078,10 +1076,12 @@ class ConvergenceCalculator:
             confidence = float(pair_signal["confidence"] or 0)
             raw_bias = (pair_signal["bias"] or "neutral").lower()
 
-            # Confidence gate.
-            if confidence < MIN_AGENT_CONFIDENCE:
-                detail[f"{agent_name}_dropped_low_conf"] = round(confidence, 4)
-                continue
+            # Confidence is observational only — not a gate.
+            # Flag signals where confidence is below 0.15 for dashboard visibility,
+            # but still allow them to contribute their score to convergence.
+            if confidence < 0.15:
+                detail[f"{agent_name}_low_conf_flag"] = True
+            detail[f"{agent_name}_confidence"] = round(confidence, 4)
 
             # Normalise compound bias labels.
             if "bullish" in raw_bias:
@@ -1157,7 +1157,6 @@ class ConvergenceCalculator:
         detail["consensus_bias"] = consensus_bias
         detail["avg_confidence"] = round(avg_confidence, 4)
         detail["agents_reporting"] = len(agents_present)
-        detail["min_confidence_gate"] = MIN_AGENT_CONFIDENCE
 
         return convergence, consensus_bias, avg_confidence, detail
 
