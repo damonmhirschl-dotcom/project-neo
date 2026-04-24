@@ -100,17 +100,15 @@ def compute_daily_summary(conn, summary_date: date) -> dict:
         """)
         signals_generated = cur.fetchone()["count"]
 
-        # ── System stress scores for the day ──────────────────────────────────
+        # ── V1 Swing health: open positions ──────────────────────────────────
+        # market_context_snapshots no longer populated (regime agent decommissioned)
         cur.execute("""
-            SELECT
-                MIN(system_stress_score) AS stress_min,
-                MAX(system_stress_score) AS stress_max,
-                AVG(system_stress_score) AS stress_avg
-            FROM shared.market_context_snapshots
-            WHERE snapshot_time >= %s AND snapshot_time < %s
-              AND system_stress_score IS NOT NULL
-        """, (day_start, day_end))
-        stress = cur.fetchone()
+            SELECT COUNT(*) AS open_count
+            FROM forex_network.trades
+            WHERE exit_time IS NULL
+        """)
+        _open_pos = cur.fetchone()
+        stress = None  # schema fields preserved as 0 below
 
         # ── Circuit breakers ──────────────────────────────────────────────────
         cur.execute("""
@@ -192,21 +190,11 @@ def compute_daily_summary(conn, summary_date: date) -> dict:
     estimated_budget = 3 * 25000 * 0.03  # rough estimate
     capital_deployed_pct = min((total_deployed / estimated_budget) * 100, 100.0) if estimated_budget > 0 else 0
 
-    # Stress state transitions
-    stress_min = float(stress["stress_min"]) if stress and stress["stress_min"] else 0
-    stress_max = float(stress["stress_max"]) if stress and stress["stress_max"] else 0
-
-    def stress_state(score):
-        if score < 30:   return "Normal"
-        if score < 50:   return "Elevated"
-        if score < 70:   return "High"
-        if score < 85:   return "Pre-crisis"
-        return "Crisis"
-
-    stress_state_label = (
-        stress_state(stress_min) if stress_state(stress_min) == stress_state(stress_max)
-        else f"{stress_state(stress_min)}→{stress_state(stress_max)}"
-    )
+    # V1 Swing: stress monitoring decommissioned; preserve DB schema fields as 0
+    stress_min = 0
+    stress_max = 0
+    open_positions_now = int(_open_pos["open_count"]) if _open_pos else 0
+    stress_state_label = "V1 Swing"
 
     return {
         "summary_date":          summary_date.isoformat(),
@@ -225,9 +213,10 @@ def compute_daily_summary(conn, summary_date: date) -> dict:
         "circuit_breakers_fired": int(circuit_breakers),
         "agent_degradations":    int(degradations),
         "data_issues":           0,
-        "stress_score_min":      round(stress_min, 2),
-        "stress_score_max":      round(stress_max, 2),
-        "stress_score_avg":      round(float(stress["stress_avg"]) if stress and stress["stress_avg"] else 0, 2),
+        "stress_score_min":      0,   # regime agent decommissioned
+        "stress_score_max":      0,
+        "stress_score_avg":      0,
+        "open_positions_count":  open_positions_now,
         "patterns_activated":    int(patterns["activated"]) if patterns else 0,
         "patterns_deactivated":  int(patterns["deactivated"]) if patterns else 0,
         "detail": {
@@ -243,6 +232,7 @@ def compute_daily_summary(conn, summary_date: date) -> dict:
             "top_pairs":        top_pairs,
             "top_session":      top_session,
             "stress_state":     stress_state_label,
+            "open_positions":   open_positions_now,
         },
     }
 
@@ -308,7 +298,7 @@ Best session: {(detail.get('top_session') or 'N/A').title()}
 ────────────────────────────
 SYSTEM
 ────────────────────────────
-Stress score:  {d.get('stress_score_min', 0):.1f} – {d.get('stress_score_max', 0):.1f} ({detail.get('stress_state', 'Normal')})
+Open positions: {detail.get('open_positions', 0)}  ({detail.get('stress_state', 'V1 Swing')})
 Circuit bkrs:  {d.get('circuit_breakers_fired', 0)}
 Degradations:  {d.get('agent_degradations', 0)}
 Patterns +/-:  +{d.get('patterns_activated', 0)} / -{d.get('patterns_deactivated', 0)}

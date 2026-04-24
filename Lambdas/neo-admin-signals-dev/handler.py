@@ -416,12 +416,14 @@ def handler(event, context):
                     "created_at":  r["created_at"].isoformat() if r["created_at"] else None,
                     "expires_at":  r["expires_at"].isoformat() if r["expires_at"] else None,
                 }
-                # Shared context fields for every card
+                # Shared context fields for every card.
+                # Omit fields that are None so null values don't spread into card_payload
+                # (stress_score/stress_state are None post-regime-decommission).
                 ctx = {k: payload[k] for k in
                        ("cycle","stress_score","stress_state","current_session",
                         "day_of_week","effective_threshold","threshold_breakdown",
                         "approved_count","rejected_count","open_positions","risk_budget")
-                       if k in payload}
+                       if k in payload and payload[k] is not None}
 
                 if decisions:
                     _WEIGHTS = {"macro": 0.35, "technical": 0.45, "regime": 0.20}
@@ -608,7 +610,8 @@ def handler(event, context):
                     "technical_persistence_cycles": tp.get("cycles", 0),
                     "regime_score":                 round(float(cd.get("regime_score") or 0), 4),
                     "regime_confidence":            round(float(cd.get("regime_confidence") or 0), 4),
-                    "stress_score":                 float(stress_score) if stress_score is not None else None,
+                    # stress_score omitted when None (regime agent decommissioned post-V1-Swing)
+                    **({"stress_score": float(stress_score)} if stress_score is not None else {}),
                     "stress_state":                 stress_state,
                     "current_session":              session,
                     "day_of_week":                  dow,
