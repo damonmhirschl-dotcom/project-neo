@@ -1145,9 +1145,15 @@ function RecentTradesPanel({trades}) {
             <tbody>
               {rows.map((t,i)=>{
                 const pips=t.pnl_pips??t.pips??null;
-                const pnl=t.pnl??t.profit_loss??null;
-                const held=t.held_minutes??t.hold_minutes??null;
-                const exitTs=t.exit_time??t.exit_date??t.closed_at??null;
+                const pnl=t.pnl_gbp??t.pnl??t.profit_loss??null;
+                // Reconstruct full exit timestamp: exit_time may be time-only "HH:MM" — combine with exit_date
+                const rawExit=t.exit_time??t.closed_at??null;
+                const exitTs=rawExit&&/^\d{2}:\d{2}/.test(rawExit)&&t.exit_date
+                  ?t.exit_date+'T'+rawExit+(rawExit.length<=5?':00Z':'Z')
+                  :rawExit??t.exit_date??null;
+                // Derive hold time from entry/exit when held_minutes absent
+                let held=t.held_minutes??t.hold_minutes??null;
+                if(held==null&&t.entry_time&&exitTs){const ms=new Date(exitTs)-new Date(t.entry_time);if(ms>0)held=Math.round(ms/60000);}
                 const conv=t.conv??t.convergence_score??t.final_convergence??null;
                 return (
                   <tr key={i}>
@@ -1158,8 +1164,8 @@ function RecentTradesPanel({trades}) {
                     <td className="mono">{fmt(t.entry_price,4)}</td>
                     <td className="mono">{fmt(t.exit_price,4)}</td>
                     <td className={pips==null?'':pips>=0?'val-pos':'val-neg'}>{pips!=null?fmtPips(pips):'—'}</td>
-                    <td className={pnl==null?'':pnl>=0?'val-pos':'val-neg'}>{pnl!=null?(pnl>=0?'+$':'-$')+Math.abs(pnl).toFixed(0):'—'}</td>
-                    <td className="mono val-dim">{held!=null?(held<60?`${held}m`:`${Math.floor(held/60)}h`):'—'}</td>
+                    <td className={pnl==null?'':pnl>=0?'val-pos':'val-neg'}>{pnl!=null?(pnl>=0?'+':'')+'\u00a3'+Math.abs(pnl).toFixed(2):'—'}</td>
+                    <td className="mono val-dim">{held!=null?(held<60?`${Math.round(held)}m`:`${Math.floor(held/60)}h ${Math.round(held)%60}m`):'—'}</td>
                     <td className="exit-reason">{t.exit_reason||t.close_reason||'—'}</td>
                     <td><span className="conv-tag">{conv!=null?fmt(conv,3):'—'}</span></td>
                   </tr>
@@ -1381,9 +1387,15 @@ function TradesTab({trades, openPositions, onDownload}) {
               <tbody>
                 {filtered.map((t,i)=>{
                   const pips=t.pnl_pips??t.pips??null;
-                  const pnl=t.pnl??t.profit_loss??null;
-                  const held=t.held_minutes??t.hold_minutes??null;
-                  const exitTs=t.exit_time??t.exit_date??t.closed_at??null;
+                  const pnl=t.pnl_gbp??t.pnl??t.profit_loss??null;
+                  // Reconstruct full exit timestamp: exit_time may be time-only "HH:MM" — combine with exit_date
+                  const rawExit=t.exit_time??t.closed_at??null;
+                  const exitTs=rawExit&&/^\d{2}:\d{2}/.test(rawExit)&&t.exit_date
+                    ?t.exit_date+'T'+rawExit+(rawExit.length<=5?':00Z':'Z')
+                    :rawExit??t.exit_date??null;
+                  // Derive hold time from entry/exit when held_minutes absent
+                  let held=t.held_minutes??t.hold_minutes??null;
+                  if(held==null&&t.entry_time&&exitTs){const ms=new Date(exitTs)-new Date(t.entry_time);if(ms>0)held=Math.round(ms/60000);}
                   const conv=t.conv??t.convergence_score??t.final_convergence??null;
                   return (
                     <tr key={i}>
@@ -1394,8 +1406,8 @@ function TradesTab({trades, openPositions, onDownload}) {
                       <td className="mono">{fmt(t.entry_price,4)}</td>
                       <td className="mono">{fmt(t.exit_price,4)}</td>
                       <td className={pips==null?'':pips>=0?'val-pos':'val-neg'}>{pips!=null?fmtPips(pips):'—'}</td>
-                      <td className={pnl==null?'':pnl>=0?'val-pos':'val-neg'}>{pnl!=null?(pnl>=0?'+$':'-$')+Math.abs(pnl).toFixed(0):'—'}</td>
-                      <td className="mono val-dim">{held!=null?(held<60?`${held}m`:`${Math.floor(held/60)}h`):'—'}</td>
+                      <td className={pnl==null?'':pnl>=0?'val-pos':'val-neg'}>{pnl!=null?(pnl>=0?'+':'')+'\u00a3'+Math.abs(pnl).toFixed(2):'—'}</td>
+                      <td className="mono val-dim">{held!=null?(held<60?`${Math.round(held)}m`:`${Math.floor(held/60)}h ${Math.round(held)%60}m`):'—'}</td>
                       <td className="exit-reason">{t.exit_reason||t.close_reason||'—'}</td>
                       <td><span className="conv-tag">{conv!=null?fmt(conv,3):'—'}</span></td>
                     </tr>
