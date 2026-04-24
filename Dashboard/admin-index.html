@@ -32,14 +32,16 @@ html,body{background:var(--bg);color:var(--text1);font-family:var(--sans);font-s
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* LAYOUT */
-.dash{max-width:1800px;margin:0 auto;padding:0 12px 24px}
+.page-wrap{max-width:1600px;margin:0 auto;padding:0 24px}
+.dash{padding-bottom:24px}
 .row{display:grid;gap:8px;margin-bottom:8px}
 .row-3{grid-template-columns:repeat(3,1fr)}
 .row-6040{grid-template-columns:60fr 40fr}
 .row-1{grid-template-columns:1fr}
 
 /* HEADER */
-.header{background:var(--panel);border-bottom:1px solid var(--border);padding:0 16px;height:48px;display:flex;align-items:center;gap:16px;margin-bottom:8px;position:sticky;top:0;z-index:100}
+.header{background:var(--panel);border-bottom:1px solid var(--border);height:48px;display:flex;align-items:center;gap:16px;margin-bottom:8px;position:sticky;top:0;z-index:100}
+.header-inner{max-width:1600px;margin:0 auto;padding:0 24px;width:100%;display:flex;align-items:center;gap:16px}
 .header-logo{font-family:var(--mono);font-size:.85rem;font-weight:600;color:var(--text1);letter-spacing:.05em;white-space:nowrap}
 .header-logo span{color:var(--green)}
 .header-divider{width:1px;height:24px;background:var(--border2);flex-shrink:0}
@@ -554,39 +556,41 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
 
   return (
     <div className="header">
-      <div className="header-logo"><span>Project Neo</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Admin</span></div>
-      <div className="header-divider"/>
-      <div className="header-center">
-        {balance!=null && (
+      <div className="header-inner">
+        <div className="header-logo"><span>Project Neo</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Admin</span></div>
+        <div className="header-divider"/>
+        <div className="header-center">
+          {balance!=null && (
+            <div className="header-stat">
+              <span className="lbl">Balance</span>
+              <span className="val">${balance.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            </div>
+          )}
           <div className="header-stat">
-            <span className="lbl">Balance</span>
-            <span className="val">${balance.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            <span className="lbl">P&L Today</span>
+            <span className={`val ${pnlToday>=0?'pos':'neg'}`}>{pnlToday>=0?'+$':'-$'}{Math.abs(pnlToday).toFixed(0)}</span>
           </div>
-        )}
-        <div className="header-stat">
-          <span className="lbl">P&L Today</span>
-          <span className={`val ${pnlToday>=0?'pos':'neg'}`}>{pnlToday>=0?'+$':'-$'}{Math.abs(pnlToday).toFixed(0)}</span>
-        </div>
-        <div className="header-stat">
-          <span className="lbl">Open trades</span>
-          <span className="val">{positions.length}</span>
-        </div>
-        <div className="header-stat">
-          <span className="lbl">Stress</span>
-          <span className="val"><span className={`stress-badge ${stressCls}`}>{(stressState||'—').toUpperCase()}</span></span>
-        </div>
-        {latestDec.stress_score!=null && (
           <div className="header-stat">
-            <span className="lbl">Stress score</span>
-            <span className="val mono-sm">{fmt(latestDec.stress_score,1)}</span>
+            <span className="lbl">Open trades</span>
+            <span className="val">{positions.length}</span>
           </div>
-        )}
-      </div>
-      <div className="header-right">
-        <span className="ts">{clock}</span>
-        {lastUpdated && <span className="ts">↻ {relTime(lastUpdated)}</span>}
-        <span className={`session-badge ${sessCls}`}>{sessLabel}</span>
-        <button className="btn-refresh" onClick={onRefresh} disabled={refreshing}>{refreshing?'↻ …':'↻ Refresh'}</button>
+          <div className="header-stat">
+            <span className="lbl">Stress</span>
+            <span className="val"><span className={`stress-badge ${stressCls}`}>{(stressState||'—').toUpperCase()}</span></span>
+          </div>
+          {latestDec.stress_score!=null && (
+            <div className="header-stat">
+              <span className="lbl">Stress score</span>
+              <span className="val mono-sm">{fmt(latestDec.stress_score,1)}</span>
+            </div>
+          )}
+        </div>
+        <div className="header-right">
+          <span className="ts">{clock}</span>
+          {lastUpdated && <span className="ts">↻ {relTime(lastUpdated)}</span>}
+          <span className={`session-badge ${sessCls}`}>{sessLabel}</span>
+          <button className="btn-refresh" onClick={onRefresh} disabled={refreshing}>{refreshing?'↻ …':'↻ Refresh'}</button>
+        </div>
       </div>
     </div>
   );
@@ -1515,7 +1519,7 @@ function App() {
   return (
     <div>
       <Header data={data} lastUpdated={lastUpdated} onRefresh={refresh} refreshing={refreshing}/>
-      <div className="dash">
+      <div className="page-wrap"><div className="dash">
 
         {/* TAB NAV */}
         <div className="tab-nav">
@@ -1565,7 +1569,7 @@ function App() {
           <AuditTab audit={audit}/>
         )}
 
-      </div>
+      </div></div>{/* .dash / .page-wrap */}
     </div>
   );
 }
