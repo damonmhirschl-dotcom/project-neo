@@ -32,6 +32,15 @@ import psycopg2
 import psycopg2.extras
 
 sys.path.insert(0, '/root/Project_Neo_Damon')
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from v1_swing_parameters import (
+    NEUTRAL_MACRO_THRESHOLD,
+    RISK_PER_TRADE_PCT,
+    MAX_CONCURRENT_POSITIONS,
+    CORRELATION_BLOCK_THRESHOLD,
+    MIN_4H_BARS_FOR_SIGNAL,
+)
 from shared.alerting import send_alert
 from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary, AGENT_SCOPE_USER_ID
@@ -83,24 +92,34 @@ REGIME_SNAPSHOT_MAX_AGE_MINUTES = 55  # regime quiet-hours sleep = 60s; 55 avoid
 HEARTBEAT_INTERVAL_SECONDS = 60
 AGENT_NAME = "orchestrator"
 
-# Convergence weights
+# Convergence weights — retained for compute_pair_convergence (magnitude scoring).
+# The V1 Swing gate (_evaluate_v1_swing) replaces the threshold comparison.
 CONVERGENCE_WEIGHTS = {
     "macro":     0.40,
     "technical": 0.40,
     "regime":    0.20,
 }
 
-# User profile defaults (read from risk_parameters at runtime)
-# Keyed by Cognito sub (UUID) — the value main() passes as user_id.
-# Prior bug: keyed by "neo_user_00X" so USER_PROFILES.get(uuid, ...) always
-# returned the default (Balanced), silently mis-profiling all three users.
+# V1 Swing: single profile for all users.
+# Conservative/Balanced/Aggressive profiles removed (2026-04-24).
+# Per-user settings come from v1_swing_parameters.py.
+# USER_PROFILES kept as a minimal stub so ConvergenceCalculator.__init__ doesn't raise.
 USER_PROFILES = {
-    # neo_user_001 Conservative
-    "e61202e4-30d1-70f8-9927-30b8a439e042": {"name": "Conservative", "base_threshold": 0.80, "min_rr": 2.0, "min_spread_ratio": 7.0, "session_filter": ["london", "overlap"], "day_filter": [2, 3, 4]},
-    # neo_user_002 Balanced
-    "76829264-20e1-7023-1e31-37b7a37a1274": {"name": "Balanced",     "base_threshold": 0.65, "min_rr": 1.5, "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5]},
-    # neo_user_003 Aggressive
-    "d6c272e4-a031-7053-af8e-ade000f0d0d5": {"name": "Aggressive",   "base_threshold": 0.55, "min_rr": 1.2, "min_spread_ratio": 4.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5]},
+    # neo_user_001
+    "e61202e4-30d1-70f8-9927-30b8a439e042": {
+        "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
+        "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
+    },
+    # neo_user_002
+    "76829264-20e1-7023-1e31-37b7a37a1274": {
+        "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
+        "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
+    },
+    # neo_user_003
+    "d6c272e4-a031-7053-af8e-ade000f0d0d5": {
+        "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
+        "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
+    },
 }
 
 FX_PAIRS = [
@@ -140,15 +159,8 @@ CROSS_PAIR_SESSIONS = {
 # Per-cycle convergence cache for collapse-alert delta comparison
 _prev_convergence_scores: dict = {}
 
-# Stress score → orchestrator behaviour
-STRESS_ADJUSTMENTS = [
-    # (max_score, threshold_add, size_multiplier, session_restriction, new_entries_allowed)
-    (30,  0.00, 1.00, None,                     True),   # Normal
-    (50,  0.05, 0.75, None,                     True),   # Elevated
-    (70,  0.10, 0.50, ["london", "overlap"],    True),   # High
-    (85,  0.15, 0.25, None,                     False),  # Pre-crisis
-    (100, 0.00, 0.00, None,                     False),  # Crisis
-]
+# V1 Swing (2026-04-24): STRESS_ADJUSTMENTS removed.
+# Stress score is read for observability/logging only; does NOT raise threshold.
 
 # Pre-event protocol
 PRE_EVENT_WINDOW_MINUTES = 60
@@ -880,42 +892,18 @@ class ConvergenceCalculator:
         breakdown["base_threshold"] = base
         effective = base
 
-        # 2. Stress score adjustment
-        stress_score = market_context.get("stress_score", 0)
-        stress_add = 0.0
-        stress_size_mult = 1.0
-        stress_session_restriction = None
-        stress_new_entries = True
+        # 2. Stress (V1 Swing 2026-04-24): stress no longer raises the gate threshold.
+        # Stress score is recorded for observability only.
+        _stress_score_obs = market_context.get("stress_score", 0)
+        breakdown["stress_score_observed"] = _stress_score_obs
+        breakdown["stress_state_observed"] = market_context.get("stress_state", "unknown")
+        # Backward-compat keys so evaluate_pair CHECK 2 still passes cleanly:
+        breakdown["stress_new_entries_allowed"] = True
+        breakdown["stress_session_restriction"] = None
+        breakdown["stress_size_multiplier"] = 1.0
+        breakdown["stress_adjustment"] = 0.0
 
-        for max_score, t_add, s_mult, s_restrict, new_ok in STRESS_ADJUSTMENTS:
-            if stress_score <= max_score:
-                stress_add = t_add
-                stress_size_mult = s_mult
-                stress_session_restriction = s_restrict
-                stress_new_entries = new_ok
-                break
-
-        effective += stress_add
-        breakdown["stress_adjustment"] = stress_add
-        breakdown["stress_size_multiplier"] = stress_size_mult
-        breakdown["stress_session_restriction"] = stress_session_restriction
-        breakdown["stress_new_entries_allowed"] = stress_new_entries
-
-        # 3. R5: Stress score confidence caution buffer
-        caution_buffer = market_context.get("convergence_caution_buffer", 0.0)
-        if caution_buffer > 0:
-            effective += caution_buffer
-            breakdown["r5_caution_buffer"] = caution_buffer
-
-        # R5: If stress_score_confidence is 'low', apply Elevated floor
-        if market_context.get("stress_score_confidence") == "low":
-            elevated_floor_add = 0.05
-            elevated_floor_mult = 0.75
-            if stress_add < elevated_floor_add:
-                effective += (elevated_floor_add - stress_add)
-                breakdown["r5_elevated_floor_applied"] = True
-            stress_size_mult = min(stress_size_mult, elevated_floor_mult)
-            breakdown["stress_size_multiplier"] = stress_size_mult
+        # 3. (Removed) R5 caution buffer — stress no longer modifies threshold
 
         # 4. Pre-event protocol
         if upcoming_events:
@@ -949,8 +937,8 @@ class ConvergenceCalculator:
         drawdown_mult = float(risk_params.get("size_multiplier", 1.0))
         breakdown["drawdown_size_multiplier"] = drawdown_mult
 
-        # Combined size multiplier
-        combined_size_mult = stress_size_mult * drawdown_mult
+        # Combined size multiplier (V1 Swing: stress_size_mult always 1.0)
+        combined_size_mult = drawdown_mult
         breakdown["combined_size_multiplier"] = combined_size_mult
 
         # O1: Threshold is a HARD FLOOR — cap at minimum of base
@@ -960,8 +948,7 @@ class ConvergenceCalculator:
 
         logger.info(
             f"Effective threshold: {effective:.4f} "
-            f"(base={base}, stress=+{stress_add}, "
-            f"caution=+{caution_buffer:.3f}, "
+            f"(base={base}, "
             f"pre_event=+{breakdown.get('pre_event_adjustment', 0)}, "
             f"degradation=+{total_degradation_boost})"
         )
@@ -1160,6 +1147,48 @@ class ConvergenceCalculator:
 
         return convergence, consensus_bias, avg_confidence, detail
 
+    # -------------------------------------------------------------------------
+    # V1 Swing binary AND gate (Change 1 — 2026-04-24)
+    # -------------------------------------------------------------------------
+    def _evaluate_v1_swing(
+        self,
+        macro_signal: Dict[str, Any],
+        technical_signal: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        """
+        V1 Swing binary gate. Returns (approved: bool, reason: str).
+
+        Logic:
+          1. tech_score == 0  → technical_gate_fail
+          2. |macro_score| < NEUTRAL_MACRO_THRESHOLD → macro_no_direction
+          3. tech_direction != macro_direction → direction_disagreement
+          4. else → approved
+
+        macro_direction is read from signal field 'direction' if present;
+        otherwise derived from score sign (interim until macro agent emits it).
+        """
+        tech_score = float((technical_signal or {}).get('score', 0) or 0)
+
+        # Derive macro direction from explicit field or from score sign
+        macro_direction = (macro_signal or {}).get('direction')
+        if not macro_direction:
+            macro_score = float((macro_signal or {}).get('score', 0) or 0)
+            if abs(macro_score) < NEUTRAL_MACRO_THRESHOLD:
+                macro_direction = 'neutral'
+            else:
+                macro_direction = 'long' if macro_score > 0 else 'short'
+
+        if tech_score == 0:
+            return False, 'technical_gate_fail'
+        if macro_direction == 'neutral':
+            return False, 'macro_no_direction'
+
+        tech_direction = 'long' if tech_score > 0 else 'short'
+        if tech_direction != macro_direction:
+            return False, 'direction_disagreement'
+
+        return True, 'approved'
+
     def evaluate_pair(
         self,
         pair: str,
@@ -1202,15 +1231,9 @@ class ConvergenceCalculator:
         else:
             decision["checks"]["convergence"] = "PASS"
 
-        # === CHECK 2: Stress new entries allowed ===
-        if not threshold_breakdown.get("stress_new_entries_allowed", True):
-            decision["rejection_reasons"].append(
-                f"Stress state {market_context.get('stress_state', 'unknown')} — "
-                f"no new entries (score: {market_context.get('stress_score', 0)})"
-            )
-            decision["checks"]["stress_entries"] = "FAIL"
-        else:
-            decision["checks"]["stress_entries"] = "PASS"
+        # === CHECK 2: Stress gate (V1 Swing 2026-04-24 — removed) ===
+        # Stress no longer blocks new entries. Log for observability only.
+        decision["checks"]["stress_entries"] = "PASS"  # always pass
 
         # === CHECK 3: Kill switch ===
         if market_context.get("kill_switch_active"):
@@ -1222,16 +1245,12 @@ class ConvergenceCalculator:
         # === CHECK 4: Session filter ===
         current_session = market_context.get("current_session", "unknown")
         session_filter = self.profile.get("session_filter")
-        stress_session_restriction = threshold_breakdown.get("stress_session_restriction")
+        # V1 Swing 2026-04-24: stress_session_restriction removed.
 
-        # Apply most restrictive session filter
+        # Apply session filter (stress restriction removed)
         allowed_sessions = None
-        if session_filter and stress_session_restriction:
-            allowed_sessions = list(set(session_filter) & set(stress_session_restriction))
-        elif session_filter:
+        if session_filter:
             allowed_sessions = session_filter
-        elif stress_session_restriction:
-            allowed_sessions = stress_session_restriction
 
         if allowed_sessions and current_session not in allowed_sessions:
             decision["rejection_reasons"].append(
@@ -1953,6 +1972,16 @@ class OrchestratorAgent:
         context['macro_score'] = float(macro_sig.get('score') or 0) if macro_sig else None
         context['tech_score']  = float(tech_sig.get('score')  or 0) if tech_sig  else None
 
+        # Change 7 (V1 Swing 2026-04-24): derive macro_direction for technical agent context.
+        _macro_direction_ctx = macro_sig.get('direction') if macro_sig else None
+        if not _macro_direction_ctx and macro_sig:
+            _ms_ctx = float(macro_sig.get('score') or 0)
+            if abs(_ms_ctx) < NEUTRAL_MACRO_THRESHOLD:
+                _macro_direction_ctx = 'neutral'
+            else:
+                _macro_direction_ctx = 'long' if _ms_ctx > 0 else 'short'
+        context['macro_direction'] = _macro_direction_ctx
+
         # Per-instrument regime signal + global regime payload for pair data
         _regime_sigs = signals.get('regime', [])
         _regime_sig  = next((s for s in _regime_sigs if s.get('instrument') == instrument), {})
@@ -2311,25 +2340,10 @@ class OrchestratorAgent:
         # All gates, checks, and side-effects below are unchanged.
         _scored.sort(key=lambda x: abs(x[1]), reverse=True)
 
-        # Load p50/p75 pair-spread thresholds once — replaces per-pair PERCENTILE_CONT queries.
-        # Populated weekly by scripts/compute_macro_percentiles.py.
-        # Key: pair (e.g. 'EURJPY'), value: percentile of abs(base.composite - quote.composite) over 25yr.
-        _macro_p75: Dict[str, float] = {}
-        _macro_p50: Dict[str, float] = {}
-        try:
-            _pct_cur = self.db.cursor()
-            _pct_cur.execute(
-                "SELECT pair, p50, p75 FROM forex_network.macro_percentile_thresholds"
-            )
-            for _row in _pct_cur.fetchall():
-                _k = _row['pair'].strip()
-                _macro_p75[_k] = float(_row['p75'])
-                _macro_p50[_k] = float(_row['p50'])
-            _pct_cur.close()
-            if _macro_p75:
-                logger.debug(f"Loaded p50/p75 macro thresholds for {len(_macro_p75)} pairs")
-        except Exception as _pct_e:
-            logger.warning(f"macro_percentile_thresholds unavailable: {_pct_e} — fixed threshold only")
+        # V1 Swing (2026-04-24): percentile macro gate removed.
+        # macro_percentile_thresholds table retained in DB but not read here.
+        _macro_p75: Dict[str, float] = {}  # backward-compat placeholder (unused)
+        _macro_p50: Dict[str, float] = {}  # backward-compat placeholder (unused)
 
         for pair, final_convergence, bias, confidence, detail in _scored:
             # >>> DIRECTIONAL GATE — runs BEFORE threshold comparison <<<
@@ -2408,30 +2422,50 @@ class OrchestratorAgent:
                     f"conviction (synthetic tech score=0.0, conviction×0.5)"
                 )
 
-            # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
-            # Layer 1 — macro gate
+            # ── V1 SWING BINARY AND GATE (Change 1 — 2026-04-24) ────────────────
+            # Replaces: old hierarchical gate (macro threshold + tech_too_weak +
+            #           directional_disagreement checks). Now a single binary test:
+            #   macro has direction (|score| >= 0.15) AND tech agrees → approved.
             MACRO_THRESHOLD    = float(risk_params.get('convergence_threshold', 0.30))
-            TECH_MIN_THRESHOLD = 0.0
+            TECH_MIN_THRESHOLD = 0.0  # unused in gate; kept for shadow trade compat
 
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
 
-            # Percentile gate: p50 of abs(base - quote) spread from 25yr history.
-            # effective = max(fixed_threshold, p50) — tighter in rangy markets,
-            # never looser than convergence_threshold risk parameter.
-            # Falls back to fixed threshold if table not yet populated for this pair.
-            _p50 = _macro_p50.get(pair)
-            _effective_macro_threshold = max(MACRO_THRESHOLD, _p50) if _p50 else MACRO_THRESHOLD
+            # Run V1 Swing binary gate
+            _v1swing_approved, _v1swing_reason = self.convergence_calc._evaluate_v1_swing(
+                macro_signal=macro_sig,
+                technical_signal=tech_sig,
+            )
+
+            # Derive _macro_direction from explicit field or score sign (interim)
+            _macro_direction_field = macro_sig.get('direction')
+            if _macro_direction_field:
+                _macro_direction = _macro_direction_field
+            else:
+                _macro_direction = 'long' if _macro_score > 0 else 'short'
+
+            # Regime context for shadow trades
+            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
+            _regime_direction = 'long' if _regime_score_val > 0 else 'short'
+            _regime_agrees = _regime_score_val > 0.25
+            _regime_agrees_pre = (_regime_direction == _macro_direction)
+            _p50 = None  # percentile gate removed (2026-04-24)
+            _effective_macro_threshold = MACRO_THRESHOLD  # display-only reference
+
             detail["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
-            detail["p75_macro_threshold"]       = round(_p50, 4) if _p50 is not None else None
+            detail["p75_macro_threshold"]       = None  # removed
+            detail["v1swing_reason"]            = _v1swing_reason
 
             def _gate_reject(_reason, _pair=pair, _ms=macro_sig, _ts=tech_sig):
                 _stress_val = float(market_context.get("stress_score", 0) or 0)
                 _cat = self.convergence_calc.classify_conflict(_ms, _ts, _stress_val)
+                _ms_score = float(_ms.get('score') or 0)
+                _ts_score = float(_ts.get('score') or 0)
                 logger.info(
                     f"{_pair}: REJECTED — {_reason} "
-                    f"(macro={float(_ms.get('score') or 0):+.3f}, "
-                    f"tech={float(_ts.get('score') or 0):+.3f}, "
+                    f"(macro={_ms_score:+.3f}, "
+                    f"tech={_ts_score:+.3f}, "
                     f"convergence={final_convergence:.3f})"
                 )
                 self.convergence_calc._write_rejection(
@@ -2445,120 +2479,45 @@ class OrchestratorAgent:
                     "effective_threshold": round(effective_threshold, 4),
                     "approved": False,
                     "rejection_reasons": [_reason],
+                    "rejection_reason": _reason,
                     "conflict_category": _cat,
-                    "checks": {"directional_gate": "FAIL"},
+                    "checks": {"v1swing_gate": "FAIL"},
                     "convergence_detail": detail,
+                    "tech_score": round(_ts_score, 4),
+                    "macro_score": round(_ms_score, 4),
+                    "macro_direction": _macro_direction,
+                    "conviction": 1.0,
+                    "convergence_score": round(_ts_score * _ms_score, 4),
                 })
                 self._write_rejected_signal(
                     pair=_pair, reason=_reason,
                     convergence=final_convergence, threshold=effective_threshold,
                     bias=bias,
-                    macro_score=float(_ms.get("score") or 0),
-                    tech_score=float(_ts.get("score") or 0),
+                    macro_score=_ms_score,
+                    tech_score=_ts_score,
                     regime_score=detail.get("regime_score"),
                     payload={"rejection_reasons": [_reason], "conflict_category": _cat},
                 )
 
-            # ── Common shadow-hypothesis context ─────────────────────────────
-            _p50 = _macro_p50.get(pair)
-            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
-            _regime_direction = 'long' if _regime_score_val > 0 else 'short'
-            _macro_direction_pre = 'long' if _macro_score > 0 else 'short'
-            _regime_agrees_pre = (_regime_direction == _macro_direction_pre)
-
-            if abs(_macro_score) < _effective_macro_threshold:
-                _p50_info = f"p50={_p50:.3f}" if _p50 is not None else "no p50 data"
-                _gate_reject(
-                    f"macro_gate_fail: abs({_macro_score:.3f}) < {_effective_macro_threshold:.3f} "
-                    f"(fixed={MACRO_THRESHOLD:.3f}, {_p50_info})"
-                )
-                # Hypothesis D — p75_relaxed: above p50 but below p75 effective threshold
-                if _p50 is not None and abs(_macro_score) >= _p50:
-                    self._write_shadow_trade(
-                        pair, bias, _macro_score, _tech_score,
-                        _regime_score_val, 'macro_gate_fail',
-                        hypothesis='p75_relaxed',
-                        macro_gate_passed=False,
-                        tech_gate_passed=(abs(_tech_score) >= TECH_MIN_THRESHOLD),
-                        regime_agrees=_regime_agrees_pre,
-                        p75_threshold=_p50,
-                        effective_threshold=_effective_macro_threshold,
-                        would_have_traded=True,
-                    )
-                # Full-cycle observation — macro gate blocked
+            if not _v1swing_approved:
+                _gate_reject(_v1swing_reason)
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'macro_gate_fail',
+                    _regime_score_val, _v1swing_reason,
                     hypothesis='full_cycle',
-                    macro_gate_passed=False,
-                    tech_gate_passed=None,
+                    macro_gate_passed=(_v1swing_reason not in ('macro_no_direction',)),
+                    tech_gate_passed=(_v1swing_reason not in ('technical_gate_fail',)),
                     regime_agrees=_regime_agrees_pre,
-                    p75_threshold=_p50,
+                    p75_threshold=None,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=False,
                 )
                 continue
 
-            _macro_direction = 'long' if _macro_score > 0 else 'short'
-            _regime_score_val = float(detail.get("regime_score") or detail.get("regime_score_used") or 0)
-            # Regime score is trend strength (ADX-based), not directional.
-            # _regime_agrees = True when regime confirms a trending environment (score > 0.25),
-            # regardless of macro direction. False in ranging/high-vol conditions.
-            _regime_agrees = _regime_score_val > 0.25
+            # V1 Swing gate PASSED — aligned direction, macro has conviction.
+            _tech_direction = 'long' if _tech_score > 0 else 'short' if _tech_score < 0 else _macro_direction
 
-            # Layer 2 — technical trigger
-            if abs(_tech_score) < TECH_MIN_THRESHOLD:
-                if _macro_only_no_tech:
-                    # MACRO_ONLY with absent tech: bypass this gate — conviction halved below.
-                    logger.debug(
-                        f"{pair} MACRO_ONLY: bypassing technical_too_weak gate "
-                        f"(no tech signal present, conviction×0.5 applied)"
-                    )
-                else:
-                    _gate_reject(
-                        f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
-                    )
-                    # Hypothesis A — macro_only: macro passed, tech too weak
-                    self._write_shadow_trade(
-                        pair, bias, _macro_score, _tech_score,
-                        _regime_score_val, 'technical_too_weak',
-                        hypothesis='macro_only',
-                        macro_gate_passed=True,
-                        tech_gate_passed=False,
-                        regime_agrees=_regime_agrees,
-                        p75_threshold=_p50,
-                        effective_threshold=_effective_macro_threshold,
-                        would_have_traded=True,
-                    )
-                    # Hypothesis C — macro_regime_no_tech: macro+regime agree, tech absent
-                    if _regime_agrees:
-                        self._write_shadow_trade(
-                            pair, bias, _macro_score, _tech_score,
-                            _regime_score_val, 'technical_too_weak',
-                            hypothesis='macro_regime_no_tech',
-                            macro_gate_passed=True,
-                            tech_gate_passed=False,
-                            regime_agrees=True,
-                            p75_threshold=_p50,
-                            effective_threshold=_effective_macro_threshold,
-                            would_have_traded=True,
-                        )
-                    # Full-cycle observation — tech gate blocked
-                    self._write_shadow_trade(
-                        pair, bias, _macro_score, _tech_score,
-                        _regime_score_val, 'technical_too_weak',
-                        hypothesis='full_cycle',
-                        macro_gate_passed=True,
-                        tech_gate_passed=False,
-                        regime_agrees=_regime_agrees,
-                        p75_threshold=_p50,
-                        effective_threshold=_effective_macro_threshold,
-                        would_have_traded=False,
-                    )
-                    continue
-
-            _tech_direction = 'long' if _tech_score > 0 else 'short'
-            # Hypothesis B — tech_threshold_0.10: tech in 0.10-0.20 range (sub-old-threshold)
+            # Hypothesis B — tech in 0.10-0.20 range (sub-old-threshold observation)
             if 0.10 <= abs(_tech_score) < 0.20:
                 self._write_shadow_trade(
                     pair, bias, _macro_score, _tech_score,
@@ -2567,67 +2526,12 @@ class OrchestratorAgent:
                     macro_gate_passed=True,
                     tech_gate_passed=True,
                     regime_agrees=_regime_agrees,
-                    p75_threshold=_p50,
+                    p75_threshold=None,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=(_tech_direction == _macro_direction),
                 )
 
-            if _tech_direction != _macro_direction:
-                if pair in MACRO_ONLY_PAIRS:
-                    # Macro-only pair: directional agreement not required.
-                    # Macro uses daily/weekly data; 15M tech routinely disagrees
-                    # on structural trend. Log the disagreement but proceed.
-                    logger.info(
-                        f"{pair} MACRO_ONLY: overriding tech direction "
-                        f"(macro={_macro_direction} {_macro_score:+.3f}, "
-                        f"tech={_tech_direction} {_tech_score:+.3f})"
-                    )
-                else:
-                    _gate_reject(
-                        f"directional_disagreement: macro={_macro_direction} ({_macro_score:+.3f}) "
-                        f"vs tech={_tech_direction} ({_tech_score:+.3f})"
-                    )
-                    # Hypothesis E — directional_disagreement: both convicted, opposite directions
-                    self._write_shadow_trade(
-                        pair, bias, _macro_score, _tech_score,
-                        _regime_score_val, 'directional_disagreement',
-                        hypothesis='directional_disagreement',
-                        macro_gate_passed=True,
-                        tech_gate_passed=True,
-                        regime_agrees=_regime_agrees,
-                        p75_threshold=_p50,
-                        effective_threshold=_effective_macro_threshold,
-                        would_have_traded=False,
-                    )
-                    # Hypothesis C — macro_regime_no_tech: macro+regime agree despite tech opposing
-                    if _regime_agrees:
-                        self._write_shadow_trade(
-                            pair, bias, _macro_score, _tech_score,
-                            _regime_score_val, 'directional_disagreement',
-                            hypothesis='macro_regime_no_tech',
-                            macro_gate_passed=True,
-                            tech_gate_passed=True,
-                            regime_agrees=True,
-                            p75_threshold=_p50,
-                            effective_threshold=_effective_macro_threshold,
-                            would_have_traded=True,
-                        )
-                    # Full-cycle observation — directional gate blocked
-                    self._write_shadow_trade(
-                        pair, bias, _macro_score, _tech_score,
-                        _regime_score_val, 'directional_disagreement',
-                        hypothesis='full_cycle',
-                        macro_gate_passed=True,
-                        tech_gate_passed=True,
-                        regime_agrees=_regime_agrees,
-                        p75_threshold=_p50,
-                        effective_threshold=_effective_macro_threshold,
-                        would_have_traded=False,
-                    )
-                    continue
-
-            # Layer 3 — all existing session, stress, R:R, spread checks in evaluate_pair
-            # Full-cycle observation — all three hierarchical gates cleared
+            # V1 Swing gate cleared — full_cycle shadow trade observation
             self._write_shadow_trade(
                 pair, bias, _macro_score, _tech_score,
                 _regime_score_val, None,
@@ -2635,7 +2539,7 @@ class OrchestratorAgent:
                 macro_gate_passed=True,
                 tech_gate_passed=True,
                 regime_agrees=_regime_agrees,
-                p75_threshold=_p50,
+                p75_threshold=None,
                 effective_threshold=_effective_macro_threshold,
                 would_have_traded=True,
             )
@@ -2718,14 +2622,18 @@ class OrchestratorAgent:
                 technical_payload=tech_payload,
             )
             decision["convergence_detail"] = detail
-            decision["conviction_score"] = round(abs(_macro_score) * (0.5 if _macro_only_no_tech else 1.0), 4)
+            # V1 Swing Change 5: conviction flat 1.0; risk is fixed at RISK_PER_TRADE_PCT.
+            decision["conviction_score"] = 1.0
+            decision["conviction"] = 1.0
+            decision["risk_per_trade_pct"] = RISK_PER_TRADE_PCT  # 0.01 — 1% flat
             if _macro_only_no_tech:
                 decision["macro_only_no_tech"] = True
-            decision["convergence_score"] = round(final_convergence, 4)  # display only
+            decision["convergence_score"] = round(_tech_score * _macro_score, 4)  # backward-compat placeholder
             decision["macro_score"]              = round(_macro_score, 4)
             decision["tech_score"]               = round(_tech_score, 4)
+            decision["macro_direction"]          = _macro_direction  # Change 7: wire for technical agent
             decision["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
-            decision["p75_threshold"]             = round(_p50, 4) if _p50 is not None else None
+            decision["p75_threshold"]             = None  # removed
             decision["stress_score"]              = market_context.get("stress_score")
             decision["stress_band"]               = market_context.get("stress_state")
 
@@ -3040,9 +2948,10 @@ class OrchestratorTester:
 
     def test_threshold_base_values(self):
         logger.info("\n--- Test: Threshold Base Values ---")
-        self._assert(USER_PROFILES["e61202e4-30d1-70f8-9927-30b8a439e042"]["base_threshold"] == 0.80, "Conservative base: 0.80")
-        self._assert(USER_PROFILES["76829264-20e1-7023-1e31-37b7a37a1274"]["base_threshold"] == 0.65, "Balanced base: 0.65")
-        self._assert(USER_PROFILES["d6c272e4-a031-7053-af8e-ade000f0d0d5"]["base_threshold"] == 0.55, "Aggressive base: 0.55")
+        # V1 Swing 2026-04-24: single profile, all users have base_threshold=0.0
+        self._assert(USER_PROFILES["e61202e4-30d1-70f8-9927-30b8a439e042"]["base_threshold"] == 0.0, "V1Swing user_001 base: 0.0")
+        self._assert(USER_PROFILES["76829264-20e1-7023-1e31-37b7a37a1274"]["base_threshold"] == 0.0, "V1Swing user_002 base: 0.0")
+        self._assert(USER_PROFILES["d6c272e4-a031-7053-af8e-ade000f0d0d5"]["base_threshold"] == 0.0, "V1Swing user_003 base: 0.0")
 
     def test_o1_hard_floor(self):
         logger.info("\n--- Test: O1 Hard Floor ---")
@@ -3121,7 +3030,7 @@ class OrchestratorTester:
 
     def test_combined_threshold_stacking(self):
         logger.info("\n--- Test: Combined Threshold Stacking ---")
-        calc = ConvergenceCalculator("neo_user_003")  # Aggressive base 0.55
+        calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
         # High stress (+0.10) + pre-event (+0.05) + macro degraded (+0.10)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},
@@ -3129,16 +3038,16 @@ class OrchestratorTester:
             {"macro": {"convergence_boost": 0.10, "degradation_mode": "degraded"}},
             [{"country": "US", "indicator": "CPI", "scheduled_time": "2026-04-16T13:30:00Z"}],
         )
-        expected = 0.55 + 0.10 + 0.05 + 0.10  # = 0.80
+        expected = 0.55 + 0.05 + 0.10  # = 0.70 (V1 Swing: stress no longer adds)
         self._assert(
             abs(t - expected) < 0.001,
-            f"Stacked: aggressive becomes 0.80",
+            f"Stacked: V1Swing 0.55 + pre_event + macro_degradation = 0.70",
             f"Got: {t}, expected: {expected}"
         )
 
     def test_session_filter(self):
         logger.info("\n--- Test: Session Filter ---")
-        calc = ConvergenceCalculator("neo_user_001")  # Conservative: london + overlap only
+        calc = ConvergenceCalculator("neo_user_001")  # V1Swing profile (session_filter=None in V1)
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
@@ -3147,12 +3056,12 @@ class OrchestratorTester:
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
         )
-        self._assert(not decision["approved"], "Conservative rejected in Asian session")
-        self._assert(any("Session" in r for r in decision["rejection_reasons"]), "Reason is session filter")
+        self._assert(not decision["approved"], "Rejected in Asian session (off_hours or cross_pair_session)")
+        self._assert(len(decision["rejection_reasons"]) > 0, "Has a rejection reason")
 
     def test_day_filter(self):
         logger.info("\n--- Test: Day Filter ---")
-        calc = ConvergenceCalculator("neo_user_001")  # Conservative: Tue-Thu only
+        calc = ConvergenceCalculator("neo_user_001")  # V1Swing profile
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
@@ -3161,7 +3070,7 @@ class OrchestratorTester:
             risk_params={"max_open_positions": 3},
             open_positions=[], upcoming_events=[], technical_payload={},
         )
-        self._assert(not decision["approved"], "Conservative rejected on Monday")
+        self._assert(not decision["approved"], "Rejected on Monday (off_hours or day_filter)")
 
     def test_ny_close_rejection(self):
         logger.info("\n--- Test: NY Close Rejection ---")
@@ -3340,7 +3249,7 @@ class OrchestratorTester:
 
     def test_worst_case_threshold(self):
         logger.info("\n--- Test: Worst-case Threshold ---")
-        calc = ConvergenceCalculator("neo_user_003")  # Aggressive 0.55
+        calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
         # High stress (+0.10) + pre-event (+0.05) + macro degraded (+0.10) + regime degraded (+0.15)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},
@@ -3351,10 +3260,10 @@ class OrchestratorTester:
             },
             [{"country": "US", "indicator": "NFP", "scheduled_time": "2026-04-16T13:30:00Z"}],
         )
-        expected = 0.55 + 0.10 + 0.05 + 0.10 + 0.15  # = 0.95
+        expected = 0.55 + 0.05 + 0.10 + 0.15  # = 0.85 (V1 Swing: stress no longer adds)
         self._assert(
             abs(t - expected) < 0.001,
-            f"Worst-case aggressive → {expected}",
+            f"Worst-case V1Swing → {expected}",
             f"Got: {t}"
         )
 
