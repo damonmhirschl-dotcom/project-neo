@@ -520,9 +520,9 @@ function Login({onAuth}) {
   );
   return (
     <Card title="Project Neo" sub="Admin dashboard · eu-west-2">
-      <form onSubmit={submitPassword} style={{display:'flex',flexDirection:'column',gap:12}}>
-        <div className="login-field"><label>Username</label><input autoFocus value={user} onChange={e=>setUser(e.target.value)} autoComplete="username"/></div>
-        <div className="login-field"><label>Password</label><input type="password" value={pass} onChange={e=>setPass(e.target.value)} autoComplete="current-password"/></div>
+      <form onSubmit={submitPassword} autoComplete="off" style={{display:'flex',flexDirection:'column',gap:12}}>
+        <div className="login-field"><label>Username</label><input autoFocus value={user} onChange={e=>setUser(e.target.value)} autoComplete="off"/></div>
+        <div className="login-field"><label>Password</label><input type="password" value={pass} onChange={e=>setPass(e.target.value)} autoComplete="new-password"/></div>
         {err&&<div className="login-err">{err}</div>}
         <button className="login-btn" disabled={loading||!user||!pass}>{loading?'Signing in…':'Sign in'}</button>
       </form>
