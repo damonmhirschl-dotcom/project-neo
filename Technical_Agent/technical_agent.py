@@ -761,10 +761,10 @@ class TechnicalAgent:
             _adx_val = dx.ewm(span=14).mean().iloc[-1]
             indicators["adx"] = _adx_val if not pd.isna(_adx_val) else 20.0
 
-            # RSI (14-period)
+            # RSI (14-period) — Wilder smoothing: com=13 (alpha=1/14), adjust=False (recursive)
             delta = df['close'].diff()
-            gain = delta.where(delta > 0, 0).ewm(span=14).mean()
-            loss = (-delta).where(delta < 0, 0).ewm(span=14).mean()
+            gain = delta.where(delta > 0, 0).ewm(com=13, adjust=False, min_periods=14).mean()
+            loss = (-delta).where(delta < 0, 0).ewm(com=13, adjust=False, min_periods=14).mean()
             rs = gain / loss
             indicators["rsi"] = (100 - (100 / (1 + rs))).iloc[-1]
 
