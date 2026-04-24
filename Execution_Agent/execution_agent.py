@@ -195,6 +195,17 @@ def check_kill_switch(region: str = AWS_REGION) -> bool:
 
 
 
+
+
+def _classify_session_utc(utc_dt):
+    """Map UTC hour to V1 Swing session name."""
+    h = utc_dt.hour
+    if 0 <= h < 8:   return 'asia'
+    if 8 <= h < 13:  return 'london'
+    if 13 <= h < 17: return 'ny_overlap'
+    if 17 <= h < 21: return 'ny_late'
+    return 'dead_zone'
+
 def _fetch_atr_for_stop(db, instrument: str):
     """Fetch ATR-14 for stop sizing, preferring 1D over 1H.
     Returns (atr_value, timeframe_used) or (None, None) if unavailable.
@@ -1178,19 +1189,14 @@ class TradeExecutor:
         _agents_agreed = _entry_context_dict.get("agents_agreed")
         # Derive session from UTC hour — consistent with learning module _get_session_at_time.
         # get_market_state().get('state') returns 'active'/'quiet', not a session name.
-        _now_h = datetime.datetime.now(datetime.timezone.utc).hour
-        if 0 <= _now_h < 7:
-            _session_at_entry = 'asian'
-        elif 7 <= _now_h < 12:
-            _session_at_entry = 'london'
-        elif 12 <= _now_h < 16:
-            _session_at_entry = 'overlap'
-        elif 16 <= _now_h < 20:
-            _session_at_entry = 'newyork'
-        elif 20 <= _now_h < 22:
-            _session_at_entry = 'ny_close'
-        else:
-            _session_at_entry = 'off_hours'
+        # V1 Swing session classifier — replaces legacy bucketing
+        _session_at_entry = _classify_session_utc(datetime.datetime.now(datetime.timezone.utc))
+
+        # V1 Swing entry context fields — from entry_context (populated by orchestrator from tech payload)
+        _ec_for_tech = payload.get("entry_context") or {}
+        _adx_at_entry_val = _ec_for_tech.get("adx_4h") or _ec_for_tech.get("adx_14")
+        _rsi_at_entry_val = _ec_for_tech.get("rsi_4h") or _ec_for_tech.get("rsi_14")
+        _setup_type_val   = _ec_for_tech.get("setup_type")
 
         # V1 Swing spec: target is always ATR-derived, never swing-based.
         # T1 = entry ± 2.0 × ATR(14, 1D); T2 = entry ± 4.0 × ATR(14, 1D).
@@ -1238,6 +1244,9 @@ class TradeExecutor:
                 'target_1_price': _atr_target_1,
                 'target_2_price': _atr_target_2,
             })(payload),
+            adx_at_entry=_adx_at_entry_val,
+            rsi_at_entry=_rsi_at_entry_val,
+            setup_type=_setup_type_val,
         )
 
         if trade_id is None:
@@ -1456,8 +1465,10 @@ class TradeExecutor:
             "combined_multiplier":       (
                 payload.get("combined_mult") or _sizing.get("combined_multiplier")
             ),
-            "rsi_at_entry":              _ectx.get("rsi_14"),
-            "adx_at_entry":              _ectx.get("adx_14"),
+            "rsi_at_entry":              _ectx.get("rsi_4h") or _ectx.get("rsi_14"),
+            "adx_at_entry":              _ectx.get("adx_4h") or _ectx.get("adx_14"),
+            "setup_type":                _ectx.get("setup_type"),
+            "session_at_entry":          _ectx.get("session_at_entry"),
         }
 
     def _write_trade(self, instrument: str, direction: str, entry_price: float,
@@ -1473,7 +1484,11 @@ class TradeExecutor:
                      session_at_entry: Optional[str] = None,
                      agents_agreed: Optional[str] = None,
                      entry_rank_position: Optional[int] = None,
-                     trade_parameters: Optional[Dict] = None) -> Optional[int]:
+                     trade_parameters: Optional[Dict] = None,
+                     adx_at_entry: Optional[float] = None,
+                     rsi_at_entry: Optional[float] = None,
+                     setup_type: Optional[str] = None,
+                     tech_signal: Optional[Dict] = None) -> Optional[int]:
         """Write trade to RDS trades table."""
         cur = self.db.cursor()
         try:
@@ -1500,6 +1515,27 @@ class TradeExecutor:
                 slippage_action = "accepted"  # In production, check if R:R still valid
 
             _entry_ctx_json = json.dumps(entry_context) if entry_context else None
+
+            # V1 Swing entry context — sourced from technical agent payload
+            _tech = tech_signal or {}
+            _adx_at_entry     = adx_at_entry if adx_at_entry is not None else _tech.get('adx_4h')
+            _rsi_at_entry     = rsi_at_entry if rsi_at_entry is not None else _tech.get('rsi_4h')
+            _setup_type       = setup_type if setup_type is not None else _tech.get('setup_type')
+            _session_at_entry = session_at_entry or _classify_session_utc(datetime.datetime.now(datetime.timezone.utc))
+
+            if not any([_adx_at_entry, _rsi_at_entry, _setup_type]):
+                logger.warning(f"Entry context missing from tech_signal for {instrument} — "
+                               f"adx_4h/rsi_4h/setup_type not in payload")
+
+            # Belt-and-braces: mirror entry context fields into trade_parameters JSONB
+            if trade_parameters is not None:
+                trade_parameters.update({
+                    'adx_at_entry':     _adx_at_entry,
+                    'rsi_at_entry':     _rsi_at_entry,
+                    'setup_type':       _setup_type,
+                    'session_at_entry': _session_at_entry,
+                })
+
             cur.execute("""
                 INSERT INTO forex_network.trades
                     (user_id, instrument, direction, entry_price, stop_price,
@@ -1508,8 +1544,9 @@ class TradeExecutor:
                      slippage_pips, slippage_action, partial_fill_action,
                      fill_time_ms, entry_context, ibkr_order_id, convergence_score,
                      target_price, session_at_entry, agents_agreed, entry_rank_position,
-                     trade_parameters, strategy)
-                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     trade_parameters, strategy,
+                     adx_at_entry, rsi_at_entry, setup_type)
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 self.user_id, instrument, direction, entry_price, stop_price,
@@ -1520,11 +1557,12 @@ class TradeExecutor:
                 order_id or None,
                 convergence_score,
                 target_price,
-                session_at_entry,
+                _session_at_entry,
                 agents_agreed,
                 entry_rank_position,
                 json.dumps(trade_parameters) if trade_parameters else None,
                 'v1_swing',
+                _adx_at_entry, _rsi_at_entry, _setup_type,
             ))
             result = cur.fetchone()
             self.db.commit()

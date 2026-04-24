@@ -1866,6 +1866,11 @@ class OrchestratorAgent:
         context['macro_persistence']    = _mpay.get('persistence_count')
         context['tech_persistence']     = _tpay.get('persistence_count')
 
+        # ── V1 Swing: technical indicator snapshot for EA entry context ───────
+        context['adx_4h']      = _tpay.get('adx_4h') or _tpay.get('adx_14')
+        context['rsi_4h']      = _tpay.get('rsi_4h') or _tpay.get('rsi_14')
+        context['setup_type']  = _tpay.get('setup_type')
+
         return context
 
     # -------------------------------------------------------------------------
