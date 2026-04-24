@@ -64,7 +64,7 @@ class MacroAgent:
     """
 
     AGENT_NAME             = "macro"
-    CYCLE_INTERVAL_MINUTES = 15
+    CYCLE_INTERVAL_MINUTES = 5
     SIGNAL_EXPIRY_MINUTES  = 25
     AWS_REGION             = "eu-west-2"
 
