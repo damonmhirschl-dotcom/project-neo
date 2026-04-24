@@ -2318,7 +2318,12 @@ class OrchestratorAgent:
             if tech_sig:
                 self._validator.validate_and_log("technical", tech_sig, pair, logger)
 
-            if not macro_sig or not tech_sig:
+            # MACRO_ONLY_PAIRS may trade without a technical signal — macro direction is
+            # structurally dominant (daily/weekly timeframe).  Bypass the missing_signal
+            # gate when macro is present but tech is absent; conviction halved below.
+            _macro_only_no_tech = pair in MACRO_ONLY_PAIRS and not tech_sig and bool(macro_sig)
+
+            if not macro_sig or (not tech_sig and not _macro_only_no_tech):
                 dc_reason = f"missing_signal: macro={'present' if macro_sig else 'absent'}, technical={'present' if tech_sig else 'absent'}"
                 logger.info(f"{pair}: REJECTED — {dc_reason}")
                 warn("orchestrator_agent", "MISSING_SIGNAL", "Pair rejected — signal absent",
@@ -2345,6 +2350,19 @@ class OrchestratorAgent:
                     payload={"rejection_reasons": [dc_reason]},
                 )
                 continue
+
+            # Synthetic tech_sig for MACRO_ONLY pairs with no technical signal.
+            # Gives downstream code a safe .get() target; score=0.0 so tech is
+            # treated as neutral.  Conviction will be halved at the decision stage.
+            if _macro_only_no_tech:
+                tech_sig = {
+                    "instrument": pair, "score": 0.0, "bias": "neutral",
+                    "payload": {}, "created_at": datetime.datetime.now(datetime.timezone.utc),
+                }
+                logger.info(
+                    f"{pair} MACRO_ONLY: no technical signal — proceeding with macro-only "
+                    f"conviction (synthetic tech score=0.0, conviction×0.5)"
+                )
 
             # ── HIERARCHICAL SIGNAL GATE ─────────────────────────────────────
             # Layer 1 — macro gate
@@ -2442,47 +2460,54 @@ class OrchestratorAgent:
 
             # Layer 2 — technical trigger
             if abs(_tech_score) < TECH_MIN_THRESHOLD:
-                _gate_reject(
-                    f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
-                )
-                # Hypothesis A — macro_only: macro passed, tech too weak
-                self._write_shadow_trade(
-                    pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'technical_too_weak',
-                    hypothesis='macro_only',
-                    macro_gate_passed=True,
-                    tech_gate_passed=False,
-                    regime_agrees=_regime_agrees,
-                    p75_threshold=_p75,
-                    effective_threshold=_effective_macro_threshold,
-                    would_have_traded=True,
-                )
-                # Hypothesis C — macro_regime_no_tech: macro+regime agree, tech absent
-                if _regime_agrees:
+                if _macro_only_no_tech:
+                    # MACRO_ONLY with absent tech: bypass this gate — conviction halved below.
+                    logger.debug(
+                        f"{pair} MACRO_ONLY: bypassing technical_too_weak gate "
+                        f"(no tech signal present, conviction×0.5 applied)"
+                    )
+                else:
+                    _gate_reject(
+                        f"technical_too_weak: abs({_tech_score:.3f}) < {TECH_MIN_THRESHOLD:.3f}"
+                    )
+                    # Hypothesis A — macro_only: macro passed, tech too weak
                     self._write_shadow_trade(
                         pair, bias, _macro_score, _tech_score,
                         _regime_score_val, 'technical_too_weak',
-                        hypothesis='macro_regime_no_tech',
+                        hypothesis='macro_only',
                         macro_gate_passed=True,
                         tech_gate_passed=False,
-                        regime_agrees=True,
+                        regime_agrees=_regime_agrees,
                         p75_threshold=_p75,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
-                # Full-cycle observation — tech gate blocked
-                self._write_shadow_trade(
-                    pair, bias, _macro_score, _tech_score,
-                    _regime_score_val, 'technical_too_weak',
-                    hypothesis='full_cycle',
-                    macro_gate_passed=True,
-                    tech_gate_passed=False,
-                    regime_agrees=_regime_agrees,
-                    p75_threshold=_p75,
-                    effective_threshold=_effective_macro_threshold,
-                    would_have_traded=False,
-                )
-                continue
+                    # Hypothesis C — macro_regime_no_tech: macro+regime agree, tech absent
+                    if _regime_agrees:
+                        self._write_shadow_trade(
+                            pair, bias, _macro_score, _tech_score,
+                            _regime_score_val, 'technical_too_weak',
+                            hypothesis='macro_regime_no_tech',
+                            macro_gate_passed=True,
+                            tech_gate_passed=False,
+                            regime_agrees=True,
+                            p75_threshold=_p75,
+                            effective_threshold=_effective_macro_threshold,
+                            would_have_traded=True,
+                        )
+                    # Full-cycle observation — tech gate blocked
+                    self._write_shadow_trade(
+                        pair, bias, _macro_score, _tech_score,
+                        _regime_score_val, 'technical_too_weak',
+                        hypothesis='full_cycle',
+                        macro_gate_passed=True,
+                        tech_gate_passed=False,
+                        regime_agrees=_regime_agrees,
+                        p75_threshold=_p75,
+                        effective_threshold=_effective_macro_threshold,
+                        would_have_traded=False,
+                    )
+                    continue
 
             _tech_direction = 'long' if _tech_score > 0 else 'short'
             # Hypothesis B — tech_threshold_0.10: tech in 0.10-0.20 range (sub-old-threshold)
@@ -2645,7 +2670,9 @@ class OrchestratorAgent:
                 technical_payload=tech_payload,
             )
             decision["convergence_detail"] = detail
-            decision["conviction_score"] = round(abs(_macro_score), 4)
+            decision["conviction_score"] = round(abs(_macro_score) * (0.5 if _macro_only_no_tech else 1.0), 4)
+            if _macro_only_no_tech:
+                decision["macro_only_no_tech"] = True
             decision["convergence_score"] = round(final_convergence, 4)  # display only
             decision["macro_score"]              = round(_macro_score, 4)
             decision["tech_score"]               = round(_tech_score, 4)
