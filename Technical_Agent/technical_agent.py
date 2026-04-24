@@ -112,7 +112,7 @@ class TechnicalAgent:
     # Configuration constants
     AGENT_NAME = "technical"
     CYCLE_INTERVAL_MINUTES = 5   # 5-minute polling; LLM call gated by price-change threshold
-    PRICE_CHANGE_THRESHOLD_PIPS = 10  # minimum pip move across any pair to justify a new LLM call
+    PRICE_CHANGE_THRESHOLD_PIPS = 6  # minimum pip move across any pair to justify a new LLM call
     SIGNAL_EXPIRY_MINUTES = 120  # 2h TTL so quiet-market price-skip cycles do not blank the observation panel
     AWS_REGION = "eu-west-2"
 
