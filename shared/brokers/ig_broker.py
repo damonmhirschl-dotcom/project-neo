@@ -498,14 +498,16 @@ class IGBroker(BrokerInterface):
 
     def modify_order(self, order_id: str, modifications: dict) -> dict:
         """
-        Modify an existing IG position (e.g. tighten stop for kill switch).
+        Modify an existing IG position (stop and/or limit/take-profit level).
         Uses PUT /positions/otc/{dealId}.
+        Pass limit_level in modifications to set or update the take-profit level.
         """
-        stop_level = modifications.get("auxPrice") or modifications.get("stop_price")
-        if not stop_level:
-            logger.warning(f"IGBroker.modify_order: no stop_price in modifications={modifications}")
-            return {"warning": "no stop_price provided"}
-        body = {"stopLevel": stop_level, "limitLevel": None, "trailingStop": False}
+        stop_level  = modifications.get("auxPrice") or modifications.get("stop_price")
+        limit_level = modifications.get("limit_level") or modifications.get("limitLevel")
+        if not stop_level and limit_level is None:
+            logger.warning(f"IGBroker.modify_order: no stop_price or limit_level in modifications={modifications}")
+            return {"warning": "no stop_price or limit_level provided"}
+        body = {"stopLevel": stop_level, "limitLevel": limit_level, "trailingStop": False}
         r = self._session.put(
             self.base_url + f"/positions/otc/{order_id}",
             json=body,
