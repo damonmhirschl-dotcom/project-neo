@@ -394,6 +394,16 @@ class MacroAgent:
             with self.db_conn.cursor() as cur:
                 expires_at = datetime.now(timezone.utc) + timedelta(minutes=self.SIGNAL_EXPIRY_MINUTES)
 
+                # Purge previous rows for this user/agent before inserting fresh ones.
+                # agent_signals has no unique constraint, so without this each cycle
+                # appends new rows indefinitely (plain INSERT, no ON CONFLICT).
+                _instruments = [s.get('instrument') for s in signals if s.get('instrument')]
+                if _instruments:
+                    cur.execute("""
+                        DELETE FROM forex_network.agent_signals
+                        WHERE user_id = %s AND agent_name = %s AND instrument = ANY(%s)
+                    """, (self.user_id, self.AGENT_NAME, _instruments))
+
                 for signal in signals:
                     cur.execute("""
                         INSERT INTO forex_network.agent_signals
