@@ -605,7 +605,7 @@ class TechnicalAgent:
                 logger.debug(f"Indicator calculation failed: {_e}")
         return inserted
 
-    def _fetch_live_bars(self, pair: str, n: int = 55) -> pd.DataFrame:
+    def _fetch_live_bars(self, pair: str, n: int = 200) -> pd.DataFrame:
         """Fetch the last n 1H bars from TraderMade timeseries for live RSI/ADX calculation.
         Returns a DataFrame compatible with calculate_technical_indicators().
         Falls back to get_historical_bars() on any error or insufficient bars.
@@ -635,7 +635,7 @@ class TechnicalAgent:
                 logger.warning(
                     f"_fetch_live_bars: only {len(quotes)} bars for {pair} "
                     f"— falling back to RDS")
-                return self.get_historical_bars(pair, '1H', 50)
+                return self.get_historical_bars(pair, '1H', 200)
             rows = []
             for q in quotes:
                 raw = q['date']
@@ -658,7 +658,7 @@ class TechnicalAgent:
             return df
         except Exception as e:
             logger.warning(f"_fetch_live_bars failed for {pair}: {e} — falling back to RDS")
-            return self.get_historical_bars(pair, '1H', 50)
+            return self.get_historical_bars(pair, '1H', 200)
 
     def get_historical_bars(self, pair: str, timeframe: str = "1H", limit: int = 200) -> pd.DataFrame:
         """Get historical OHLCV bars from RDS; triggers TraderMade fallback when empty or stale."""
@@ -816,10 +816,10 @@ class TechnicalAgent:
             _adx_val = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean().iloc[-1]
             indicators["adx"] = _adx_val if not pd.isna(_adx_val) else 20.0
 
-            # RSI (14-period) — Wilder smoothing: com=13 (alpha=1/14), adjust=False (recursive)
+            # RSI (21-period) — Wilder smoothing: com=20 (alpha=1/21), adjust=False (recursive)
             delta = df['close'].diff()
-            gain = delta.where(delta > 0, 0).ewm(com=13, adjust=False, min_periods=14).mean()
-            loss = (-delta).where(delta < 0, 0).ewm(com=13, adjust=False, min_periods=14).mean()
+            gain = delta.where(delta > 0, 0).ewm(com=20, adjust=False, min_periods=21).mean()
+            loss = (-delta).where(delta < 0, 0).ewm(com=20, adjust=False, min_periods=21).mean()
             rs = gain / loss
             indicators["rsi"] = (100 - (100 / (1 + rs))).iloc[-1]
 
@@ -1059,7 +1059,7 @@ class TechnicalAgent:
         Deterministic signal generation using RSI(14) pullback + ADX(14) trend filter.
 
         Logic:
-          - trending       : ADX > 20
+          - trending       : ADX > 25 (V1 Swing 4H gate)
           - bullish setup  : trending AND 38 <= RSI <= 55  (pullback in uptrend)
           - bearish setup  : trending AND 45 <= RSI <= 62  (rally in downtrend)
           - score          : direction × (ADX/100) × conviction × session_weight
@@ -1075,18 +1075,65 @@ class TechnicalAgent:
         for pair in self.PAIRS:
             try:
                 # ── fetch bars ───────────────────────────────────────────────
-                df = self._fetch_live_bars(pair, n=55)
+                df = self._fetch_live_bars(pair, n=200)
                 if df is None or df.empty or len(df) < 20:
                     raise ValueError(f"insufficient bars ({0 if df is None or df is False or (hasattr(df,'empty') and df.empty) else len(df)})")
 
-                # ── compute indicators ───────────────────────────────────────
-                indicators = self.calculate_technical_indicators(df)
+                # ── resample 1H → 4H for V1 Swing signal computation ────────
+                if 'ts' in df.columns:
+                    df_4h = df.set_index('ts').resample('4h', label='right', closed='right').agg({
+                        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+                    }).dropna().reset_index()
+                else:
+                    df_4h = df.resample('4h', label='right', closed='right').agg({
+                        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+                    }).dropna()
+                logger.debug(
+                    f"_fetch_live_bars 1H→4H resample: {len(df)} 1H bars → {len(df_4h)} 4H bars for {pair}"
+                )
+
+                # ── compute indicators on 4H bars ────────────────────────────
+                indicators = self.calculate_technical_indicators(df_4h)
                 rsi = float(indicators.get('rsi') or 50.0)
-                adx = float(indicators.get('adx') or 15.0)
+                adx_4h = float(indicators.get('adx') or 15.0)
                 if pd.isna(rsi):
                     rsi = 50.0
-                if pd.isna(adx):
-                    adx = 15.0
+                if pd.isna(adx_4h):
+                    adx_4h = 15.0
+
+                # ── RSI series for cross-into-zone detection (Change 5) ───────
+                # Compute rsi_prev from df_4h (previous bar RSI) using same Wilder params
+                _rsi_prev = 50.0
+                if len(df_4h) >= 2:
+                    try:
+                        _delta_prev = df_4h['close'].diff()
+                        _gain_prev = _delta_prev.where(_delta_prev > 0, 0).ewm(
+                            com=20, adjust=False, min_periods=21).mean()
+                        _loss_prev = (-_delta_prev).where(_delta_prev < 0, 0).ewm(
+                            com=20, adjust=False, min_periods=21).mean()
+                        _rs_series = _gain_prev / _loss_prev
+                        _rsi_series = 100 - (100 / (1 + _rs_series))
+                        _rsi_prev = float(_rsi_series.iloc[-2]) if not pd.isna(_rsi_series.iloc[-2]) else 50.0
+                    except Exception:
+                        _rsi_prev = 50.0
+
+                # Named RSI zone constants (V1 Swing)
+                RSI_LONG_ZONE_LOW   = 40.0
+                RSI_LONG_ZONE_HIGH  = 50.0
+                RSI_SHORT_ZONE_LOW  = 50.0
+                RSI_SHORT_ZONE_HIGH = 60.0
+
+                # Cross-into-zone detection
+                rsi_long_cross = (
+                    _rsi_prev < RSI_LONG_ZONE_LOW       # was below zone
+                    and RSI_LONG_ZONE_LOW <= rsi <= RSI_LONG_ZONE_HIGH  # now in zone
+                    and rsi > _rsi_prev                 # turning up
+                )
+                rsi_short_cross = (
+                    _rsi_prev > RSI_SHORT_ZONE_HIGH     # was above zone
+                    and RSI_SHORT_ZONE_LOW <= rsi <= RSI_SHORT_ZONE_HIGH  # now in zone
+                    and rsi < _rsi_prev                 # turning down
+                )
 
                 # ── ATR: prefer price_metrics, fall back to computed ─────────
                 pm = self.get_price_metrics(pair, '1H', 5)
@@ -1108,10 +1155,10 @@ class TechnicalAgent:
                 # ── LM timing params: RSI/ADX thresholds refined by closed-trade outcomes ──
                 # Populated by learning_module.compute_entry_timing_quality().
                 # Falls back to static defaults when insufficient sample (<10 trades).
-                _lm_rsi_low = 38.0
+                _lm_rsi_low = 40.0  # V1 Swing: long pullback zone lower bound
                 _lm_rsi_high_long = None   # set after swing detection below
                 _lm_rsi_low_short = None
-                _lm_min_adx = 20.0
+                _lm_min_adx = 25.0  # V1 Swing: ADX gate threshold
                 try:
                     with self.db_conn.cursor(
                         cursor_factory=psycopg2.extras.RealDictCursor
@@ -1136,72 +1183,87 @@ class TechnicalAgent:
                 except Exception as _te:
                     logger.debug(f"{pair} LM timing params unavailable: {_te}")
 
-                trending = adx > _lm_min_adx
+                trending = adx_4h > _lm_min_adx
 
                 # ── swing high/low structure (1D data, 5-bar rule) ────────────
                 swing      = self._detect_swing_points(pair)
                 swing_trend = swing.get('trend_structure', 'neutral')
 
-                # ── RSI pullback direction & conviction ──────────────────────
-                # LM params override static window when available (≥10 sample trades).
-                # Swing structure still extends the high boundary when bullish.
-                if _lm_rsi_high_long is not None:
-                    rsi_long_hi  = _lm_rsi_high_long
-                    rsi_short_lo = _lm_rsi_low_short
+                # ── RSI direction (for labelling) ────────────────────────────
+                if rsi_long_cross:
+                    direction = 'long'
+                elif rsi_short_cross:
+                    direction = 'short'
                 else:
-                    rsi_long_hi  = 65.0 if swing_trend == 'bullish' else 55.0
-                    rsi_short_lo = 35.0 if swing_trend == 'bearish' else 45.0
+                    direction = 'neutral'
 
-                if trending and _lm_rsi_low <= rsi <= rsi_long_hi:
-                    direction  =  1.0   # bullish pullback
-                    conviction = (rsi_long_hi - rsi) / (rsi_long_hi - _lm_rsi_low)
-                elif trending and rsi_short_lo <= rsi <= 62.0:
-                    direction  = -1.0   # bearish rally into resistance
-                    conviction = (rsi - rsi_short_lo) / (62.0 - rsi_short_lo)
+                # ── Session validity (binary gate) ────────────────────────────
+                _session_valid = session not in ('off_hours',)
+
+                # ── Daily structure alignment (5-bar rule, Change 7) ─────────
+                _structure_long  = True   # default pass if no daily data
+                _structure_short = True
+                try:
+                    _daily_bars = self.get_historical_bars(pair, '1D', 200)
+                    if _daily_bars is not None and len(_daily_bars) >= 10:
+                        _recent = _daily_bars.tail(5)
+                        _prior  = _daily_bars.iloc[-10:-5]
+                        # Bearish structure: lower-high AND lower-low → reject long
+                        _structure_long  = not (
+                            _recent['high'].max() < _prior['high'].max()
+                            and _recent['low'].min() < _prior['low'].min()
+                        )
+                        # Bullish structure: higher-high AND higher-low → reject short
+                        _structure_short = not (
+                            _recent['high'].max() > _prior['high'].max()
+                            and _recent['low'].min() > _prior['low'].min()
+                        )
+                except Exception as _de:
+                    logger.debug(f"{pair} structure alignment check failed: {_de}")
+
+                # ── Macro conviction scalar ───────────────────────────────────
+                # No macro_signal in this agent; default to 1.0
+                _conviction = 1.0
+
+                # ── V1 Swing binary gate score ────────────────────────────────
+                _gate_failures = []
+                if adx_4h <= 25:
+                    _gate_failures.append(f'adx_4h={adx_4h:.1f}<=25')
+                if direction == 'long' and not rsi_long_cross:
+                    _gate_failures.append('rsi_no_long_cross')
+                if direction == 'short' and not rsi_short_cross:
+                    _gate_failures.append('rsi_no_short_cross')
+                if not _session_valid:
+                    _gate_failures.append('session_invalid')
+                if direction == 'long' and not _structure_long:
+                    _gate_failures.append('structure_bearish')
+                if direction == 'short' and not _structure_short:
+                    _gate_failures.append('structure_bullish')
+
+                if direction == 'long':
+                    if (adx_4h > 25
+                            and rsi_long_cross
+                            and _session_valid
+                            and _structure_long):
+                        score = 1.0 * _conviction
+                    else:
+                        score = 0.0
+                elif direction == 'short':
+                    if (adx_4h > 25
+                            and rsi_short_cross
+                            and _session_valid
+                            and _structure_short):
+                        score = -1.0 * _conviction
+                    else:
+                        score = 0.0
                 else:
-                    direction  = 0.0
-                    conviction = 0.0
+                    score = 0.0
 
-                # ── swing structure filter ────────────────────────────────────
-                # Suppress longs against bearish structure, shorts against bullish
-                if direction > 0 and swing_trend == 'bearish':
-                    direction  = 0.0
-                    conviction = 0.0
-                elif direction < 0 and swing_trend == 'bullish':
-                    direction  = 0.0
-                    conviction = 0.0
-
-                session_weight = self.get_session_pair_weight(pair, session)
-                score          = direction * (adx / 100.0) * conviction * session_weight
-
-                # ── swing structure amplifier ─────────────────────────────────
-                # When swing structure confirms direction, amplify score by 1.3x
-                if (swing_trend == 'bullish' and score > 0) or (swing_trend == 'bearish' and score < 0):
-                    score = score * 1.3
-                    logger.debug(f"{pair} swing structure confirms direction — score amplified to {score:.3f}")
-
-                score          = round(score, 4)
-
+                score = round(score, 4)
                 current_price = float(df['close'].iloc[-1])
                 swing_low_price  = swing.get('swing_low')
                 swing_high_price = swing.get('swing_high')
-
-                # ── swing proximity check ─────────────────────────────────────
-                # Halve score if price is more than 1.5× ATR from the confirming swing level
-                if swing_low_price and score > 0:
-                    distance_to_swing_low = abs(current_price - swing_low_price)
-                    if distance_to_swing_low > atr * 1.5:
-                        logger.debug(
-                            f"{pair} long — price {current_price:.5f} too far from "
-                            f"swing_low {swing_low_price:.5f} "
-                            f"({distance_to_swing_low:.5f} > {atr * 1.5:.5f})"
-                        )
-                        score = round(score * 0.5, 4)
-
-                if swing_high_price and score < 0:
-                    distance_to_swing_high = abs(current_price - swing_high_price)
-                    if distance_to_swing_high > atr * 1.5:
-                        score = round(score * 0.5, 4)
+                session_weight   = self.get_session_pair_weight(pair, session)  # kept for payload compat
 
                 bias = 'bullish' if score > 0.1 else ('bearish' if score < -0.1 else 'neutral')
                 confidence = round(min(0.90, max(0.10, abs(score) * 1.5)), 4)
@@ -1215,13 +1277,25 @@ class TechnicalAgent:
                     'bias':         bias,
                     'confidence':   confidence,
                     'payload': {
+                        # V1 Swing primary keys
+                        'rsi_4h':             round(rsi, 2),
+                        'rsi_prev':           round(_rsi_prev, 2),
+                        'adx_4h':             round(adx_4h, 2),
+                        'gate_failures':      _gate_failures,
+                        'direction':          direction,
+                        'rsi_long_cross':     rsi_long_cross,
+                        'rsi_short_cross':    rsi_short_cross,
+                        'session_valid':      _session_valid,
+                        'structure_long':     _structure_long,
+                        'structure_short':    _structure_short,
+                        # Backward-compat aliases (transition period)
                         'rsi_14':             round(rsi, 2),
-                        'adx_14':             round(adx, 2),
+                        'adx_14':             round(adx_4h, 2),
                         'atr_14':             round(atr, 6),
                         'stop_distance_pips': stop_distance_pips,
                         'trending':           trending,
                         'session':            session,
-                        'session_weight':     session_weight,
+                        'session_weight':     session_weight,  # kept read-only; not used in score
                         'swing_high':         swing.get('swing_high'),
                         'swing_low':          swing.get('swing_low'),
                         'swing_high_date':    swing.get('swing_high_date'),
@@ -1238,7 +1312,9 @@ class TechnicalAgent:
                         'technical_analysis': {
                             'indicators': {'atr_14': round(atr, 6)},
                             'rsi_14':     round(rsi, 2),
-                            'adx_14':     round(adx, 2),
+                            'adx_14':     round(adx_4h, 2),
+                            'rsi_4h':     round(rsi, 2),
+                            'adx_4h':     round(adx_4h, 2),
                         },
                     }
                 })
