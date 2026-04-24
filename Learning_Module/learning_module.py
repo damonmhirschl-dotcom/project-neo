@@ -2395,6 +2395,10 @@ class LearningModule:
                 prop_count = self._generate_proposals()
                 if prop_count > 0:
                     logger.info(f"Generated {prop_count} proposal(s)")
+            if not self.dry_run:
+                arch_issues = self.diagnose_architecture()
+                if arch_issues:
+                    logger.info(f"Architecture diagnostics: {len(arch_issues)} issue(s) flagged")
             if not self.dry_run and self.weekly_report.should_generate():
                 self.weekly_report.generate()
             self.cycle_count += 1
@@ -2707,6 +2711,223 @@ class LearningModule:
 
         except Exception as e:
             logger.error(f"analyse_shadow_trades failed: {e}")
+            return []
+
+    def diagnose_architecture(self) -> List[dict]:
+        """
+        Analyses system-level patterns to identify architectural problems.
+        Does not require closed trades — runs from signals, rejections,
+        shadow trades, and heartbeat data.
+        """
+        proposals = []
+        try:
+            cur = self.db.cursor()
+
+            # DIAGNOSTIC 1 — Gate conflict rate
+            # How often do macro and technical disagree on direction?
+            cur.execute("""
+                SELECT
+                    m.instrument,
+                    COUNT(*) as total_cycles,
+                    SUM(CASE WHEN
+                        (m.score > 0 AND t.score < 0) OR
+                        (m.score < 0 AND t.score > 0)
+                    THEN 1 ELSE 0 END) as conflicts
+                FROM forex_network.agent_signals m
+                JOIN forex_network.agent_signals t
+                    ON m.instrument = t.instrument
+                    AND DATE_TRUNC('hour', m.created_at) = DATE_TRUNC('hour', t.created_at)
+                WHERE m.agent_name = 'macro'
+                AND t.agent_name = 'technical'
+                AND m.created_at > NOW() - INTERVAL '7 days'
+                AND ABS(m.score) > 0.05
+                AND ABS(t.score) > 0.05
+                GROUP BY m.instrument
+                HAVING COUNT(*) >= 20
+            """)
+            for row in cur.fetchall():
+                conflict_rate = row['conflicts'] / row['total_cycles']
+                if conflict_rate > 0.50:
+                    proposals.append({
+                        'proposal_type': 'architecture_gate_conflict',
+                        'instrument': row['instrument'],
+                        'message': (
+                            f"Macro and technical agents disagree {conflict_rate:.0%} of the time "
+                            f"on {row['instrument']} over the last 7 days ({row['total_cycles']} cycles). "
+                            f"These signals are structurally misaligned — the directional agreement "
+                            f"requirement is blocking most setups. Consider whether both signals "
+                            f"are measuring the same market or operating on incompatible timescales."
+                        ),
+                        'evidence': {
+                            'conflict_rate': round(conflict_rate, 3),
+                            'total_cycles': row['total_cycles'],
+                            'conflicts': row['conflicts']
+                        }
+                    })
+
+            # DIAGNOSTIC 2 — Signal to trade ratio
+            cur.execute("""
+                SELECT COUNT(DISTINCT DATE_TRUNC('hour', created_at)) as signal_hours
+                FROM forex_network.agent_signals
+                WHERE agent_name = 'macro'
+                AND ABS(score) > 0.1
+                AND created_at > NOW() - INTERVAL '7 days'
+            """)
+            signal_row = cur.fetchone()
+            cur.execute("""
+                SELECT COUNT(*) as trades
+                FROM forex_network.trades
+                WHERE entry_time > NOW() - INTERVAL '7 days'
+            """)
+            trade_row = cur.fetchone()
+            signal_hours = signal_row['signal_hours'] if signal_row else 0
+            trades = trade_row['trades'] if trade_row else 0
+            if signal_hours > 20 and trades == 0:
+                proposals.append({
+                    'proposal_type': 'architecture_zero_trades',
+                    'instrument': 'ALL',
+                    'message': (
+                        f"System has generated macro signals in {signal_hours} hours over "
+                        f"the last 7 days but executed 0 trades. The gate stack is blocking "
+                        f"all entries. Review p75 thresholds, technical gate, and convergence "
+                        f"threshold — one or more is set above the natural signal distribution."
+                    ),
+                    'evidence': {
+                        'signal_hours': signal_hours,
+                        'trades_executed': trades
+                    }
+                })
+            elif signal_hours > 0 and trades > 0:
+                ratio = signal_hours / trades
+                if ratio > 50:
+                    proposals.append({
+                        'proposal_type': 'architecture_low_trade_rate',
+                        'instrument': 'ALL',
+                        'message': (
+                            f"System is generating signals for {signal_hours} hours per trade "
+                            f"executed ({trades} trades in 7 days). Gate stack is extremely "
+                            f"selective. If shadow trades show positive win rates, consider "
+                            f"loosening one gate."
+                        ),
+                        'evidence': {
+                            'signal_hours_per_trade': round(ratio, 1),
+                            'trades': trades,
+                            'signal_hours': signal_hours
+                        }
+                    })
+
+            # DIAGNOSTIC 3 — Shadow trade vs live trade win rate comparison
+            cur.execute("""
+                SELECT
+                    AVG(CASE WHEN shadow_pips_1d > 1 THEN 1.0
+                             WHEN shadow_pips_1d < -1 THEN 0.0
+                             ELSE NULL END) as shadow_win_rate,
+                    COUNT(CASE WHEN shadow_pips_1d IS NOT NULL THEN 1 END) as shadow_count
+                FROM forex_network.shadow_trades
+                WHERE signal_time > %s
+                AND would_have_traded = TRUE
+            """, (DATA_QUALITY_CUTOFF,))
+            shadow_row = cur.fetchone()
+
+            cur.execute("""
+                SELECT
+                    AVG(CASE WHEN pnl_pips > 0 THEN 1.0 ELSE 0.0 END) as live_win_rate,
+                    COUNT(*) as live_count
+                FROM forex_network.trades
+                WHERE exit_time IS NOT NULL
+                AND entry_time > %s
+            """, (DATA_QUALITY_CUTOFF,))
+            live_row = cur.fetchone()
+
+            if (shadow_row and live_row and
+                    shadow_row['shadow_count'] and shadow_row['shadow_count'] >= 20 and
+                    live_row['live_count'] >= 10 and
+                    shadow_row['shadow_win_rate'] and live_row['live_win_rate']):
+                shadow_wr = float(shadow_row['shadow_win_rate'])
+                live_wr = float(live_row['live_win_rate'])
+                if shadow_wr > live_wr + 0.10:
+                    proposals.append({
+                        'proposal_type': 'architecture_gates_blocking_winners',
+                        'instrument': 'ALL',
+                        'message': (
+                            f"Shadow trades (rejected signals) are winning at {shadow_wr:.0%} "
+                            f"vs live trades at {live_wr:.0%} — a {shadow_wr-live_wr:.0%} gap. "
+                            f"The gate stack is systematically blocking better setups than it "
+                            f"is approving. Review which gates are responsible."
+                        ),
+                        'evidence': {
+                            'shadow_win_rate': round(shadow_wr, 3),
+                            'live_win_rate': round(live_wr, 3),
+                            'shadow_count': shadow_row['shadow_count'],
+                            'live_count': live_row['live_count']
+                        }
+                    })
+
+            # DIAGNOSTIC 4 — COT data recency
+            cur.execute("""
+                SELECT MAX(report_date) as latest_report
+                FROM shared.cot_positioning
+            """)
+            cot_row = cur.fetchone()
+            if cot_row and cot_row['latest_report']:
+                days_stale = (datetime.date.today() - cot_row['latest_report']).days
+                if days_stale > 14:
+                    proposals.append({
+                        'proposal_type': 'architecture_cot_stale',
+                        'instrument': 'ALL',
+                        'message': (
+                            f"COT data is {days_stale} days old (latest: {cot_row['latest_report']}). "
+                            f"The conviction multiplier is applying stale positioning data. "
+                            f"COT is published weekly — the ingest pipeline may have failed."
+                        ),
+                        'evidence': {
+                            'days_stale': days_stale,
+                            'latest_report': str(cot_row['latest_report'])
+                        }
+                    })
+
+            # DIAGNOSTIC 5 — Regime vs technical ADX conflict
+            # Regime publishes per-pair data in payload->'regime_per_pair'->instrument->>'regime'
+            # (regime signal has empty instrument field — one signal covers all pairs)
+            cur.execute("""
+                SELECT
+                    t.instrument,
+                    COUNT(*) as conflicts
+                FROM forex_network.agent_signals t
+                JOIN forex_network.agent_signals r
+                    ON DATE_TRUNC('hour', t.created_at) = DATE_TRUNC('hour', r.created_at)
+                WHERE t.agent_name = 'technical'
+                AND r.agent_name = 'regime'
+                AND t.created_at > NOW() - INTERVAL '3 days'
+                AND (t.payload->>'adx_14')::float > 20
+                AND (r.payload->'regime_per_pair'->t.instrument->>'regime') = 'ranging'
+                GROUP BY t.instrument
+                HAVING COUNT(*) >= 10
+            """)
+            for row in cur.fetchall():
+                proposals.append({
+                    'proposal_type': 'architecture_regime_technical_conflict',
+                    'instrument': row['instrument'],
+                    'message': (
+                        f"Technical agent detects ADX > 20 (trending) on {row['instrument']} "
+                        f"but regime agent classifies it as ranging — {row['conflicts']} times "
+                        f"in the last 3 days. These agents are reading different timeframes "
+                        f"or data sources and producing contradictory regime signals."
+                    ),
+                    'evidence': {'conflict_count': row['conflicts']}
+                })
+
+            if proposals:
+                logger.info(f"Architecture diagnostics: {len(proposals)} issue(s) found")
+                self._write_proposals(proposals)
+            else:
+                logger.debug("Architecture diagnostics: no structural issues detected")
+
+            cur.close()
+            return proposals
+
+        except Exception as e:
+            logger.error(f"diagnose_architecture failed: {e}")
             return []
 
     def compute_kelly_fraction(self) -> dict:
