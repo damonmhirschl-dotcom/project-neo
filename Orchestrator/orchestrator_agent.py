@@ -2417,14 +2417,14 @@ class OrchestratorAgent:
             _macro_score = float(macro_sig.get('score') or 0)
             _tech_score  = float(tech_sig.get('score') or 0)
 
-            # Percentile gate: p75 of abs(base - quote) spread from 25yr history.
-            # effective = max(fixed_threshold, p75) — tighter in rangy markets,
+            # Percentile gate: p50 of abs(base - quote) spread from 25yr history.
+            # effective = max(fixed_threshold, p50) — tighter in rangy markets,
             # never looser than convergence_threshold risk parameter.
             # Falls back to fixed threshold if table not yet populated for this pair.
-            _p75 = _macro_p75.get(pair)
-            _effective_macro_threshold = max(MACRO_THRESHOLD, _p75) if _p75 else MACRO_THRESHOLD
+            _p50 = _macro_p50.get(pair)
+            _effective_macro_threshold = max(MACRO_THRESHOLD, _p50) if _p50 else MACRO_THRESHOLD
             detail["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
-            detail["p75_macro_threshold"]       = round(_p75, 4) if _p75 is not None else None
+            detail["p75_macro_threshold"]       = round(_p50, 4) if _p50 is not None else None
 
             def _gate_reject(_reason, _pair=pair, _ms=macro_sig, _ts=tech_sig):
                 _stress_val = float(market_context.get("stress_score", 0) or 0)
@@ -2468,10 +2468,10 @@ class OrchestratorAgent:
             _regime_agrees_pre = (_regime_direction == _macro_direction_pre)
 
             if abs(_macro_score) < _effective_macro_threshold:
-                _p75_info = f"p75={_p75:.3f}" if _p75 is not None else "no p75 data"
+                _p50_info = f"p50={_p50:.3f}" if _p50 is not None else "no p50 data"
                 _gate_reject(
                     f"macro_gate_fail: abs({_macro_score:.3f}) < {_effective_macro_threshold:.3f} "
-                    f"(fixed={MACRO_THRESHOLD:.3f}, {_p75_info})"
+                    f"(fixed={MACRO_THRESHOLD:.3f}, {_p50_info})"
                 )
                 # Hypothesis D — p75_relaxed: above p50 but below p75 effective threshold
                 if _p50 is not None and abs(_macro_score) >= _p50:
@@ -2482,7 +2482,7 @@ class OrchestratorAgent:
                         macro_gate_passed=False,
                         tech_gate_passed=(abs(_tech_score) >= TECH_MIN_THRESHOLD),
                         regime_agrees=_regime_agrees_pre,
-                        p75_threshold=_p75,
+                        p75_threshold=_p50,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
@@ -2494,7 +2494,7 @@ class OrchestratorAgent:
                     macro_gate_passed=False,
                     tech_gate_passed=None,
                     regime_agrees=_regime_agrees_pre,
-                    p75_threshold=_p75,
+                    p75_threshold=_p50,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=False,
                 )
@@ -2527,7 +2527,7 @@ class OrchestratorAgent:
                         macro_gate_passed=True,
                         tech_gate_passed=False,
                         regime_agrees=_regime_agrees,
-                        p75_threshold=_p75,
+                        p75_threshold=_p50,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
@@ -2540,7 +2540,7 @@ class OrchestratorAgent:
                             macro_gate_passed=True,
                             tech_gate_passed=False,
                             regime_agrees=True,
-                            p75_threshold=_p75,
+                            p75_threshold=_p50,
                             effective_threshold=_effective_macro_threshold,
                             would_have_traded=True,
                         )
@@ -2552,7 +2552,7 @@ class OrchestratorAgent:
                         macro_gate_passed=True,
                         tech_gate_passed=False,
                         regime_agrees=_regime_agrees,
-                        p75_threshold=_p75,
+                        p75_threshold=_p50,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=False,
                     )
@@ -2568,7 +2568,7 @@ class OrchestratorAgent:
                     macro_gate_passed=True,
                     tech_gate_passed=True,
                     regime_agrees=_regime_agrees,
-                    p75_threshold=_p75,
+                    p75_threshold=_p50,
                     effective_threshold=_effective_macro_threshold,
                     would_have_traded=(_tech_direction == _macro_direction),
                 )
@@ -2596,7 +2596,7 @@ class OrchestratorAgent:
                         macro_gate_passed=True,
                         tech_gate_passed=True,
                         regime_agrees=_regime_agrees,
-                        p75_threshold=_p75,
+                        p75_threshold=_p50,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=False,
                     )
@@ -2609,7 +2609,7 @@ class OrchestratorAgent:
                             macro_gate_passed=True,
                             tech_gate_passed=True,
                             regime_agrees=True,
-                            p75_threshold=_p75,
+                            p75_threshold=_p50,
                             effective_threshold=_effective_macro_threshold,
                             would_have_traded=True,
                         )
@@ -2621,7 +2621,7 @@ class OrchestratorAgent:
                         macro_gate_passed=True,
                         tech_gate_passed=True,
                         regime_agrees=_regime_agrees,
-                        p75_threshold=_p75,
+                        p75_threshold=_p50,
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=False,
                     )
@@ -2636,7 +2636,7 @@ class OrchestratorAgent:
                 macro_gate_passed=True,
                 tech_gate_passed=True,
                 regime_agrees=_regime_agrees,
-                p75_threshold=_p75,
+                p75_threshold=_p50,
                 effective_threshold=_effective_macro_threshold,
                 would_have_traded=True,
             )
@@ -2726,7 +2726,7 @@ class OrchestratorAgent:
             decision["macro_score"]              = round(_macro_score, 4)
             decision["tech_score"]               = round(_tech_score, 4)
             decision["effective_macro_threshold"] = round(_effective_macro_threshold, 4)
-            decision["p75_threshold"]             = round(_p75, 4) if _p75 is not None else None
+            decision["p75_threshold"]             = round(_p50, 4) if _p50 is not None else None
             decision["stress_score"]              = market_context.get("stress_score")
             decision["stress_band"]               = market_context.get("stress_state")
 
