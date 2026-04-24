@@ -2408,6 +2408,18 @@ class OrchestratorAgent:
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
+                # Full-cycle observation — macro gate blocked
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    _regime_score_val, 'macro_gate_fail',
+                    hypothesis='full_cycle',
+                    macro_gate_passed=False,
+                    tech_gate_passed=None,
+                    regime_agrees=_regime_agrees_pre,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=False,
+                )
                 continue
 
             _macro_direction = 'long' if _macro_score > 0 else 'short'
@@ -2443,6 +2455,18 @@ class OrchestratorAgent:
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
+                # Full-cycle observation — tech gate blocked
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    _regime_score_val, 'technical_too_weak',
+                    hypothesis='full_cycle',
+                    macro_gate_passed=True,
+                    tech_gate_passed=False,
+                    regime_agrees=_regime_agrees,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=False,
+                )
                 continue
 
             _tech_direction = 'long' if _tech_score > 0 else 'short'
@@ -2490,9 +2514,33 @@ class OrchestratorAgent:
                         effective_threshold=_effective_macro_threshold,
                         would_have_traded=True,
                     )
+                # Full-cycle observation — directional gate blocked
+                self._write_shadow_trade(
+                    pair, bias, _macro_score, _tech_score,
+                    _regime_score_val, 'directional_disagreement',
+                    hypothesis='full_cycle',
+                    macro_gate_passed=True,
+                    tech_gate_passed=True,
+                    regime_agrees=_regime_agrees,
+                    p75_threshold=_p75,
+                    effective_threshold=_effective_macro_threshold,
+                    would_have_traded=False,
+                )
                 continue
 
             # Layer 3 — all existing session, stress, R:R, spread checks in evaluate_pair
+            # Full-cycle observation — all three hierarchical gates cleared
+            self._write_shadow_trade(
+                pair, bias, _macro_score, _tech_score,
+                _regime_score_val, None,
+                hypothesis='full_cycle',
+                macro_gate_passed=True,
+                tech_gate_passed=True,
+                regime_agrees=_regime_agrees,
+                p75_threshold=_p75,
+                effective_threshold=_effective_macro_threshold,
+                would_have_traded=True,
+            )
             direction  = 'bullish' if _macro_direction == 'long' else 'bearish'
             dc_reason  = (
                 f"aligned: macro={_macro_direction}({_macro_score:+.3f}) "
