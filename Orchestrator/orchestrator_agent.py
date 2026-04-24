@@ -1591,8 +1591,8 @@ class OrchestratorAgent:
                     (user_id, instrument, direction, rejection_stage, rejection_reason,
                      macro_score, technical_score, regime_score,
                      convergence_score, convergence_threshold,
-                     price_at_rejection, payload)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     price_at_rejection, payload, strategy)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(self.user_id), pair, (bias or "")[:5], stage, reason[:200],
@@ -1602,6 +1602,7 @@ class OrchestratorAgent:
                     float(convergence), float(threshold),
                     float(current_price) if current_price is not None else None,
                     json.dumps(payload) if payload else None,
+                    'v1_swing',
                 ),
             )
             cur.close()
