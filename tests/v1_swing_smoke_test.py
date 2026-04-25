@@ -361,6 +361,102 @@ try:
 except Exception as e:
     _fail('Step 7: Dashboard Lambda', str(e))
 
+# ── Step 8: _inject_atr_targets — T2 uses ATR_TARGET_2_MULTIPLIER=3 ──────────
+print('\n--- Step 8: _inject_atr_targets — T2 uses ATR_TARGET_2_MULTIPLIER=3 ---')
+try:
+    import math
+    sys.path.insert(0, '/root/Project_Neo_Damon/Technical_Agent')
+    from technical_agent import TechnicalAgent
+
+    ta8 = TechnicalAgent(user_id='neo_user_002', dry_run=True)
+
+    # Fetch the real 1D ATR for EURUSD from price_metrics (same DB the agent uses)
+    with cur() as c8:
+        c8.execute("""
+            SELECT atr_14 FROM forex_network.price_metrics
+            WHERE instrument = 'EURUSD' AND timeframe = '1D'
+            ORDER BY ts DESC LIMIT 1
+        """)
+        _atr_row = c8.fetchone()
+    _assert(_atr_row is not None, 'Step 8a: price_metrics has EURUSD 1D atr_14')
+
+    _atr_1d    = float(_atr_row['atr_14'])
+    _test_price = 1.0850
+    _factor     = 100000  # EURUSD: 5 pip decimal places
+
+    _expected_t1    = math.ceil((_test_price + 2.0 * _atr_1d) * _factor) / _factor
+    _expected_t2_3x = math.ceil((_test_price + 3.0 * _atr_1d) * _factor) / _factor
+    _expected_t2_4x = math.ceil((_test_price + 4.0 * _atr_1d) * _factor) / _factor
+
+    _syn_sig = {
+        'instrument': 'EURUSD',
+        'bias':       'bullish',
+        'payload':    {'risk_management': {'stop_distance_pips': 60.0, 'current_spread': 0.0}},
+    }
+    ta8._inject_atr_targets([_syn_sig], {'EURUSD': {'last': _test_price}})
+    _rm = _syn_sig['payload']['risk_management']
+
+    _assert(_rm.get('target_price') is not None,
+            'Step 8b: target_price injected into rm', str(list(_rm.keys())))
+    _assert(abs(float(_rm.get('target_price', 0)) - _expected_t2_3x) < 1e-5,
+            f'Step 8c: T2 = 3× atr_1d ({_expected_t2_3x:.5f})',
+            f'got {_rm.get("target_price")}')
+    _assert(_rm.get('target_price') != _expected_t2_4x,
+            'Step 8d: T2 is NOT the old 4× hardcoded value')
+    _assert(abs(float(_rm.get('target_1_price', 0)) - _expected_t1) < 1e-5,
+            f'Step 8e: T1 = 2× atr_1d ({_expected_t1:.5f})',
+            f'got {_rm.get("target_1_price")}')
+    _assert('atr_stop_loss' in _rm,
+            'Step 8f: atr_stop_loss present in rm', str(list(_rm.keys())))
+    _assert('atr_1d' in _rm,
+            'Step 8g: atr_1d stored in rm', str(list(_rm.keys())))
+except Exception as e:
+    _fail('Step 8: _inject_atr_targets', str(e))
+    import traceback; traceback.print_exc()
+
+# ── Step 9: current_price in top-level TA payload ─────────────────────────────
+print('\n--- Step 9: current_price in top-level TA payload ---')
+try:
+    import unittest.mock
+    import pandas as pd
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    sys.path.insert(0, '/root/Project_Neo_Damon/Technical_Agent')
+    from technical_agent import TechnicalAgent  # already imported above — no-op
+
+    ta9 = TechnicalAgent(user_id='neo_user_002', dry_run=True)
+
+    # 210 flat 1H synthetic bars — produces neutral score (RSI ~50, ADX ~0)
+    # current_price is unconditionally set in generate_signals regardless of score
+    _base_ts = _dt(2026, 3, 1, 0, 0, tzinfo=_tz.utc)
+    _cp = 1.0850
+    _syn_bars = pd.DataFrame([
+        {'ts': _base_ts + _td(hours=i),
+         'open': _cp, 'high': _cp + 0.0002, 'low': _cp - 0.0002, 'close': _cp}
+        for i in range(210)
+    ])
+
+    _orig_pairs = ta9.PAIRS
+    ta9.PAIRS = ['EURUSD']
+    try:
+        with unittest.mock.patch.object(ta9, '_fetch_live_bars', return_value=_syn_bars):
+            _sigs9 = ta9.generate_signals(
+                {'EURUSD': {'last': _cp, 'bid': _cp - 0.0001, 'ask': _cp + 0.0001}})
+    finally:
+        ta9.PAIRS = _orig_pairs
+
+    _assert(len(_sigs9) == 1, 'Step 9a: generate_signals returns 1 signal', str(len(_sigs9)))
+    _p9 = _sigs9[0].get('payload', {}) if _sigs9 else {}
+    _assert('current_price' in _p9,
+            'Step 9b: current_price in top-level payload', str(list(_p9.keys())[:12]))
+    _assert(isinstance(_p9.get('current_price'), (int, float)),
+            'Step 9c: current_price is numeric', str(type(_p9.get('current_price'))))
+    _assert(abs(float(_p9.get('current_price', 0)) - _cp) < 1e-5,
+            f'Step 9d: current_price == df close ({_cp})',
+            str(_p9.get('current_price')))
+except Exception as e:
+    _fail('Step 9: current_price in payload', str(e))
+    import traceback; traceback.print_exc()
+
 # ── Teardown ──────────────────────────────────────────────────────────────────
 print('\n--- Teardown ---')
 teardown()
