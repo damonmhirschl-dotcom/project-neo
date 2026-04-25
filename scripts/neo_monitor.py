@@ -26,8 +26,8 @@ CHECK_INTERVAL = 60  # seconds
 SERVICES = [
     'neo-technical-agent',
     'neo-macro-agent',
-    'neo-orchestrator',
-    'neo-risk-guardian',
+    'neo-orchestrator-agent',
+    'neo-risk-guardian-agent',
     'neo-execution-agent',
     'neo-learning-module',
 ]
