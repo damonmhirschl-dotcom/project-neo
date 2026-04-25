@@ -39,6 +39,8 @@ from shared.agent_state import save_state, load_state, AGENT_SCOPE_USER_ID
 from shared.schema_validator import validate_schema
 from shared.system_events import log_event
 from shared.warn_log import warn
+from v1_swing_parameters import V1_SWING_PAIRS
+from shared.schemas.v1_swing_payloads import validate_macro_payload
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":    ["agent_name", "instrument", "signal_type", "score",
@@ -68,16 +70,7 @@ class MacroAgent:
     SIGNAL_EXPIRY_MINUTES  = 25
     AWS_REGION             = "eu-west-2"
 
-    PAIRS = [
-        # USD pairs
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-        # Cross pairs
-        "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
-        "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
-        "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
-        # New pairs added 2026-04-25
-        "EURNZD", "AUDCAD",
-    ]
+    PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
     CURRENCIES = ['EUR', 'GBP', 'USD', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD']
 
@@ -365,6 +358,7 @@ class MacroAgent:
                 ),
             }
 
+            validate_macro_payload(payload)
             signals.append({
                 'agent_name':   self.AGENT_NAME,
                 'instrument':   pair,

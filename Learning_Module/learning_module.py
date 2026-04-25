@@ -25,6 +25,11 @@ import os
 import re
 import sys
 sys.path.insert(0, '/root/Project_Neo_Damon')
+from v1_swing_parameters import (
+    V1_SWING_PAIRS,
+    SETUP_LONG_PULLBACK, SETUP_SHORT_PULLBACK, SETUP_TYPES,
+    REJECTION_STAGES,
+)
 import json
 import time
 import uuid
@@ -121,7 +126,7 @@ AUTOPSY_LOG_PATH = '/var/log/neo/learning_module_autopsies.jsonl'
 # =============================================================================
 V1_SWING_ADX_BUCKETS   = ['25-30', '30-40', '40+']
 V1_SWING_SESSIONS      = ['asia', 'london', 'ny_overlap', 'ny_late']
-V1_SWING_SETUP_TYPES   = ['long_pullback', 'short_pullback']
+V1_SWING_SETUP_TYPES   = list(SETUP_TYPES)  # from v1_swing_parameters
 MIN_BUCKET_SAMPLE      = 10   # flag insufficient_sample below this
 
 RG_REJECTION_CATEGORIES = [
@@ -3078,10 +3083,10 @@ class LearningModule:
         long_stats  = {'wins': 0, 'losses': 0, 'n': 0}
         short_stats = {'wins': 0, 'losses': 0, 'n': 0}
         for (session, adx_bucket, setup_type), stats in session_adx_setup.items():
-            if setup_type == 'long_pullback':
+            if setup_type == SETUP_LONG_PULLBACK:
                 for k in ('wins', 'losses', 'n'):
                     long_stats[k] += stats[k]
-            elif setup_type == 'short_pullback':
+            elif setup_type == SETUP_SHORT_PULLBACK:
                 for k in ('wins', 'losses', 'n'):
                     short_stats[k] += stats[k]
         if long_stats['n'] >= 20 and short_stats['n'] >= 20:

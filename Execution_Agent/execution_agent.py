@@ -38,6 +38,8 @@ from shared.signal_validator import SignalValidator
 from shared.market_hours import get_market_state
 from shared.system_events import log_event
 from shared.warn_log import warn
+from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_2_MULTIPLIER
+from shared.schemas.v1_swing_payloads import validate_trade_write
 from shared.broker_interface import BrokerInterface
 
 EXPECTED_TABLES = {
@@ -160,16 +162,7 @@ KILL_SWITCH_STOP_MULTIPLIERS = {
     "severe":   0.75,   # ATR × 0.75 for stress 93-100
 }
 
-FX_PAIRS = [
-    # USD pairs
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-    # Cross pairs
-    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
-    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
-    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
-    # New pairs added 2026-04-25
-    "EURNZD", "AUDCAD",
-]
+FX_PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
 
 # =============================================================================
@@ -1201,17 +1194,17 @@ class TradeExecutor:
         _setup_type_val   = _ec_for_tech.get("setup_type")
 
         # V1 Swing spec: target is always ATR-derived, never swing-based.
-        # T1 = entry ± 2.0 × ATR(14, 1D); T2 = entry ± 4.0 × ATR(14, 1D).
+        # T1 = entry ± 2.0 × ATR(14, 1D); T2 = entry ± ATR_TARGET_2_MULTIPLIER × ATR(14, 1D).
         # v0 stores T1 as target_price (full close); partial exits (T2) are v0.1.
         _atr_1d_val, _atr_1d_tf = _fetch_atr_for_stop(self.db, instrument)
         _pip_prec_tgt = 3 if instrument.upper().endswith('JPY') else 5
         if _atr_1d_val and _atr_1d_val > 0:
             if direction == 'long':
                 _atr_target_1 = round(entry_price + 2.0 * _atr_1d_val, _pip_prec_tgt)
-                _atr_target_2 = round(entry_price + 4.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_2 = round(entry_price + ATR_TARGET_2_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
             else:
                 _atr_target_1 = round(entry_price - 2.0 * _atr_1d_val, _pip_prec_tgt)
-                _atr_target_2 = round(entry_price - 4.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_2 = round(entry_price - ATR_TARGET_2_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
             logger.info(
                 f"{instrument} ATR targets: T1={_atr_target_1} T2={_atr_target_2} "
                 f"(entry={entry_price} atr_1d={_atr_1d_val:.5f} via {_atr_1d_tf})"
@@ -1528,6 +1521,12 @@ class TradeExecutor:
             if not any([_adx_at_entry, _rsi_at_entry, _setup_type]):
                 logger.warning(f"Entry context missing from tech_signal for {instrument} — "
                                f"adx_4h/rsi_4h/setup_type not in payload")
+            validate_trade_write(
+                instrument=instrument, direction=direction,
+                entry_price=entry_price, position_size=position_size,
+                adx_at_entry=_adx_at_entry, rsi_at_entry=_rsi_at_entry,
+                setup_type=_setup_type, session_at_entry=_session_at_entry,
+            )
 
             # Belt-and-braces: mirror entry context fields into trade_parameters JSONB
             if trade_parameters is not None:
@@ -1866,6 +1865,48 @@ class ExecutionAgent:
             self.db.rollback()
         finally:
             cur.close()
+
+    def write_trade_dry_run(self, params: dict):
+        """Write a test trade row, skipping IG submission.
+        Validates via TradeWritePayload, writes to trades table, returns trade_id.
+        Used exclusively by smoke tests. Raises ValueError if validation fails.
+        """
+        from shared.schemas.v1_swing_payloads import validate_trade_write
+        validated = validate_trade_write(
+            instrument=params['instrument'], direction=params['direction'],
+            entry_price=params['entry_price'], position_size=params['position_size'],
+            adx_at_entry=params.get('adx_at_entry'),
+            rsi_at_entry=params.get('rsi_at_entry'),
+            setup_type=params.get('setup_type'),
+            session_at_entry=params.get('session_at_entry'),
+            strategy=params.get('strategy', 'v1_swing'),
+        )
+        if validated is None:
+            raise ValueError(
+                f"TradeWritePayload validation failed for {params.get('instrument')}"
+            )
+        import datetime as _dt
+        _session = params.get('session_at_entry') or _classify_session_utc(
+            _dt.datetime.now(_dt.timezone.utc))
+        return self.executor._write_trade(
+            instrument=params['instrument'],
+            direction=params['direction'],
+            entry_price=params['entry_price'],
+            position_size=params['position_size'],
+            stop_distance=params.get('stop_distance', 0.0060),
+            spread_at_entry=params.get('spread_at_entry', 0.0002),
+            fill_pct=100.0,
+            slippage_pips=0.0,
+            fill_time_ms=0,
+            payload=params.get('ig_payload', {}),
+            convergence_score=params.get('convergence_score'),
+            target_price=params.get('target_1_price'),
+            session_at_entry=_session,
+            adx_at_entry=params.get('adx_at_entry'),
+            rsi_at_entry=params.get('rsi_at_entry'),
+            setup_type=params.get('setup_type'),
+            trade_parameters=params.get('trade_parameters', {}),
+        )
 
     def read_pending_approvals(self) -> List[Dict[str, Any]]:
         """Read risk_approved signals not yet processed."""

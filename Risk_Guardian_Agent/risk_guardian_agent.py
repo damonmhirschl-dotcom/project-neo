@@ -35,6 +35,8 @@ from shared.schema_validator import validate_schema
 from shared.signal_validator import SignalValidator
 from shared.system_events import log_event
 from shared.warn_log import warn
+from v1_swing_parameters import V1_SWING_PAIRS
+from shared.schemas.v1_swing_payloads import validate_rg_decision
 
 EXPECTED_TABLES = {
     "forex_network.risk_parameters":      ["user_id", "convergence_threshold", "max_risk_pct",
@@ -356,16 +358,7 @@ HIGH_IMPACT_BLACKOUT_INDICATORS = frozenset({
     "Inflation Rate YoY", "Inflation Rate YoY Flash",
 })
 
-FX_PAIRS = [
-    # USD pairs
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-    # Cross pairs
-    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
-    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
-    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
-    # New pairs added 2026-04-25
-    "EURNZD", "AUDCAD",
-]
+FX_PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
 
 # =============================================================================
@@ -2038,6 +2031,7 @@ class RiskGuardian:
                 json.dumps(decision, default=float),
             ))
             self.db.commit()
+            validate_rg_decision(decision)  # schema contract check
             logger.info(f"Decision written: {signal_type} for {decision['instrument']}")
         except Exception as e:
             logger.error(f"Decision write failed: {e}")

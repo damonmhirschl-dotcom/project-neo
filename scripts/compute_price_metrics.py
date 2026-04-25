@@ -18,14 +18,10 @@ from orchestrator_agent import DatabaseConnection
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('compute_price_metrics')
 
-V1_PAIRS = [
-    'EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY',
-    'EURGBP', 'EURAUD', 'EURCHF', 'EURCAD', 'EURJPY', 'EURNZD',
-    'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY',
-    'AUDJPY', 'AUDCAD', 'AUDNZD',
-    # Added 2026-04-25 to complete 22-pair V1 Swing universe
-    'NZDJPY', 'CADJPY',
-]
+import sys
+sys.path.insert(0, '/root/Project_Neo_Damon')
+from v1_swing_parameters import V1_SWING_PAIRS
+V1_PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
 ATR_PERIOD = 14
 
