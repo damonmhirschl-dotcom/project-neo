@@ -315,6 +315,27 @@ def check_infrastructure(conn):
                 log.warning(f'Stale lock: {lock_file.name} ({age_min:.0f} min)')
 
 
+# --- BROKER CONFIG ---
+def check_broker_config(conn):
+    """Verify all V1 Swing pairs have an explicit entry in IGBroker.CURRENCY_CODE_MAP.
+    A missing pair falls through to the 'USD' default and IG will reject the order.
+    """
+    try:
+        from shared.brokers.ig_broker import IGBroker
+        missing = [p for p in V1_SWING_PAIRS if p not in IGBroker.CURRENCY_CODE_MAP]
+        if missing:
+            msg = f'CURRENCY_CODE_MAP missing {len(missing)} pairs: {missing} — orders will be rejected'
+            send_alert('CRITICAL', f'Broker config: {len(missing)} pairs missing currency code',
+                {'missing': missing}, 'neo_monitor')
+            write_system_alert(conn, 'critical', 'risk_parameters_stale',
+                f'Broker config: {len(missing)} pairs missing currency code', msg)
+            log.error(f'FAIL {msg}')
+        else:
+            log.info(f'PASS broker CURRENCY_CODE_MAP: all {len(V1_SWING_PAIRS)} pairs present')
+    except Exception as e:
+        log.warning(f'check_broker_config skipped: {e}')
+
+
 # --- DRAWDOWN HALTS ---
 def check_halt_status(conn):
     cur = conn.cursor()
@@ -351,6 +372,7 @@ def run_all_checks():
         check_data_freshness(conn)
         check_infrastructure(conn)
         check_halt_status(conn)
+        check_broker_config(conn)
     except Exception as e:
         send_alert('CRITICAL', 'Monitor cycle failed', {'error': str(e)}, 'neo_monitor')
         log.error(f'Monitor cycle error: {e}')

@@ -90,6 +90,8 @@ class IGBroker(BrokerInterface):
         "AUDJPY": "JPY",
         "CADJPY": "JPY",
         "NZDJPY": "JPY",
+        "EURNZD": "NZD",
+        "AUDCAD": "CAD",
     }
 
     PIP_SIZE_MAP = {
