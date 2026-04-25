@@ -2090,7 +2090,7 @@ class ExecutionAgent:
                 SELECT id, instrument, direction, entry_price, stop_price,
                        target_price, regime_at_entry, ibkr_order_id,
                        position_size_usd, position_size, entry_time, ibkr_stop_order_id,
-                       target_1_hit, target_1_closed_size, trade_parameters
+                       target_1_hit, target_1_closed_size, trade_parameters, strategy
                 FROM forex_network.trades
                 WHERE user_id = %s AND exit_time IS NULL
             """, (self.user_id,))
@@ -2203,7 +2203,20 @@ class ExecutionAgent:
                              ibkr_pos.get("marketPrice") or entry_price)
                             if isinstance(ibkr_pos, dict) else entry_price
                         )
-                        trail_distance = current_price * (trailing_pct / 100.0)
+                        # V1 Trend: ATR-based trailing stop from trade_parameters
+                        _tp = trade.get("trade_parameters") or {}
+                        if isinstance(_tp, str):
+                            import json as _json
+                            try: _tp = _json.loads(_tp)
+                            except Exception: _tp = {}
+                        _trade_strategy = trade.get("strategy") or _tp.get("strategy", "v1_swing")
+
+                        if _trade_strategy == "v1_trend" and _tp.get("atr_daily"):
+                            _atr = float(_tp["atr_daily"])
+                            _trail_mult = float(_tp.get("trail_atr_mult", 2.0))
+                            trail_distance = _atr * _trail_mult
+                        else:
+                            trail_distance = current_price * (trailing_pct / 100.0)
 
                         if trade["direction"] == "long":
                             new_stop = current_price - trail_distance
@@ -2216,9 +2229,11 @@ class ExecutionAgent:
 
             # ── T1 partial exit monitoring (v0.1)
             _regime = (trade.get("regime_at_entry") or "").lower()
+            _trade_strat = trade.get("strategy") or "v1_swing"
             _is_trending = "trend" in _regime
             _t1_hit = trade.get("target_1_hit", False)
-            if not _t1_hit and not _is_trending:
+            # V1 Trend always uses T1 partial exit (30% at T1); V1 Swing skips for trending
+            if not _t1_hit and (_trade_strat == "v1_trend" or not _is_trending):
                 # Resolve T1 price: prefer trade_parameters['target_1_price'],
                 # fall back to target_price column (legacy/ATR-no-T2 trades)
                 _t1_price_raw = None
@@ -2268,7 +2283,8 @@ class ExecutionAgent:
                     _entry_t = _entry_t.replace(tzinfo=datetime.timezone.utc)
                 hold_days = (datetime.datetime.now(datetime.timezone.utc) - _entry_t).total_seconds() / 86400
                 max_hold = ExecutionAgent._get_max_hold_days(
-                    trade.get("regime_at_entry"), current_stress
+                    trade.get("regime_at_entry"), current_stress,
+                    strategy=trade.get("strategy", "v1_swing"),
                 )
                 if hold_days >= max_hold:
                     logger.info(
@@ -2321,8 +2337,17 @@ class ExecutionAgent:
             return False
 
     @staticmethod
-    def _get_max_hold_days(regime, stress_score: float = 0) -> int:
-        """Research-backed maximum holding periods by regime."""
+    def _get_max_hold_days(regime, stress_score: float = 0, strategy: str = "v1_swing") -> int:
+        """Maximum holding periods — strategy-aware.
+        V1 Trend: TIME_STOP_DAYS (25) from parameters.
+        V1 Swing: 3-5 days by regime (research-backed).
+        """
+        if strategy == "v1_trend":
+            try:
+                from shared.v1_trend_parameters import TIME_STOP_DAYS
+                return TIME_STOP_DAYS
+            except ImportError:
+                return 25
         if regime and "trend" in str(regime).lower():
             return 5
         return 3  # ranging, transitional, unknown, or NULL
