@@ -595,12 +595,7 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
             </div>
           )}
           <div className="header-stat">
-            <button onClick={()=>window.killSwitchActivate()} style={{
-  background:'var(--red)',color:'#fff',border:'none',borderRadius:'var(--r)',
-  padding:'4px 10px',fontFamily:'var(--mono)',fontSize:'.65rem',fontWeight:700,
-  cursor:'pointer',marginRight:8,letterSpacing:'.04em'
-}} title="Activate kill switch — requires SMS OTP">⛔ KILL</button>
-<span className="lbl">P&L Today</span>
+            <span className="lbl">P&L Today</span>
             <span className={`val ${pnlToday>=0?'pos':'neg'}`}>{pnlToday>=0?'+$':'-$'}{Math.abs(pnlToday).toFixed(0)}</span>
           </div>
           <div className="header-stat">
@@ -616,6 +611,7 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
           <span className="ts">{clock}</span>
           {lastUpdated && <span className="ts">↻ {relTime(lastUpdated)}</span>}
           <span className={`session-badge ${sessCls}`}>{sessLabel}</span>
+          <button onClick={()=>window.killSwitchActivate()} style={{background:'var(--red)',color:'#fff',border:'none',borderRadius:'var(--r)',padding:'4px 10px',fontFamily:'var(--mono)',fontSize:'.65rem',fontWeight:700,cursor:'pointer',letterSpacing:'.04em'}} title="Activate kill switch — requires SMS OTP">⛔ KILL</button>
           <button className="btn-refresh" onClick={onRefresh} disabled={refreshing}>{refreshing?'↻ …':'↻ Refresh'}</button>
         </div>
       </div>
