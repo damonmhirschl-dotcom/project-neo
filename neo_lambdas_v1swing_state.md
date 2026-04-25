@@ -1,101 +1,52 @@
-# Project Neo — Lambda V1 Swing State
+# Neo Lambda Deployment State — V1 Swing
 
-**Date:** 2026-04-24  
-**Change:** Regime agent decommission + V1 Swing alignment
+## psycopg2 Layer Issue (2026-04-24)
 
----
+**Root cause:** Layer `psycopg2-py312:1` (arn:aws:lambda:eu-west-2:956177812472:layer:psycopg2-py312:1)
+contains a CPython 3.10 binary despite its name suggesting py3.12.
+Lambdas on Python 3.12 runtime fail with `No module named '\''psycopg2._psycopg'\''`.
 
-## Lambda State Summary
+**Fix:** Bundle `psycopg2-binary==2.9.12` (manylinux2014_x86_64, cp312) directly
+into the deployment zip. Remove the broken layer.
 
-| Lambda | Status | Notes |
-|--------|--------|-------|
-| `neo-admin-signals-dev` | ENABLED, UPDATED | stress_score omitted when None (post-V1-Swing) |
-| `neo-critical-alerter-dev` | **DISABLED** | Reads system_stress_alerts; no new writes post-decommission |
-| `neo-daily-summary-dev` | ENABLED, UPDATED | Replaced stress query with V1 Swing open-positions health |
-| `neo-admin-open-positions-dev` | ENABLED | No regime/stress reads — no change needed |
-| `neo-admin-trades-dev` | ENABLED | No regime/stress reads — no change needed |
-| `neo-dash-positions-dev` | ENABLED | No regime/stress reads — no change needed |
-| `neo-ingest-*` | ENABLED | Data ingest — unaffected |
+**Lambdas fixed:**
+- `neo-admin-signals-dev` — fixed during V1 Swing alignment (2026-04-24), layer still attached (layer is shadowed by bundled copy)
+- `neo-admin-proposals-dev` — fixed 2026-04-24; layer cleared + new zip deployed (CodeSize: 4284745)
 
----
+**Lambdas still using broken layer psycopg2-py312:1 on py3.12 — AT RISK:**
+- neo-dash-account-dev
+- neo-admin-trades-dev
+- neo-admin-audit-download-dev
+- neo-dash-calendar-dev
+- neo-dash-drawdown-dev
+- neo-admin-learning-dev
+- neo-admin-health-dev
+- neo-admin-audit-dev
+- neo-admin-signals-dev (layer attached; bundled copy in zip should shadow it)
+- neo-admin-capital-events-dev
+- neo-admin-trades-download-dev
+- neo-admin-agents-dev
+- neo-admin-alerts-dev
+- neo-admin-stats-dev
+- neo-dash-trades-download-dev
+- neo-dash-trades-dev
+- neo-dash-positions-dev
 
-## Fix Details
-
-### neo-admin-signals-dev (Fix 1)
-
-**Problem:** `stress_score` is now `None` in orchestrator decision payloads
-post-regime-decommission. Handler previously spread this `null` into
-`card_payload` via the ctx dict comprehension.
-
-**Change (handler.py):**
-- `signals_full` ctx dict: now filters out `None` values so `stress_score=None`
-  is not included in card_payload (dashboard safety)
-- `decisions` list: `stress_score` key omitted entirely when `None` (rather
-  than returning `null`) so the decisions table column naturally hides for
-  V1 Swing cycles
-
-**Commit:** `46b345b`  
-**Deploy:** 2026-04-24
-
----
-
-### neo-critical-alerter-dev (Fix 2)
-
-**Problem:** Lambda reads `forex_network.system_stress_alerts` which no longer
-receives writes (regime agent decommissioned). The table has historical data
-but V1 Swing has no stress-alert concept.
-
-**Decision:** DISABLED (not deleted). Lambda and function code preserved.
-
-**EventBridge Rule:** `neo-critical-alerter-schedule` → **DISABLED**  
-Schedule was: `rate(5 minutes)`
-
-**Re-enable if needed:**
+**Build command (reusable for all at-risk Lambdas):**
 ```bash
-aws events enable-rule --name neo-critical-alerter-schedule --region eu-west-2
+pip install \
+    --platform manylinux2014_x86_64 \
+    --target build/ \
+    --implementation cp \
+    --python-version 3.12 \
+    --only-binary=:all: \
+    psycopg2-binary==2.9.12
 ```
 
-**Note:** `system_stress_alerts` table is preserved with historical data.
-If a future strategy reintroduces stress monitoring, re-enable the rule
-and update the Lambda to handle new alert format.
+**Verified .so:** `_psycopg.cpython-312-x86_64-linux-gnu.so`
 
----
+**Test invocation result (2026-04-24):**
+- StatusCode: 200, Body keys: [proposals, total, pending_count], No error in body
+- No psycopg2 errors in CloudWatch (last 5 min)
 
-### neo-daily-summary-dev (Fix 3)
-
-**Problem:** `compute_daily_summary` queried `shared.market_context_snapshots`
-for daily stress min/max/avg. Table no longer populated post-decommission.
-
-**Change (neo_daily_summary.py):**
-- Replaced stress query with `COUNT(*) FROM forex_network.trades WHERE exit_time IS NULL`
-  (current open positions count)
-- `stress_score_min/max/avg` fields preserved in DB schema as `0` (no schema change)
-- `open_positions_count` added to summary dict
-- Email `SYSTEM` section now shows: `Open positions: N  (V1 Swing)`
-
-**Commit:** `46b345b`  
-**Deploy:** 2026-04-24
-
----
-
-## Flagged for Future Follow-up
-
-These references to stress/regime exist in Lambda code but were NOT changed in
-this dispatch (read-only or harmless with empty table):
-
-- `neo-daily-summary-dev/neo_daily_summary.py:311` — weekly email still has
-  stress_state line from `detail['stress_state']` (now returns "V1 Swing")
-- `neo-critical-alerter-dev` — entire Lambda disabled; code unchanged
-
----
-
-## DB Schema Preserved
-
-The following tables/columns are **NOT dropped** — they hold historical data
-and are needed if stress monitoring is reintroduced:
-
-- `shared.market_context_snapshots` — historical snapshots
-- `forex_network.system_stress_alerts` — historical stress alerts
-- `forex_network.agent_signals.stress_score` — historical scores (now NULL for new rows)
-- `forex_network.daily_summaries.stress_score_min/max/avg` — now stored as 0
-- `forex_network.weekly_reports.stress_score_avg/peak` — now stored as 0
+**CloudFront invalidation:** I7Q3MSJCI2XHUHSLQL2U4P2QQD (InProgress, dist E16A8HVTFGN2V0)
