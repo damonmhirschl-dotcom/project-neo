@@ -45,8 +45,10 @@ def get_db_conn():
     )
 
 
-def write_system_alert(conn, severity, title, detail):
-    """Write critical alerts to system_alerts so Lambda picks them up for SMS."""
+def write_system_alert(conn, severity, alert_type, title, detail):
+    """Write critical alerts to system_alerts so Lambda picks them up for SMS.
+    alert_type must be one of the chk_alert_type enum values.
+    """
     if severity != 'critical':
         return
     try:
@@ -55,7 +57,7 @@ def write_system_alert(conn, severity, title, detail):
             INSERT INTO forex_network.system_alerts
                 (alert_type, severity, title, detail, acknowledged)
             VALUES (%s, %s, %s, %s, false)
-        """, ('neo_monitor', severity, title[:255], detail[:1000]))
+        """, (alert_type, severity, title[:255], detail[:1000]))
         conn.commit()
         cur.close()
     except Exception as e:
@@ -83,7 +85,7 @@ def check_services(conn):
         if state != 'active':
             msg = f'{svc} is {state}'
             send_alert('CRITICAL', f'Service down: {svc}', {'state': state}, 'neo_monitor')
-            write_system_alert(conn, 'critical', f'Service down: {svc}', msg)
+            write_system_alert(conn, 'critical', 'agent_dead', f'Service down: {svc}', msg)
             log.error(f'FAIL {msg}')
         else:
             log.info(f'PASS service {svc}')
@@ -107,7 +109,7 @@ def check_signal_flow(conn):
     if ta_pairs == 0:
         msg = 'Technical agent not emitting — may be stuck or crashing'
         send_alert('CRITICAL', 'TA: zero signals in 6H', {'pairs': 0}, 'neo_monitor')
-        write_system_alert(conn, 'critical', 'TA: zero signals in 6H', msg)
+        write_system_alert(conn, 'critical', 'agent_dead', 'TA: zero signals in 6H', msg)
     elif ta_pairs < 22:
         send_alert('WARNING', f'TA: only {ta_pairs}/22 pairs signalling',
             {'pairs': ta_pairs, 'expected': 22}, 'neo_monitor')
@@ -172,7 +174,7 @@ def check_trade_execution(conn):
         msg = f'{count} open rows for same instrument — possible double-entry'
         send_alert('CRITICAL', f'Duplicate position: {instrument}',
             {'instrument': instrument, 'count': count}, 'neo_monitor')
-        write_system_alert(conn, 'critical', f'Duplicate position: {instrument}', msg)
+        write_system_alert(conn, 'critical', 'reconciliation_orphan', f'Duplicate position: {instrument}', msg)
 
     # Open count for logging
     cur.execute("""
@@ -209,9 +211,9 @@ def check_data_freshness(conn):
     cur = conn.cursor()
     now = datetime.now(timezone.utc)
 
-    # price_metrics freshness
+    # price_metrics freshness (timestamp column is 'ts')
     cur.execute("""
-        SELECT timeframe, MAX(updated_at)
+        SELECT timeframe, MAX(ts)
         FROM forex_network.price_metrics
         GROUP BY timeframe
     """)
@@ -248,7 +250,7 @@ def check_data_freshness(conn):
         msg = 'RG news blackout checks will pass everything — calendar ingest may have failed'
         send_alert('CRITICAL', 'Economic calendar empty for next 7 days',
             {'high_impact_events': 0}, 'neo_monitor')
-        write_system_alert(conn, 'critical', 'Economic calendar empty for next 7 days', msg)
+        write_system_alert(conn, 'critical', 'risk_parameters_stale', 'Economic calendar empty for next 7 days', msg)
     log.info(f'High-impact events next 7 days: {upcoming}')
 
     # Swap rates completeness
@@ -273,7 +275,7 @@ def check_infrastructure(conn):
             msg = 'EC2 root volume nearly full — agents will crash on log write'
             send_alert('CRITICAL', f'Disk critical: {usage}% used',
                 {'usage_pct': usage}, 'neo_monitor')
-            write_system_alert(conn, 'critical', f'Disk critical: {usage}% used', msg)
+            write_system_alert(conn, 'critical', 'circuit_breaker_sys', f'Disk critical: {usage}% used', msg)
         elif usage > 80:
             send_alert('WARNING', f'Disk high: {usage}% used',
                 {'usage_pct': usage}, 'neo_monitor')
@@ -290,7 +292,7 @@ def check_infrastructure(conn):
         msg = 'Connection pool near exhaustion — check for leaks'
         send_alert('CRITICAL', f'RDS connections critical: {active}',
             {'connections': active}, 'neo_monitor')
-        write_system_alert(conn, 'critical', f'RDS connections critical: {active}', msg)
+        write_system_alert(conn, 'critical', 'circuit_breaker_sys', f'RDS connections critical: {active}', msg)
     elif active > 60:
         send_alert('WARNING', f'RDS connections high: {active}',
             {'connections': active}, 'neo_monitor')
@@ -329,7 +331,7 @@ def check_halt_status(conn):
             msg = f'Trading halted until {row[1]}'
             send_alert('CRITICAL', f'Active halt: {row[0]}',
                 {'reason': row[0], 'until': str(row[1])}, 'neo_monitor')
-            write_system_alert(conn, 'critical', f'Active halt: {row[0]}', msg)
+            write_system_alert(conn, 'critical', 'drawdown_step_down', f'Active halt: {row[0]}', msg)
             log.warning(f'Active halt: {row[0]} until {row[1]}')
         else:
             log.info('No active halts')
