@@ -1047,7 +1047,9 @@ class TradeExecutor:
             )
 
         # V1 Swing: tag order with reference for broker-side strategy separation
-        order['reference'] = f"NEOv1s{instrument[:7].replace('/', '').upper()}" 
+        _strat = (trade_params or {}).get('strategy', 'v1_swing')
+        _prefix = 'NEOv1t' if _strat == 'v1_trend' else 'NEOv1s'
+        order['reference'] = f"{_prefix}{instrument[:6].replace('/', '').upper()}" 
 
         # Capture intended entry price for execution_failures logging.
         # For LMT orders, this is the limit price set in _build_order.
@@ -1563,7 +1565,7 @@ class TradeExecutor:
                 agents_agreed,
                 entry_rank_position,
                 json.dumps(trade_parameters) if trade_parameters else None,
-                'v1_swing',
+                (trade_params or {}).get('strategy', 'v1_swing'),
                 _adx_at_entry, _rsi_at_entry, _setup_type,
                 payload.get("dealReference") or payload.get("ig_deal_reference") or None,
             ))

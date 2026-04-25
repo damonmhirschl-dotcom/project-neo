@@ -37,6 +37,10 @@ from shared.system_events import log_event
 from shared.warn_log import warn
 from v1_swing_parameters import V1_SWING_PAIRS
 from shared.schemas.v1_swing_payloads import validate_rg_decision
+try:
+    from shared.v1_trend_parameters import RISK_PER_TRADE_PCT as V1_TREND_RISK_PCT
+except ImportError:
+    V1_TREND_RISK_PCT = 0.0075
 
 EXPECTED_TABLES = {
     "forex_network.risk_parameters":      ["user_id", "convergence_threshold", "max_risk_pct",
@@ -455,9 +459,11 @@ class RiskDataReader:
         self.user_id = user_id
 
     def read_pending_approvals(self) -> List[Dict[str, Any]]:
-        """Read orchestrator_decision signals and expand approved decisions into per-pair records."""
+        """Read orchestrator_decision signals (V1 Swing) and trade_approval signals (V1 Trend)."""
         cur = self.db.cursor()
+        results = []
         try:
+            # --- V1 Swing: orchestrator_decision with decisions[] array ---
             cur.execute("""
                 SELECT id, score, payload, created_at, expires_at
                 FROM forex_network.agent_signals orch
@@ -475,9 +481,7 @@ class RiskDataReader:
                   )
                 ORDER BY orch.created_at ASC
             """, (self.user_id, self.user_id))
-            rows = cur.fetchall()
-            results = []
-            for row in rows:
+            for row in cur.fetchall():
                 payload = row["payload"]
                 if isinstance(payload, str):
                     payload = json.loads(payload)
@@ -494,12 +498,46 @@ class RiskDataReader:
                         "payload": dec,
                         "created_at": row["created_at"],
                     })
-            return results
+
+            # --- V1 Trend: flat trade_approval proposals ---
+            cur.execute("""
+                SELECT id, payload, created_at
+                FROM forex_network.agent_signals ta
+                WHERE ta.agent_name = 'v1_trend_orchestrator'
+                  AND ta.signal_type = 'trade_approval'
+                  AND ta.user_id = %s
+                  AND ta.expires_at > NOW()
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM forex_network.agent_signals rg
+                      WHERE rg.agent_name = 'risk_guardian'
+                        AND rg.user_id = %s
+                        AND (rg.payload->>'approval_signal_id') IS NOT NULL
+                        AND (rg.payload->>'approval_signal_id')::bigint = ta.id
+                  )
+                ORDER BY ta.created_at ASC
+            """, (self.user_id, self.user_id))
+            for row in cur.fetchall():
+                payload = row["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                payload = payload or {}
+                direction = payload.get("direction", "long")
+                results.append({
+                    "signal_id":  row["id"],
+                    "instrument": payload.get("pair"),
+                    "score":      1.0,
+                    "bias":       direction,
+                    "confidence": 1.0,
+                    "payload":    payload,
+                    "created_at": row["created_at"],
+                })
+
         except Exception as e:
             logger.error(f"Read pending approvals failed: {e}")
-            return []
         finally:
             cur.close()
+        return results
 
     def read_risk_parameters(self):
         """
@@ -804,13 +842,19 @@ class RiskDataReader:
 def compute_position_risk_pct(
     convergence_score: float,
     risk_params: dict,
+    strategy: str = "v1_swing",
+    flat_risk_pct: float = None,
 ) -> float:
     """
     Conviction-scaled risk fraction (decimal, e.g. 0.0025 = 0.25% of account).
 
-    Interpolates between min_risk_pct and max_risk_pct using a power curve
-    (curve_exponent) over the normalised conviction range [threshold, max_ref].
+    V1 Trend: bypasses convergence curve, uses flat_risk_pct from proposal payload.
+    V1 Swing: interpolates between min/max using convergence score power curve.
     """
+    # V1 Trend — flat risk, no convergence curve
+    if strategy == "v1_trend" and flat_risk_pct is not None:
+        return float(flat_risk_pct)
+
     conv_abs  = abs(convergence_score)
     threshold = float(risk_params.get('convergence_threshold') or 0.22)
     max_ref   = float(risk_params.get('max_convergence_reference') or 0.55)
@@ -1214,7 +1258,11 @@ class RiskGuardian:
         """
         instrument = approval["instrument"]
         bias = approval["bias"]
-        direction = "long" if bias == "bullish" else "short"
+        # V1 Trend uses long/short directly; V1 Swing uses bullish/bearish
+        if bias in ("long", "short"):
+            direction = bias
+        else:
+            direction = "long" if bias == "bullish" else "short"
         payload = approval.get("payload", {})
         signal_id = approval["signal_id"]
 
@@ -2031,7 +2079,10 @@ class RiskGuardian:
                 json.dumps(decision, default=float),
             ))
             self.db.commit()
-            validate_rg_decision(decision)  # schema contract check
+            # Strategy-aware schema validation
+            _strategy = decision.get("strategy", "v1_swing")
+            if _strategy != "v1_trend":
+                validate_rg_decision(decision)
             logger.info(f"Decision written: {signal_type} for {decision['instrument']}")
         except Exception as e:
             logger.error(f"Decision write failed: {e}")
