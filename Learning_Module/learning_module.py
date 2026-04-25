@@ -1559,13 +1559,17 @@ class LearningModule:
                 try:
                     cur.execute("""
                         SELECT COUNT(*) AS n FROM forex_network.rejection_patterns
-                        WHERE user_id = %s AND updated_at >= %s
+                        WHERE user_id = %s AND created_at >= %s
                     """, (self.user_id, start_dt))
                     patterns_updated = int(cur.fetchone()['n'])
                 except Exception:
+                    try: self.db.rollback()
+                    except Exception: pass
                     patterns_updated = rejections
             except Exception as _qe:
                 logger.debug(f"_write_cycle_log DB query: {_qe}")
+                try: self.db.rollback()
+                except Exception: pass
             finally:
                 if cur is not None:
                     try:
