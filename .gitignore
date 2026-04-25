@@ -50,4 +50,3 @@ _archive/
 .aws/
 *.bak[0-9]
 .neo_locks/
-.neo_session_state.json
