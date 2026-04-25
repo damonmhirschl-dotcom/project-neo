@@ -1545,8 +1545,9 @@ class TradeExecutor:
                      fill_time_ms, entry_context, ibkr_order_id, convergence_score,
                      target_price, session_at_entry, agents_agreed, entry_rank_position,
                      trade_parameters, strategy,
-                     adx_at_entry, rsi_at_entry, setup_type)
-                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     adx_at_entry, rsi_at_entry, setup_type,
+                     ig_deal_reference)
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 self.user_id, instrument, direction, entry_price, stop_price,
@@ -1563,6 +1564,7 @@ class TradeExecutor:
                 json.dumps(trade_parameters) if trade_parameters else None,
                 'v1_swing',
                 _adx_at_entry, _rsi_at_entry, _setup_type,
+                payload.get("dealReference") or payload.get("ig_deal_reference") or None,
             ))
             result = cur.fetchone()
             self.db.commit()

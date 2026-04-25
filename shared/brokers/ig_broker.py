@@ -374,8 +374,12 @@ class IGBroker(BrokerInterface):
             if _lim_pips > 0:
                 _limit_distance = round(_lim_pips, 1)
 
-        # Pass-through V1 Swing reference tag if caller provided one (max 30 chars, alphanumeric)
-        _order_reference = str(payload.get("reference", ""))[:30] or None
+        # V1 Swing dealReference: unique per session (IG rejects duplicate refs).
+        # Format: NEOv1s_{instr6}_{ts5}  e.g. NEOv1s_EURUSD_83421 (20 chars)
+        import time as _time_mod
+        _ts5 = int(_time_mod.time()) % 100000
+        _instr6 = instrument[:6].replace("/", "")
+        _order_reference = f"NEOv1s_{_instr6}_{_ts5}"
 
         body = {
             "epic":           epic,
@@ -389,8 +393,7 @@ class IGBroker(BrokerInterface):
             "currencyCode":   self.CURRENCY_CODE_MAP.get(instrument.upper().replace("/", ""), "USD"),
             "forceOpen":      True,
         }
-        if _order_reference:
-            body["reference"] = _order_reference
+        body["dealReference"] = _order_reference
 
         r = self._session.post(
             self.base_url + "/positions/otc",
@@ -525,6 +528,22 @@ class IGBroker(BrokerInterface):
             logger.error(f"IGBroker.modify_order {order_id}: HTTP {r.status_code} {r.text[:200]}")
             return {"error": r.text[:200], "status": r.status_code}
         return {"status": "modified", "dealReference": r.json().get("dealReference")}
+
+    def modify_position(self, deal_id: str, stop_level: float = None, limit_level: float = None) -> dict:
+        """Modify stop/limit on an open IG position.
+
+        V1 Swing: used to move stop to breakeven after T1 is hit.
+        Calls PUT /positions/otc/{deal_id}.
+        """
+        body = {}
+        if stop_level is not None:
+            body["stopLevel"] = stop_level
+            body["trailingStop"] = False
+        if limit_level is not None:
+            body["limitLevel"] = limit_level
+        if not body:
+            return None
+        return self._request("PUT", f"/positions/otc/{deal_id}", json=body)
 
     # ── Positions & Orders ──────────────────────────────────────────────────
 
