@@ -126,6 +126,8 @@ FX_PAIRS = [
     "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
     "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+    # New pairs added 2026-04-25
+    "EURNZD", "AUDCAD",
 ]
 
 # Pairs where macro signal is structurally dominant — persistent directional
@@ -151,6 +153,9 @@ CROSS_PAIR_SESSIONS = {
     'AUDJPY': ['asian', 'london'],
     'CADJPY': ['newyork', 'overlap'],
     'NZDJPY': ['asian'],
+    # New pairs added 2026-04-25
+    'EURNZD': ['london', 'overlap'],
+    'AUDCAD': ['asian', 'overlap'],
 }
 
 # Per-cycle convergence cache for collapse-alert delta comparison

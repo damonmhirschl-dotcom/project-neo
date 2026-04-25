@@ -23,6 +23,8 @@ V1_PAIRS = [
     'EURGBP', 'EURAUD', 'EURCHF', 'EURCAD', 'EURJPY', 'EURNZD',
     'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY',
     'AUDJPY', 'AUDCAD', 'AUDNZD',
+    # Added 2026-04-25 to complete 22-pair V1 Swing universe
+    'NZDJPY', 'CADJPY',
 ]
 
 ATR_PERIOD = 14

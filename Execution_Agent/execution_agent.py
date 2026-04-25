@@ -167,6 +167,8 @@ FX_PAIRS = [
     "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
     "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+    # New pairs added 2026-04-25
+    "EURNZD", "AUDCAD",
 ]
 
 
@@ -3361,7 +3363,7 @@ class ExecutionAgent:
                 FROM forex_network.system_events
                 WHERE event_type IN ('daily_drawdown_halt', 'weekly_drawdown_halt')
                   AND (halt_until IS NULL OR halt_until > NOW())
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY event_time DESC LIMIT 1
             """)
             row = cur.fetchone()
             cur.close()

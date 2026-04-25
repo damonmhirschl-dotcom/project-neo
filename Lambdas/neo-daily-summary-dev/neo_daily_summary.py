@@ -132,8 +132,8 @@ def compute_daily_summary(conn, summary_date: date) -> dict:
                 COUNT(*) FILTER (WHERE active = TRUE  AND last_updated >= %s) AS activated,
                 COUNT(*) FILTER (WHERE active = FALSE AND last_updated >= %s) AS deactivated
             FROM forex_network.pattern_memory
-            WHERE created_at >= '2026-04-21 18:15:00'
-        """, (day_start, day_start))
+            WHERE first_seen >= %s
+        """, (day_start, day_start, day_start))
         patterns = cur.fetchone()
 
         # ── Performance metrics (rolling 30 trades at day end) ─────────────────

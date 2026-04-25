@@ -126,6 +126,8 @@ class TechnicalAgent:
     "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
     "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+    # New pairs added 2026-04-25
+    "EURNZD", "AUDCAD",
 ]
 
     # Spread-to-signal ratios by user profile
@@ -154,20 +156,22 @@ class TechnicalAgent:
         "london": {
             "primary": ["EURUSD", "GBPUSD", "USDCHF"],
             "secondary": ["USDJPY", "EURGBP", "EURCHF", "GBPCHF",
-                          "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCAD", "GBPCAD"],
+                          "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
+                          "EURNZD"],
         },
         "newyork": {
             "primary": ["EURUSD", "GBPUSD", "USDCAD", "USDJPY"],
-            "secondary": ["AUDUSD", "EURCAD", "GBPCAD", "CADJPY"],
+            "secondary": ["AUDUSD", "EURCAD", "GBPCAD", "CADJPY", "AUDCAD"],
         },
         "overlap": {
             "primary": ["EURUSD", "GBPUSD", "USDJPY"],
             "secondary": ["AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
-                          "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCAD", "GBPCAD"],
+                          "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
+                          "EURNZD", "AUDCAD"],
         },
         "asian": {
             "primary": ["AUDUSD", "NZDUSD", "USDJPY"],
-            "secondary": ["USDCAD", "AUDNZD", "AUDJPY", "NZDJPY", "CADJPY"],
+            "secondary": ["USDCAD", "AUDNZD", "AUDJPY", "NZDJPY", "CADJPY", "AUDCAD"],
         },
     }
 

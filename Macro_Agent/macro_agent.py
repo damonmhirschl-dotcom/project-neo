@@ -75,6 +75,8 @@ class MacroAgent:
         "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
         "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
         "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+        # New pairs added 2026-04-25
+        "EURNZD", "AUDCAD",
     ]
 
     CURRENCIES = ['EUR', 'GBP', 'USD', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD']
@@ -91,6 +93,8 @@ class MacroAgent:
         'GBPCAD': ('GBP', 'CAD'), 'AUDNZD': ('AUD', 'NZD'),
         'AUDJPY': ('AUD', 'JPY'), 'CADJPY': ('CAD', 'JPY'),
         'NZDJPY': ('NZD', 'JPY'),
+        # New pairs added 2026-04-25
+        'EURNZD': ('EUR', 'NZD'), 'AUDCAD': ('AUD', 'CAD'),
     }
 
     USD_PAIRS = {

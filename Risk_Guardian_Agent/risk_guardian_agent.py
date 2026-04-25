@@ -363,6 +363,8 @@ FX_PAIRS = [
     "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
     "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
     "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
+    # New pairs added 2026-04-25
+    "EURNZD", "AUDCAD",
 ]
 
 
