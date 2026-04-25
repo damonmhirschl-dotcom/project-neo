@@ -66,11 +66,11 @@ conn.autocommit = False
 def cur():
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-# Resolve neo_user_002 UUID
+# Resolve canonical user UUID
 with cur() as c:
     c.execute("SELECT user_id FROM forex_network.risk_parameters WHERE paper_mode = TRUE ORDER BY user_id")
     rows = c.fetchall()
-TEST_USER_UUID = str(rows[1]['user_id']) if len(rows) >= 2 else str(rows[0]['user_id'])
+TEST_USER_UUID = str(rows[0]['user_id'])
 print(f'  Test user UUID: {TEST_USER_UUID[:8]}...')
 
 def teardown():
@@ -159,7 +159,7 @@ print('\n--- Step 3: Orchestrator _evaluate_v1_swing gate ---')
 try:
     sys.path.insert(0, '/root/Project_Neo_Damon/Orchestrator')
     from orchestrator_agent import OrchestratorAgent
-    oa = OrchestratorAgent(user_id='neo_user_002', dry_run=True)
+    oa = OrchestratorAgent(user_id=TEST_USER_UUID, dry_run=True)
     cc = oa.convergence_calc  # _evaluate_v1_swing lives on ConvergenceCalculator
 
     approved, reason = cc._evaluate_v1_swing(
@@ -228,7 +228,7 @@ TEST_TRADE_ID = None
 try:
     sys.path.insert(0, '/root/Project_Neo_Damon/Execution_Agent')
     from execution_agent import ExecutionAgent
-    ea = ExecutionAgent(user_id='neo_user_002', dry_run=False)
+    ea = ExecutionAgent(user_id=TEST_USER_UUID, dry_run=False)
     ea.user_id = TEST_USER_UUID
     ea.executor.user_id = TEST_USER_UUID
 
@@ -290,7 +290,7 @@ try:
 
         sys.path.insert(0, '/root/Project_Neo_Damon/Learning_Module')
         from learning_module import LearningModule
-        lm = LearningModule(user_id='neo_user_002', dry_run=False)
+        lm = LearningModule(user_id=TEST_USER_UUID, dry_run=False)
         lm.user_id = TEST_USER_UUID
         lm.autopsy_engine.user_id = TEST_USER_UUID
 
@@ -368,7 +368,7 @@ try:
     sys.path.insert(0, '/root/Project_Neo_Damon/Technical_Agent')
     from technical_agent import TechnicalAgent
 
-    ta8 = TechnicalAgent(user_id='neo_user_002', dry_run=True)
+    ta8 = TechnicalAgent(user_id=TEST_USER_UUID, dry_run=True)
 
     # Fetch the real 1D ATR for EURUSD from price_metrics (same DB the agent uses)
     with cur() as c8:
@@ -423,7 +423,7 @@ try:
     sys.path.insert(0, '/root/Project_Neo_Damon/Technical_Agent')
     from technical_agent import TechnicalAgent  # already imported above — no-op
 
-    ta9 = TechnicalAgent(user_id='neo_user_002', dry_run=True)
+    ta9 = TechnicalAgent(user_id=TEST_USER_UUID, dry_run=True)
 
     # 210 flat 1H synthetic bars — produces neutral score (RSI ~50, ADX ~0)
     # current_price is unconditionally set in generate_signals regardless of score

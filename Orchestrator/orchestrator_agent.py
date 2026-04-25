@@ -14,7 +14,7 @@ Decision Rules: O1 (convergence threshold is a hard floor)
 
 Run:
   source ~/algodesk/bin/activate
-  python orchestrator_agent.py --user neo_user_002
+  python orchestrator_agent.py --user d6c272e4-a031-7053-af8e-ade000f0d0d5
 """
 
 import os
@@ -101,22 +101,10 @@ CONVERGENCE_WEIGHTS = {
     "technical": 0.40,
 }
 
-# V1 Swing: single profile for all users.
-# Conservative/Balanced/Aggressive profiles removed (2026-04-24).
+# V1 Swing — single canonical user (collapsed 2026-04-25).
 # Per-user settings come from v1_swing_parameters.py.
 # USER_PROFILES kept as a minimal stub so ConvergenceCalculator.__init__ doesn't raise.
 USER_PROFILES = {
-    # neo_user_001
-    "e61202e4-30d1-70f8-9927-30b8a439e042": {
-        "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
-        "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
-    },
-    # neo_user_002
-    "76829264-20e1-7023-1e31-37b7a37a1274": {
-        "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
-        "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
-    },
-    # neo_user_003
     "d6c272e4-a031-7053-af8e-ade000f0d0d5": {
         "name": "V1Swing", "base_threshold": 0.0, "min_rr": 1.5,
         "min_spread_ratio": 5.0, "session_filter": None, "day_filter": [1, 2, 3, 4, 5],
@@ -1537,7 +1525,7 @@ class OrchestratorAgent:
             self._is_shadow_primary = True  # fail open
 
     def _resolve_user_id(self, user_id: str) -> str:
-        """Resolve a Cognito username like 'neo_user_002' to its UUID from risk_parameters."""
+        """Resolve a Cognito username like 'd6c272e4-a031-7053-af8e-ade000f0d0d5' to its UUID from risk_parameters."""
         if '-' in user_id and len(user_id) > 30:
             return user_id  # Already a UUID
         try:
@@ -1545,7 +1533,7 @@ class OrchestratorAgent:
             cur.execute("SELECT user_id FROM forex_network.risk_parameters WHERE paper_mode = TRUE ORDER BY user_id")
             rows = cur.fetchall()
             cur.close()
-            idx = {"neo_user_001": 0, "neo_user_002": 1, "neo_user_003": 2}.get(user_id, -1)
+            idx = 0 if user_id == "d6c272e4-a031-7053-af8e-ade000f0d0d5" else -1  # single canonical user
             if idx >= 0 and idx < len(rows):
                 resolved = str(rows[idx]["user_id"]) if isinstance(rows[idx], dict) else str(rows[idx][0])
                 logger.info(f"Resolved {user_id} → {resolved}")
@@ -2776,13 +2764,13 @@ class OrchestratorTester:
     def test_threshold_base_values(self):
         logger.info("\n--- Test: Threshold Base Values ---")
         # V1 Swing 2026-04-24: single profile, all users have base_threshold=0.0
-        self._assert(USER_PROFILES["e61202e4-30d1-70f8-9927-30b8a439e042"]["base_threshold"] == 0.0, "V1Swing user_001 base: 0.0")
-        self._assert(USER_PROFILES["76829264-20e1-7023-1e31-37b7a37a1274"]["base_threshold"] == 0.0, "V1Swing user_002 base: 0.0")
+        self._assert(USER_PROFILES["d6c272e4-a031-7053-af8e-ade000f0d0d5"]["base_threshold"] == 0.0, "V1Swing user_001 base: 0.0")
+        self._assert(USER_PROFILES["d6c272e4-a031-7053-af8e-ade000f0d0d5"]["base_threshold"] == 0.0, "V1Swing user_002 base: 0.0")
         self._assert(USER_PROFILES["d6c272e4-a031-7053-af8e-ade000f0d0d5"]["base_threshold"] == 0.0, "V1Swing user_003 base: 0.0")
 
     def test_o1_hard_floor(self):
         logger.info("\n--- Test: O1 Hard Floor ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         # Threshold should never go below base
         threshold, _ = calc.compute_effective_threshold(
             risk_params={"convergence_threshold": 0.65},
@@ -2794,14 +2782,14 @@ class OrchestratorTester:
 
     def test_r5_confidence_low_floor(self):
         logger.info("\n--- Test: R5 Confidence Low Floor ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.65}, {}, {}, [])
         self._assert(t >= 0.65, "R5: threshold at least base", f"Got: {t}")
 
 
         logger.info("\n--- Test: Pre-event Adjustment ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         events = [{"country": "US", "indicator": "NFP", "scheduled_time": "2026-04-16T13:30:00Z"}]
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.65}, {}, {}, events)
@@ -2809,7 +2797,7 @@ class OrchestratorTester:
 
     def test_degradation_boost(self):
         logger.info("\n--- Test: Degradation Boost ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         degradation = {
             "macro": {"convergence_boost": 0.10, "degradation_mode": "degraded"},
         }
@@ -2819,7 +2807,7 @@ class OrchestratorTester:
 
     def test_combined_threshold_stacking(self):
         logger.info("\n--- Test: Combined Threshold Stacking ---")
-        calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # V1Swing profile
         # Pre-event (+0.05) + macro degraded (+0.10)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},
@@ -2836,7 +2824,7 @@ class OrchestratorTester:
 
     def test_session_filter(self):
         logger.info("\n--- Test: Session Filter ---")
-        calc = ConvergenceCalculator("neo_user_001")  # V1Swing profile (session_filter=None in V1)
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # V1Swing profile (session_filter=None in V1)
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
@@ -2850,7 +2838,7 @@ class OrchestratorTester:
 
     def test_day_filter(self):
         logger.info("\n--- Test: Day Filter ---")
-        calc = ConvergenceCalculator("neo_user_001")  # V1Swing profile
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # V1Swing profile
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.80,
@@ -2863,7 +2851,7 @@ class OrchestratorTester:
 
     def test_ny_close_rejection(self):
         logger.info("\n--- Test: NY Close Rejection ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
@@ -2876,7 +2864,7 @@ class OrchestratorTester:
 
     def test_friday_cutoff(self):
         logger.info("\n--- Test: Friday Cutoff ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
@@ -2891,7 +2879,7 @@ class OrchestratorTester:
 
     def test_max_positions(self):
         logger.info("\n--- Test: Max Positions ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         fake_positions = [{"instrument": "GBPUSD"}, {"instrument": "USDJPY"}, {"instrument": "AUDUSD"}]
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
@@ -2906,7 +2894,7 @@ class OrchestratorTester:
 
     def test_circuit_breaker(self):
         logger.info("\n--- Test: Circuit Breaker ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
@@ -2919,7 +2907,7 @@ class OrchestratorTester:
 
     def test_neutral_bias_rejection(self):
         logger.info("\n--- Test: Neutral Bias Rejection ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="neutral", confidence=0.85,
             effective_threshold=0.65,
@@ -2932,7 +2920,7 @@ class OrchestratorTester:
 
     def test_spread_ratio_check(self):
         logger.info("\n--- Test: Spread Ratio Check ---")
-        calc = ConvergenceCalculator("neo_user_002")  # min_spread_ratio = 5.0
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # min_spread_ratio = 5.0
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
@@ -2947,7 +2935,7 @@ class OrchestratorTester:
 
     def test_min_rr_check(self):
         logger.info("\n--- Test: Min R:R Check ---")
-        calc = ConvergenceCalculator("neo_user_002")  # min_rr = 1.5
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # min_rr = 1.5
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.90, bias="bullish", confidence=0.85,
             effective_threshold=0.65,
@@ -2962,7 +2950,7 @@ class OrchestratorTester:
 
     def test_approval_flow(self):
         logger.info("\n--- Test: Approval Flow ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.85, bias="bullish", confidence=0.90,
             effective_threshold=0.65,
@@ -2981,7 +2969,7 @@ class OrchestratorTester:
 
     def test_size_multiplier_stacking(self):
         logger.info("\n--- Test: Size Multiplier Stacking ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         # Drawdown step 1 (0.75x) — no stress multiplier
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.65, "size_multiplier": 0.75},
@@ -3024,7 +3012,7 @@ class OrchestratorTester:
 
     def test_crisis_no_entries(self):
         logger.info("\n--- Test: Crisis No Entries (kill switch) ---")
-        calc = ConvergenceCalculator("neo_user_002")
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")
         decision = calc.evaluate_pair(
             pair="EURUSD", convergence=0.99, bias="bullish", confidence=0.99,
             effective_threshold=0.65,
@@ -3038,7 +3026,7 @@ class OrchestratorTester:
 
     def test_worst_case_threshold(self):
         logger.info("\n--- Test: Worst-case Threshold ---")
-        calc = ConvergenceCalculator("neo_user_003")  # V1Swing profile
+        calc = ConvergenceCalculator("d6c272e4-a031-7053-af8e-ade000f0d0d5")  # V1Swing profile
         # Pre-event (+0.05) + macro degraded (+0.10)
         t, b = calc.compute_effective_threshold(
             {"convergence_threshold": 0.55},

@@ -11,7 +11,7 @@ Kill Switch: Tighten and Hold (Option A) per Kill Switch Protocol v1.0
 
 Run:
   source ~/algodesk/bin/activate
-  python execution_agent.py --user neo_user_002
+  python execution_agent.py --user d6c272e4-a031-7053-af8e-ade000f0d0d5
 """
 
 import os
@@ -230,7 +230,7 @@ def _fetch_atr_for_stop(db, instrument: str):
 # DATABASE
 # =============================================================================
 def _resolve_user_id(conn_or_db, user_id: str) -> str:
-    """Resolve a Cognito username like 'neo_user_002' to its UUID from risk_parameters."""
+    """Resolve a Cognito username like 'd6c272e4-a031-7053-af8e-ade000f0d0d5' to its UUID from risk_parameters."""
     if '-' in user_id and len(user_id) > 30:
         return user_id  # Already a UUID
     try:
@@ -241,7 +241,7 @@ def _resolve_user_id(conn_or_db, user_id: str) -> str:
         cur.execute("SELECT user_id FROM forex_network.risk_parameters WHERE paper_mode = TRUE ORDER BY user_id")
         rows = cur.fetchall()
         cur.close()
-        idx = {"neo_user_001": 0, "neo_user_002": 1, "neo_user_003": 2}.get(user_id, -1)
+        idx = 0 if user_id == "d6c272e4-a031-7053-af8e-ade000f0d0d5" else -1  # single canonical user
         if idx >= 0 and idx < len(rows):
             resolved = str(rows[idx]["user_id"]) if isinstance(rows[idx], dict) else str(rows[idx][0])
             return resolved
