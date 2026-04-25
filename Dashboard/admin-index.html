@@ -313,6 +313,25 @@ const IDP_URL = 'https://cognito-idp.eu-west-2.amazonaws.com/';
 /* =====================================================
    AUTH HELPERS
    ===================================================== */
+window.killSwitchActivate = async () => {
+  if (!confirm('Activate kill switch? An SMS OTP will be sent to your registered number.')) return;
+  const r1 = await fetch('https://k24gcypjyh.execute-api.eu-west-2.amazonaws.com/admin/kill-switch', {
+    method:'POST', headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+getToken()},
+    body: JSON.stringify({action:'activate'})
+  }).catch(e=>{alert('Error: '+e.message);return null;});
+  if (!r1) return;
+  const otp = prompt('Enter the 6-digit OTP from your SMS (90s window):');
+  if (!otp || otp.trim().length !== 6) { alert('Invalid OTP — must be 6 digits'); return; }
+  try {
+    const r2 = await fetch('https://k24gcypjyh.execute-api.eu-west-2.amazonaws.com/admin/kill-switch', {
+      method:'POST', headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+getToken()},
+      body: JSON.stringify({action:'confirm', otp: otp.trim()})
+    });
+    const d = await r2.json();
+    if (d.kill_switch === 'active') { alert('⛔ Kill switch ACTIVATED. All new entries blocked.'); }
+    else { alert('Response: ' + JSON.stringify(d)); }
+  } catch(e) { alert('Kill switch error: ' + e.message); }
+};
 const getToken  = () => localStorage.getItem('neo_admin_token');
 const clearAuth = () => ['neo_admin_token','neo_admin_user','neo_admin_refresh'].forEach(k => localStorage.removeItem(k));
 const parseJwt  = t => { try { return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; } };
@@ -576,7 +595,12 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
             </div>
           )}
           <div className="header-stat">
-            <span className="lbl">P&L Today</span>
+            <button onClick={()=>window.killSwitchActivate()} style={{
+  background:'var(--red)',color:'#fff',border:'none',borderRadius:'var(--r)',
+  padding:'4px 10px',fontFamily:'var(--mono)',fontSize:'.65rem',fontWeight:700,
+  cursor:'pointer',marginRight:8,letterSpacing:'.04em'
+}} title="Activate kill switch — requires SMS OTP">⛔ KILL</button>
+<span className="lbl">P&L Today</span>
             <span className={`val ${pnlToday>=0?'pos':'neg'}`}>{pnlToday>=0?'+$':'-$'}{Math.abs(pnlToday).toFixed(0)}</span>
           </div>
           <div className="header-stat">
@@ -602,6 +626,55 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
 /* =====================================================
    ROW 2 COL 1: CONVERGENCE SCORES
    ===================================================== */
+function GateStatusPanel({decisions}) {
+  const pairDec = latestDecisions(decisions);
+  const maxCycle = decisions&&decisions.length ? Math.max(...decisions.map(d=>d.cycle_number||0)) : 0;
+  const V1_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD',
+    'EUR/GBP','EUR/AUD','EUR/CHF','EUR/CAD','EUR/JPY','EUR/NZD',
+    'GBP/AUD','GBP/CAD','GBP/CHF','GBP/JPY',
+    'AUD/JPY','AUD/CAD','AUD/NZD','NZD/JPY','CAD/JPY'];
+  const rows = V1_PAIRS.map(pair => ({pair, d: pairDec[pair]||null})).filter(r=>r.d!==null);
+
+  if (!rows.length) return (
+    <div className="panel">
+      <div className="panel-hdr"><span className="panel-title">V1 Gate Status</span></div>
+      <div className="empty-state"><div className="em-icon">◌</div><span>No decisions — off hours</span></div>
+    </div>
+  );
+
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">V1 Gate Status</span>
+        <span className="panel-sub">cycle {maxCycle} · {rows.length} pairs</span>
+      </div>
+      <div className="conv-hdr-row">
+        <span className="conv-hdr-cell">Pair</span>
+        <span className="conv-hdr-cell r">ADX</span>
+        <span className="conv-hdr-cell r">RSI</span>
+        <span className="conv-hdr-cell r">Setup</span>
+        <span className="conv-hdr-cell r">Gate</span>
+      </div>
+      {rows.map(({pair,d},i)=>{
+        const approved = d.approved||d.v1_swing_approved;
+        const adx = d.adx_4h??d.adx??null;
+        const rsi = d.rsi_4h??d.rsi??null;
+        const setup = d.setup_type||null;
+        const gate = d.rejection_stage||(d.tech_gate_failures||[])[0]||(approved?'PASS':'—');
+        const cls = approved ? 'text-green' : 'text-amber';
+        return (
+          <div key={i} className="conv-row">
+            <span className="conv-pair" style={{fontSize:'.65rem'}}>{pair}</span>
+            <span className="conv-score">{adx!=null?adx.toFixed(1):'—'}</span>
+            <span className="conv-score">{rsi!=null?rsi.toFixed(1):'—'}</span>
+            <span className="conv-sub">{setup?setup.replace(/_/g,' ').toUpperCase():'—'}</span>
+            <span className={`conv-score ${cls}`}>{approved?'✓':'✗'}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function ConvergencePanel({convergence,decisions}) {
   const pairDec = latestDecisions(decisions);
   const maxCycle = decisions&&decisions.length ? Math.max(...decisions.map(d=>d.cycle_number||0)) : 0;
@@ -803,13 +876,13 @@ function OpenPositionsPanel({openPositions}) {
         <div className="empty-state">
           <div className="em-icon">◻</div>
           <span>No open positions</span>
-          <span style={{fontSize:'.6rem',marginTop:2}}>Scanning — waiting for convergence threshold</span>
+          <span style={{fontSize:'.6rem',marginTop:2}}>Scanning — awaiting market open</span>
         </div>
       ) : (
         <div className="table-wrap">
           <table>
             <thead><tr>
-              <th>Profile</th><th>Pair</th><th>Dir</th><th>Size</th>
+              <th>Strategy</th><th>Pair</th><th>Dir</th><th>Size</th>
               <th>Entry</th><th>Current</th><th>Pips</th>
               <th>Stop</th><th>Target</th><th>Held</th>
               <th className="col-m-hide">Structure</th>
@@ -826,7 +899,7 @@ function OpenPositionsPanel({openPositions}) {
                   : '—';
                 return (
                   <tr key={i}>
-                    <td className="mono">{p.profile||p.user_id?.slice(-6)||'—'}</td>
+                    <td className="mono">{'V1 SWING'}</td>
                     <td className="mono" style={{fontWeight:600}}>{p.instrument||p.pair||'—'}</td>
                     <td className={p.direction==='long'?'dir-long':'dir-short'}>{(p.direction||'').toUpperCase()}</td>
                     <td className="mono">{p.position_size!=null?Number(p.position_size).toLocaleString():'—'}</td>
@@ -940,7 +1013,7 @@ function TechnicalSignalsPanel({signals_full,decisions}) {
     <div className="panel">
       <div className="panel-hdr">
         <span className="panel-title">Technical Signals</span>
-        <span className="panel-sub">V1 Swing · 10 pairs</span>
+        <span className="panel-sub">V1 Swing · 22 pairs</span>
       </div>
       <div className="tech-hdr-row">
         <span className="tech-hdr-cell">Pair</span>
@@ -1024,9 +1097,9 @@ function LearningPanel({learning,proposals}) {
       })}
 
       <div className="sec-hdr">Trade gates</div>
-      <div className="lstat"><span className="lstat-lbl">Patterns gate (30 trades)</span>
+      <div className="lstat"><span className="lstat-lbl">Min. trades for patterns (30)</span>
         <span className={`lstat-val ${toPatterns===0?'text-green':'text-amber'}`}>{toPatterns>0?`−${toPatterns}`:'UNLOCKED'}</span></div>
-      <div className="lstat"><span className="lstat-lbl">Kelly gate (50 trades)</span>
+      <div className="lstat"><span className="lstat-lbl">Min. trades for proposals (50)</span>
         <span className={`lstat-val ${toKelly===0?'text-green':'text-amber'}`}>{toKelly>0?`−${toKelly}`:'UNLOCKED'}</span></div>
 
       {pendingProposal && (
@@ -1054,6 +1127,42 @@ function LearningPanel({learning,proposals}) {
 /* =====================================================
    ROW 4 COL 3: REGIME & STRESS
    ===================================================== */
+function NewsBlackoutPanel() {
+  const [events, setEvents] = React.useState([]);
+  React.useEffect(()=>{
+    fetch('https://k24gcypjyh.execute-api.eu-west-2.amazonaws.com/admin/calendar', {
+      headers:{Authorization:'Bearer '+getToken()}
+    }).then(r=>r.ok?r.json():null).then(d=>{if(d&&d.events)setEvents(d.events.slice(0,8));}).catch(()=>{});
+  },[]);
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">News Blackout</span>
+        <span className="panel-sub">±4h high-impact</span>
+      </div>
+      <div className="sec-hdr first">Upcoming events</div>
+      {events.length===0 ? (
+        <div style={{padding:'6px 0',color:'var(--text3)',fontSize:'.68rem'}}>No calendar data</div>
+      ) : events.map((e,i)=>{
+        const dt = new Date(e.event_time||e.release_time);
+        const inBlackout = Math.abs(Date.now()-dt)<4*3600000;
+        return (
+          <div key={i} className="lstat" style={{borderBottom:'1px solid var(--border)'}}>
+            <span className="lstat-lbl" style={{fontSize:'.62rem'}}>
+              {inBlackout && <span style={{color:'var(--red)',marginRight:4}}>⛔</span>}
+              {e.country} — {(e.indicator||e.event||'').slice(0,28)}
+            </span>
+            <span className="lstat-val text-dim" style={{fontSize:'.6rem'}}>
+              {dt.toUTCString().slice(5,22)}
+            </span>
+          </div>
+        );
+      })}
+      <div className="sec-hdr">Active blackout</div>
+      <div style={{padding:'4px 0',color:'var(--text3)',fontSize:'.68rem'}}>RG stage: news_blackout</div>
+    </div>
+  );
+}
 function RegimeStressPanel({decisions,signals_full}) {
   const PRIMARY=['EUR/USD','GBP/USD','USD/JPY','AUD/USD','EUR/JPY','GBP/JPY','AUD/JPY','CAD/JPY','EUR/GBP','EUR/AUD'];
   const pairDec = latestDecisions(decisions);
@@ -1133,7 +1242,7 @@ function RecentTradesPanel({trades}) {
         <div className="table-wrap">
           <table>
             <thead><tr>
-              <th>Time</th><th>Profile</th><th>Pair</th><th>Dir</th>
+              <th>Time</th><th>Strategy</th><th>Pair</th><th>Dir</th>
               <th>Entry</th><th>Exit</th><th>Pips</th><th>P&amp;L</th>
               <th>Hold</th><th>Exit reason</th><th>Conv</th>
             </tr></thead>
@@ -1153,7 +1262,7 @@ function RecentTradesPanel({trades}) {
                 return (
                   <tr key={i}>
                     <td className="mono val-dim" style={{fontSize:'.62rem'}}>{exitTs?relTime(exitTs):'—'}</td>
-                    <td className="mono" style={{fontSize:'.65rem'}}>{t.profile||t.user_id?.slice(-6)||'—'}</td>
+                    <td className="mono" style={{fontSize:'.65rem'}}>{'V1 SW'}</td>
                     <td className="mono" style={{fontWeight:600}}>{t.instrument||t.pair||'—'}</td>
                     <td className={t.direction==='long'?'dir-long':'dir-short'}>{(t.direction||'').toUpperCase()}</td>
                     <td className="mono">{fmt(t.entry_price,4)}</td>
@@ -1182,11 +1291,14 @@ function ObservationTab({signals_full, decisions}) {
   const [expandedPairs, setExpandedPairs] = useState({});
 
   const AGENT_COLORS = {
-    macro:'var(--purple)', technical:'var(--blue)', regime:'var(--amber)',
+    macro:'var(--purple)', technical:'var(--blue)', 
     orchestrator:'var(--green)', risk_guardian:'var(--red)',
   };
-  const PAIRS_ALL = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','AUDJPY','CADJPY','EURGBP','EURAUD',
-    'USDCAD','USDCHF','NZDUSD','EURCHF','GBPCHF','GBPAUD','EURCAD','GBPCAD','AUDNZD','NZDJPY'];
+  const PAIRS_ALL = ['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD',
+      'EURGBP','EURAUD','EURCHF','EURCAD','EURJPY','EURNZD',
+      'GBPAUD','GBPCAD','GBPCHF','GBPJPY',
+      'AUDJPY','AUDCAD','AUDNZD',
+      'NZDJPY','CADJPY'];
 
   const pairDec = latestDecisions(decisions);
 
@@ -1375,7 +1487,7 @@ function TradesTab({trades, openPositions, onDownload}) {
           <div className="table-wrap">
             <table>
               <thead><tr>
-                <th>Time</th><th>Profile</th><th>Pair</th><th>Dir</th>
+                <th>Time</th><th>Strategy</th><th>Pair</th><th>Dir</th>
                 <th>Entry</th><th>Exit</th><th>Pips</th><th>P&L</th>
                 <th>Hold</th><th>Exit reason</th><th>Conv</th>
               </tr></thead>
@@ -1395,7 +1507,7 @@ function TradesTab({trades, openPositions, onDownload}) {
                   return (
                     <tr key={i}>
                       <td className="mono val-dim" style={{fontSize:'.62rem'}}>{exitTs?relTime(exitTs):'—'}</td>
-                      <td className="mono" style={{fontSize:'.65rem'}}>{t.profile||t.user_id?.slice(-6)||'—'}</td>
+                      <td className="mono" style={{fontSize:'.65rem'}}>{'V1 SW'}</td>
                       <td className="mono" style={{fontWeight:600}}>{t.instrument||t.pair||'—'}</td>
                       <td className={t.direction==='long'?'dir-long':'dir-short'}>{(t.direction||'').toUpperCase()}</td>
                       <td className="mono">{fmt(t.entry_price,4)}</td>
@@ -1680,7 +1792,7 @@ function App() {
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (<>
           <div className="row row-3">
-            <ConvergencePanel convergence={convergence} decisions={decisions}/>
+            <GateStatusPanel decisions={decisions}/>
             <CurrencyStrengthPanel currency_strength={currency_strength}/>
             <MacroSignalsPanel decisions={decisions} signals_full={signals_full} currency_strength={currency_strength}/>
           </div>
@@ -1691,7 +1803,7 @@ function App() {
           <div className="row row-3">
             <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
             <LearningPanel learning={learning} proposals={proposals}/>
-            <RegimeStressPanel decisions={decisions} signals_full={signals_full}/>
+            <NewsBlackoutPanel/>
           </div>
           <div className="row row-1">
             <RecentTradesPanel trades={trades}/>
