@@ -35,6 +35,7 @@ sys.path.insert(0, '/root/Project_Neo_Damon')
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from v1_swing_parameters import (
+    V1_SWING_PAIRS,
     NEUTRAL_MACRO_THRESHOLD,
     RISK_PER_TRADE_PCT,
     MAX_CONCURRENT_POSITIONS,
@@ -42,6 +43,9 @@ from v1_swing_parameters import (
     MIN_4H_BARS_FOR_SIGNAL,
 )
 from shared.alerting import send_alert
+from shared.schemas.v1_swing_payloads import (
+    validate_technical_payload, validate_macro_payload, validate_orchestrator_payload
+)
 from shared.market_hours import get_market_state
 from shared.agent_state import save_state, load_state, log_loaded_state_summary, AGENT_SCOPE_USER_ID
 from shared.system_events import log_event
@@ -119,16 +123,7 @@ USER_PROFILES = {
     },
 }
 
-FX_PAIRS = [
-    # USD pairs
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-    # Cross pairs confirmed on IG demo 2026-04-22
-    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
-    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
-    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
-    # New pairs added 2026-04-25
-    "EURNZD", "AUDCAD",
-]
+FX_PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
 # Pairs where macro signal is structurally dominant — persistent directional
 # bias means technical signal routinely disagrees due to timeframe mismatch
@@ -281,6 +276,11 @@ class SignalReader:
                     payload = row["payload"]
                     if isinstance(payload, str):
                         payload = json.loads(payload)
+                    # Validate payload against V1 Swing schema contract
+                    if agent == "technical":
+                        validate_technical_payload(payload or {})
+                    elif agent == "macro":
+                        validate_macro_payload(payload or {})
                     _expires = row["expires_at"]
                     if _expires is not None and _expires.tzinfo is None:
                         _expires = _expires.replace(tzinfo=datetime.timezone.utc)
@@ -1068,6 +1068,7 @@ class ConvergenceCalculator:
         open_positions: List[Dict[str, Any]],
         upcoming_events: List[Dict[str, Any]],
         technical_payload: Dict[str, Any],
+        v1_swing_approved: bool = False,
     ) -> Dict[str, Any]:
         """
         Evaluate whether a pair should be approved for trading.
@@ -1085,8 +1086,11 @@ class ConvergenceCalculator:
         }
 
         # === CHECK 1: Convergence vs threshold (O1 — hard floor) ===
+        # V1 Swing binary gate already validated direction+conviction; skip O1 for those pairs.
         # convergence is now signed (negative = bearish); compare magnitude vs threshold.
-        if abs(convergence) < effective_threshold:
+        if v1_swing_approved:
+            decision["checks"]["convergence"] = "SKIP_V1_SWING"
+        elif abs(convergence) < effective_threshold:
             decision["rejection_reasons"].append(
                 f"O1: Convergence {abs(convergence):.4f} below threshold {effective_threshold:.4f}"
             )
@@ -2444,6 +2448,7 @@ class OrchestratorAgent:
                 open_positions=open_positions,
                 upcoming_events=upcoming_events,
                 technical_payload=tech_payload,
+                v1_swing_approved=_v1swing_approved,
             )
             decision["convergence_detail"] = detail
             # V1 Swing Change 5: conviction flat 1.0; risk is fixed at RISK_PER_TRADE_PCT.
