@@ -238,12 +238,12 @@ def check_data_freshness(conn):
                 {'age_h': round(age_h, 1)}, 'neo_monitor')
         log.info(f'portfolio_correlation: {age_h:.1f}h old')
 
-    # Economic calendar — next 7 days
+    # Economic calendar — next 7 days (column: release_time, impact_level)
     cur.execute("""
         SELECT COUNT(*) FROM forex_network.economic_releases
-        WHERE event_time > NOW()
-        AND event_time < NOW() + INTERVAL '7 days'
-        AND impact = 'high'
+        WHERE release_time > NOW()
+        AND release_time < NOW() + INTERVAL '7 days'
+        AND LOWER(impact_level) = 'high'
     """)
     upcoming = cur.fetchone()[0]
     if upcoming == 0:
