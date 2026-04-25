@@ -220,6 +220,7 @@ tr:hover td{background:var(--panel2)}
 .login-field label{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)}
 .login-field input{background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text1);font-family:var(--mono);font-size:.82rem;padding:8px 10px;outline:none;transition:border-color .15s;width:100%}
 .login-field input:focus{border-color:var(--green)}
+.login-field input:-webkit-autofill,.login-field input:-webkit-autofill:hover,.login-field input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px var(--bg) inset;-webkit-text-fill-color:var(--text1);transition:background-color 9999s ease-in-out 0s}
 .login-btn{background:var(--green);color:#000;font-family:var(--mono);font-size:.78rem;font-weight:600;border:none;border-radius:var(--r);padding:10px;cursor:pointer;transition:opacity .15s}
 .login-btn:hover{opacity:.85}
 .login-btn:disabled{opacity:.4;cursor:not-allowed}
@@ -410,6 +411,16 @@ function latestDecisions(decisions) {
 /* =====================================================
    LOGIN
    ===================================================== */
+function Card({title,sub,children}) {
+  return (
+    <div className="login-wrap"><div className="login-card">
+      <div className="login-title">{title}</div>
+      {sub && <div className="login-sub">{sub}</div>}
+      {children}
+    </div></div>
+  );
+}
+
 function Login({onAuth}) {
   const [stage,setStage]=useState('password');
   const [user,setUser]=useState('');
@@ -486,14 +497,6 @@ function Login({onAuth}) {
       if (d.AuthenticationResult) storeAuth(d); else setErr('Verification failed.');
     } catch(e2){setErr(e2.message);}finally{setLoading(false);}
   };
-
-  const Card = ({title,sub,children}) => (
-    <div className="login-wrap"><div className="login-card">
-      <div className="login-title">{title}</div>
-      {sub && <div className="login-sub">{sub}</div>}
-      {children}
-    </div></div>
-  );
 
   if (stage==='totp') return (
     <Card title="Two-factor authentication" sub="Enter the 6-digit code from your authenticator app">

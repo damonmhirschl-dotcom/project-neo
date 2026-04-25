@@ -60,6 +60,8 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
 from shared.warn_log import warn
+from v1_swing_parameters import V1_SWING_PAIRS
+from shared.schemas.v1_swing_payloads import validate_technical_payload
 
 EXPECTED_TABLES = {
     "forex_network.agent_signals":    ["agent_name", "instrument", "signal_type", "score",
@@ -119,16 +121,7 @@ class TechnicalAgent:
     AWS_REGION = "eu-west-2"
 
     # FX pairs and technical analysis parameters
-    PAIRS = [
-    # USD pairs
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-    # Cross pairs confirmed on IG demo 2026-04-22
-    "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "GBPCHF",
-    "EURAUD", "GBPAUD", "EURCAD", "GBPCAD",
-    "AUDNZD", "AUDJPY", "CADJPY", "NZDJPY",
-    # New pairs added 2026-04-25
-    "EURNZD", "AUDCAD",
-]
+    PAIRS = V1_SWING_PAIRS  # canonical 22-pair universe (v1_swing_parameters.py)
 
     # Spread-to-signal ratios by user profile
     MIN_SIGNAL_SPREAD_RATIOS = {
@@ -1204,26 +1197,28 @@ class TechnicalAgent:
                 # ── Session validity (binary gate) ────────────────────────────
                 _session_valid = session not in ('off_hours',)
 
-                # ── Daily structure alignment (5-bar rule, Change 7) ─────────
-                _structure_long  = True   # default pass if no daily data
+                # ── Swing low/high integrity check (replaces 5-bar LL/LH rule) ──
+                # Long:  pullback must not break below prior swing low (bars -10:-2)
+                # Short: pullback must not break above prior swing high (bars -10:-2)
+                # Pro FX consensus: intact trend structure requires pullback stays
+                # above the last swing low (long) / below last swing high (short).
+                _structure_long  = True   # default pass if insufficient data
                 _structure_short = True
                 try:
                     _daily_bars = self.get_historical_bars(pair, '1D', 200)
                     if _daily_bars is not None and len(_daily_bars) >= 10:
-                        _recent = _daily_bars.tail(5)
-                        _prior  = _daily_bars.iloc[-10:-5]
-                        # Bearish structure: lower-high AND lower-low → reject long
-                        _structure_long  = not (
-                            _recent['high'].max() < _prior['high'].max()
-                            and _recent['low'].min() < _prior['low'].min()
+                        _prior_swing     = _daily_bars.iloc[-10:-2]
+                        _recent_pullback = _daily_bars.iloc[-3:]
+                        # Long: reject if pullback low broke below prior swing low
+                        _structure_long  = (
+                            _recent_pullback['low'].min() >= _prior_swing['low'].min()
                         )
-                        # Bullish structure: higher-high AND higher-low → reject short
-                        _structure_short = not (
-                            _recent['high'].max() > _prior['high'].max()
-                            and _recent['low'].min() > _prior['low'].min()
+                        # Short: reject if pullback high broke above prior swing high
+                        _structure_short = (
+                            _recent_pullback['high'].max() <= _prior_swing['high'].max()
                         )
                 except Exception as _de:
-                    logger.debug(f"{pair} structure alignment check failed: {_de}")
+                    logger.debug(f"{pair} structure integrity check failed: {_de}")
 
                 # ── Macro conviction scalar ───────────────────────────────────
                 # No macro_signal in this agent; default to 1.0
@@ -1287,6 +1282,7 @@ class TechnicalAgent:
                         'adx_4h':             round(adx_4h, 2),
                         'gate_failures':      _gate_failures,
                         'direction':          direction,
+                        'setup_type':         'long_pullback' if direction == 'long' else ('short_pullback' if direction == 'short' else None),
                         'rsi_long_cross':     rsi_long_cross,
                         'rsi_short_cross':    rsi_short_cross,
                         'session_valid':      _session_valid,
@@ -1354,6 +1350,8 @@ class TechnicalAgent:
                     expires_at = datetime.now(timezone.utc) + timedelta(minutes=self.SIGNAL_EXPIRY_MINUTES)
                     _score = signal.get('score', 0.0)
                     _bias = 'bullish' if _score > 0.02 else ('bearish' if _score < -0.02 else 'neutral')
+                    if signal.get('agent_name', self.AGENT_NAME) == 'technical':
+                        validate_technical_payload(signal.get('payload', {}))
 
                     cur.execute("""
                         INSERT INTO forex_network.agent_signals
