@@ -1,0 +1,69 @@
+{
+  "last_updated": "2026-04-25",
+  "last_commit": "42efada",
+  "source_of_truth": "EC2:/root/Project_Neo_Damon (push to GitHub on every commit)",
+  "active_locks": [],
+  "pre_live_checklist": {
+    "live_credentials": "PENDING \u2014 create platform/ig-markets/live-credentials, branch ig_broker.py on demo flag",
+    "epic_map_today_ip": "PENDING \u2014 verify CS.D.{PAIR}.TODAY.IP on HX444 on first live execution",
+    "cod_watchdog": "PENDING",
+    "second_kill_switch_activator": "PENDING",
+    "shadow_pipeline_test": "PENDING",
+    "backtest_12_months": "PENDING \u2014 required before scaling to 1% risk"
+  },
+  "paper_mode_status": "READY \u2014 markets open Sunday ~22:00 UTC",
+  "files": {
+    "Technical_Agent/technical_agent.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "Execution_Agent/execution_agent.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "Orchestrator_Agent/orchestrator_agent.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "Risk_Guardian_Agent/risk_guardian_agent.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "Macro_Agent/macro_agent.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "Learning_Module/learning_module.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "shared/v1_swing_parameters.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "shared/brokers/ig_broker.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "shared/schemas/v1_swing_payloads.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "scripts/neo_monitor.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "scripts/compute_price_metrics.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "scripts/update_portfolio_correlation.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    },
+    "scripts/ingest_economic_calendar.py": {
+      "status": "clean",
+      "last_commit": "42efada"
+    }
+  }
+}
