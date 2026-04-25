@@ -25,7 +25,7 @@ PAIR_DISPLAY = {
     "EURCHF": "EUR/CHF", "GBPCHF": "GBP/CHF", "EURAUD": "EUR/AUD",
     "GBPAUD": "GBP/AUD", "EURCAD": "EUR/CAD", "GBPCAD": "GBP/CAD",
     "AUDNZD": "AUD/NZD", "AUDJPY": "AUD/JPY", "CADJPY": "CAD/JPY",
-    "NZDJPY": "NZD/JPY",
+    "NZDJPY": "NZD/JPY", "EURNZD": "EUR/NZD", "AUDCAD": "AUD/CAD",
 }
 
 
@@ -446,34 +446,39 @@ def handler(event, context):
                         # Human-readable decision string for renderCard badge
                         dec_str = "APPROVED" if dec.get("approved") else "REJECTED"
 
-                        # Build reasoning from rejection reasons or approval context
-                        det = dec.get("convergence_detail") or {}
+                        # V1 Swing: reasoning from gate_failures; signal_scores from tech_map
+                        _tech_tp_r = tech_map.get(pair_raw, {})
+                        _gate_fail_list = dec.get("gate_failures") or []
                         if dec.get("approved"):
-                            aligned = [a for a in ("macro", "technical")
-                                       if det.get(f"{a}_bias") == dec.get("bias")]
-                            reasoning = (
-                                f"{pair_raw} {(dec.get('bias') or '').upper()} approved. "
-                                f"Convergence {dec.get('convergence', 0):.3f} > threshold "
-                                f"{dec.get('effective_threshold', 0):.3f}."
-                            )
-                            if aligned:
-                                reasoning += f" Aligned agents: {', '.join(aligned)}."
+                            _dir_str = (dec.get("bias") or "").upper()
+                            _st_r = dec.get("setup_type") or _tech_tp_r.get("setup_type") or ""
+                            reasoning = f"{pair_raw} {_dir_str} approved."
+                            if _st_r:
+                                reasoning += f" Setup: {_st_r}."
                         else:
-                            reasons = dec.get("rejection_reasons") or []
-                            reasoning = ("; ".join(reasons)
-                                         if reasons else "Rejected — insufficient convergence.")
+                            reasoning = ("; ".join(_gate_fail_list)
+                                         if _gate_fail_list else "Gate failed — no qualifying signal.")
 
-                        # Build signal_scores dict from convergence_detail flat fields
+                        # Build signal_scores from tech_map and decision fields (V1 Swing)
                         signal_scores = {}
-                        for agent, w in _WEIGHTS.items():
-                            sv = det.get(f"{agent}_score")
-                            if sv is not None:
-                                signal_scores[agent] = {
-                                    "score":      round(float(sv), 4),
-                                    "weight":     w,
-                                    "bias":       det.get(f"{agent}_bias", "neutral"),
-                                    "confidence": round(float(det.get(f"{agent}_confidence") or 0), 4),
-                                }
+                        _ts_val = dec.get("tech_score") or float(_tech_tp_r.get("score") or 0)
+                        if _ts_val:
+                            signal_scores["technical"] = {
+                                "score":      round(float(_ts_val), 4),
+                                "weight":     _WEIGHTS.get("technical", 0.40),
+                                "bias":       "long" if float(_ts_val) > 0 else "short",
+                                "confidence": round(float(_tech_tp_r.get("adx_4h") or _tech_tp_r.get("adx_14") or 0) / 100, 4),
+                            }
+                        _ms_val = dec.get("macro_score") or (dec.get("macro_signal") or {}).get("score")
+                        if _ms_val is not None and float(_ms_val) != 0:
+                            _macro_dir = (dec.get("macro_direction") or dec.get("direction")
+                                          or (dec.get("macro_signal") or {}).get("direction") or "neutral")
+                            signal_scores["macro"] = {
+                                "score":      round(float(_ms_val), 4),
+                                "weight":     _WEIGHTS.get("macro", 0.40),
+                                "bias":       _macro_dir,
+                                "confidence": round(float(dec.get("macro_confidence") or 0), 4),
+                            }
 
                         # Flat card_payload — renderCard reads these at top level.
                         # Strip convergence_detail (already flattened into signal_scores above)

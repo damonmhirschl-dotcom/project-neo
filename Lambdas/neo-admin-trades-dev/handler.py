@@ -9,9 +9,16 @@ _conn = None
 # USER_PROFILES removed — V1 Swing uses flat 1% risk for all users (2026-04-25)
 
 PAIR_DISPLAY = {
+    # USD pairs
     "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
     "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD", "USDCHF": "USD/CHF",
     "NZDUSD": "NZD/USD",
+    # Cross pairs — full 22-pair V1 Swing universe
+    "EURGBP": "EUR/GBP", "EURJPY": "EUR/JPY", "GBPJPY": "GBP/JPY",
+    "EURCHF": "EUR/CHF", "GBPCHF": "GBP/CHF", "EURAUD": "EUR/AUD",
+    "GBPAUD": "GBP/AUD", "EURCAD": "EUR/CAD", "GBPCAD": "GBP/CAD",
+    "AUDNZD": "AUD/NZD", "AUDJPY": "AUD/JPY", "CADJPY": "CAD/JPY",
+    "NZDJPY": "NZD/JPY", "EURNZD": "EUR/NZD", "AUDCAD": "AUD/CAD",
 }
 
 
