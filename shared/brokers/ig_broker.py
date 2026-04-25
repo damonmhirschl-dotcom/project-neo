@@ -29,6 +29,7 @@ IG_DEMO_BASE   = "https://demo-api.ig.com/gateway/deal"
 IG_LIVE_BASE   = "https://api.ig.com/gateway/deal"
 IG_TIMEOUT     = 15
 SESSION_TTL_H  = 6
+MAX_LOT_SIZE   = 10.0  # hard cap per order — fat-finger guard
 
 
 class IGConnectionError(Exception):
@@ -285,6 +286,14 @@ class IGBroker(BrokerInterface):
                 headers=self._get_headers(version="3"),
                 timeout=IG_TIMEOUT,
             )
+        if r.status_code == 401:
+            logger.warning(f"IGBroker.get_live_quote {pair}: 401 — re-authenticating")
+            self.authenticate(force=True)
+            r = self._session.get(
+                self.base_url + f"/markets/{epic}",
+                headers=self._get_headers(version="3"),
+                timeout=IG_TIMEOUT,
+            )
         if r.status_code != 200:
             raise IGConnectionError(
                 f"IGBroker.get_live_quote {pair}: HTTP {r.status_code} {r.text[:200]}"
@@ -368,7 +377,13 @@ class IGBroker(BrokerInterface):
 
         _pip_to_points = 100 if is_jpy else 10
         _stop_points   = stop_distance_pips * _pip_to_points
-        size = max(0.1, round(risk_amount / _stop_points, 1)) if _stop_points > 0 else 0.1
+        _raw_size = round(risk_amount / _stop_points, 1) if _stop_points > 0 else 0.1
+        if _raw_size > MAX_LOT_SIZE:
+            logger.warning(
+                f"IGBroker.place_order {instrument}: computed size {_raw_size:.1f} lots "
+                f"exceeds MAX_LOT_SIZE {MAX_LOT_SIZE} — capping"
+            )
+        size = max(0.1, min(MAX_LOT_SIZE, _raw_size))
 
         # Compute limit distance from target_price if provided
         _target_price = payload.get("target_price")
@@ -406,6 +421,17 @@ class IGBroker(BrokerInterface):
             headers=self._get_headers(version="2"),
             timeout=IG_TIMEOUT,
         )
+        if r.status_code == 401:
+            logger.warning(f"IGBroker.place_order {instrument}: 401 — re-authenticating")
+            self.authenticate(force=True)
+            import time as _t2; _t2_ts = int(_t2.time()) % 100000
+            body["dealReference"] = f"NEOv1s_{_instr6}_{_t2_ts}"
+            r = self._session.post(
+                self.base_url + "/positions/otc",
+                json=body,
+                headers=self._get_headers(version="2"),
+                timeout=IG_TIMEOUT,
+            )
         if r.status_code not in (200, 201, 202):
             return {"error": r.text[:300], "status": r.status_code}
 
@@ -569,6 +595,14 @@ class IGBroker(BrokerInterface):
         except requests.exceptions.ConnectionError as e:
             logger.warning(f"IGBroker.get_positions: ConnectionError ({e}) — reconnecting")
             self._force_reconnect()
+            r = self._session.get(
+                self.base_url + "/positions",
+                headers=self._get_headers(version="2"),
+                timeout=IG_TIMEOUT,
+            )
+        if r.status_code == 401:
+            logger.warning("IGBroker.get_positions: 401 — re-authenticating")
+            self.authenticate(force=True)
             r = self._session.get(
                 self.base_url + "/positions",
                 headers=self._get_headers(version="2"),
