@@ -193,7 +193,7 @@ class V1TrendAutopsyEngine:
                     trade["id"],
                     failure_mode,
                     signal_quality,
-                    json.dumps(factors),
+                    json.dumps(factors, default=str),
                     f"strategy={STRATEGY_NAME}",
                     f"V1 Trend autopsy: {failure_mode} | quality={signal_quality} | hold={hold_days}d",
                 ))
@@ -384,7 +384,7 @@ class V1TrendProposalGenerator:
                     proposal_type,
                     pair,
                     description,
-                    json.dumps(data),
+                    json.dumps(data, default=str),
                 ))
             self.db.conn.commit()
             logger.info(f"Proposal written: {proposal_type} | {pair or 'global'} | {description[:60]}")
