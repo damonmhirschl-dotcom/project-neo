@@ -60,7 +60,7 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
 from shared.warn_log import warn
-from v1_swing_parameters import V1_SWING_PAIRS
+from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_2_MULTIPLIER
 from shared.schemas.v1_swing_payloads import validate_technical_payload
 
 EXPECTED_TABLES = {
@@ -1277,6 +1277,7 @@ class TechnicalAgent:
                     'confidence':   confidence,
                     'payload': {
                         # V1 Swing primary keys
+                        'current_price':      current_price,
                         'rsi_4h':             round(rsi, 2),
                         'rsi_prev':           round(_rsi_prev, 2),
                         'adx_4h':             round(adx_4h, 2),
@@ -1638,8 +1639,8 @@ class TechnicalAgent:
         Uses ATR(14, 1D) from price_metrics table:
           Stop distance : 2.0 × atr_14_1d  (set by risk guardian, mirrored here for consistency)
           Target 1 (T1) : current_price ± 2.0 × atr_14_1d  (50% partial exit; v0 = full close)
-          Target 2 (T2) : current_price ± 4.0 × atr_14_1d  (remaining 50%; used for R:R gate)
-          rm['target_price']   = T2  → passes risk guardian R:R gate (4.0/2.0 = 2:1 > min_rr 1.5)
+          Target 2 (T2) : current_price ± ATR_TARGET_2_MULTIPLIER × atr_14_1d  (remaining 50%; used for R:R gate)
+          rm['target_price']   = T2  → passes risk guardian R:R gate (ATR_TARGET_2_MULTIPLIER/2.0 ratio; updated 4×→3× on 2026-04-25)
           rm['target_1_price'] = T1  → execution agent stores this in trades table for v0 close
         Replaces swing-based _inject_structure_targets entirely.
         Never raises — failures log and skip silently.
@@ -1689,11 +1690,11 @@ class TechnicalAgent:
                 if bias == 'bullish':
                     # Long: round UP (away from entry) so R:R is never truncated below 2.0
                     target_1 = math.ceil((current_price + 2.0 * atr_1d) * _factor) / _factor
-                    target_2 = math.ceil((current_price + 4.0 * atr_1d) * _factor) / _factor
+                    target_2 = math.ceil((current_price + ATR_TARGET_2_MULTIPLIER * atr_1d) * _factor) / _factor
                 else:  # bearish
                     # Short: round DOWN (away from entry on the downside) for same reason
                     target_1 = math.floor((current_price - 2.0 * atr_1d) * _factor) / _factor
-                    target_2 = math.floor((current_price - 4.0 * atr_1d) * _factor) / _factor
+                    target_2 = math.floor((current_price - ATR_TARGET_2_MULTIPLIER * atr_1d) * _factor) / _factor
 
                 rm['target_price']   = target_2   # T2 for R:R gate (2:1)
                 rm['target_1_price'] = target_1   # T1 for execution close (v0)
