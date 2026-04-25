@@ -1310,6 +1310,7 @@ class TechnicalAgent:
                             'current_spread':     0.0,
                         },
                         'technical_analysis': {
+                            'current_price': current_price,
                             'indicators': {'atr_14': round(atr, 6)},
                             'rsi_14':     round(rsi, 2),
                             'adx_14':     round(adx_4h, 2),
@@ -1697,6 +1698,13 @@ class TechnicalAgent:
                 rm['target_price']   = target_2   # T2 for R:R gate (2:1)
                 rm['target_1_price'] = target_1   # T1 for execution close (v0)
                 rm['atr_1d']         = round(atr_1d, 6)
+                # Stop price level for EA/IG stop order placement
+                _stop_dist = 2.0 * atr_1d
+                rm['atr_stop_loss'] = round(
+                    (current_price - _stop_dist) if bias == 'bullish'
+                    else (current_price + _stop_dist),
+                    pip_precision + 2
+                )
 
                 logger.info(
                     f"ATR target {pair} ({bias}): T1={target_1:.5f} T2={target_2:.5f} "
