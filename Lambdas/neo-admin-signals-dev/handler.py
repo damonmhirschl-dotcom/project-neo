@@ -291,7 +291,7 @@ def handler(event, context):
                    id, agent_name, instrument, user_id, signal_type,
                    score, bias, confidence, payload, created_at, expires_at
             FROM forex_network.agent_signals
-            WHERE agent_name IN ('macro','technical','regime','orchestrator','risk_guardian','execution')
+            WHERE agent_name IN ('macro','technical','orchestrator','risk_guardian','execution')
             ORDER BY agent_name, instrument, created_at DESC
         """)
         raw = cur.fetchall()
@@ -315,7 +315,7 @@ def handler(event, context):
                    score, bias, confidence, payload, created_at, expires_at
             FROM forex_network.agent_signals
             WHERE created_at > NOW() - INTERVAL '4 hours'
-              AND agent_name IN ('macro','technical','regime','orchestrator','risk_guardian','execution')
+              AND agent_name IN ('macro','technical','orchestrator','risk_guardian','execution')
             ORDER BY agent_name, instrument, created_at DESC
         """)
         raw_obs = cur.fetchall()
@@ -342,7 +342,7 @@ def handler(event, context):
             if b in e["bias_counter"]:
                 e["bias_counter"][b] += 1
 
-        _WEIGHTS = {"macro": 0.40, "technical": 0.60}  # V1 Swing: regime decommissioned
+        _WEIGHTS = {"macro": 0.40, "technical": 0.40}  # V1 Swing: equal weights, regime decommissioned (2026-04-25)
         aggregated = []
         for pair, e in per_pair.items():
             if not e["agent_scores"]:
@@ -438,7 +438,7 @@ def handler(event, context):
                        if k in payload and payload[k] is not None}
 
                 if decisions:
-                    _WEIGHTS = {"macro": 0.40, "technical": 0.60}  # V1 Swing: regime decommissioned
+                    _WEIGHTS = {"macro": 0.40, "technical": 0.40}  # V1 Swing: equal weights, regime decommissioned (2026-04-25)
                     for dec in decisions:
                         pair_raw = dec.get("pair", "")
                         pair_disp = _pair(pair_raw) or pair_raw
@@ -449,7 +449,7 @@ def handler(event, context):
                         # Build reasoning from rejection reasons or approval context
                         det = dec.get("convergence_detail") or {}
                         if dec.get("approved"):
-                            aligned = [a for a in ("macro", "technical", "regime")
+                            aligned = [a for a in ("macro", "technical")
                                        if det.get(f"{a}_bias") == dec.get("bias")]
                             reasoning = (
                                 f"{pair_raw} {(dec.get('bias') or '').upper()} approved. "

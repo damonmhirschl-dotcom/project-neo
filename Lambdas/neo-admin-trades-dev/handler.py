@@ -6,11 +6,7 @@ from decimal import Decimal
 _REGION = "eu-west-2"
 _conn = None
 
-USER_PROFILES = {
-    "e61202e4-30d1-70f8-9927-30b8a439e042": ("neo_user_001", "Conservative"),
-    "76829264-20e1-7023-1e31-37b7a37a1274": ("neo_user_002", "Balanced"),
-    "d6c272e4-a031-7053-af8e-ade000f0d0d5": ("neo_user_003", "Aggressive"),
-}
+# USER_PROFILES removed — V1 Swing uses flat 1% risk for all users (2026-04-25)
 
 PAIR_DISPLAY = {
     "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
@@ -77,7 +73,8 @@ def handler(event, context):
                    fill_pct, is_partial_fill, slippage_pips, fill_time_ms,
                    slippage_action, partial_fill_action,
                    swap_cost_pips, swap_cost_usd, hold_days,
-                   return_pct, is_downside_return, exit_reason
+                   return_pct, is_downside_return, exit_reason,
+                   adx_at_entry, rsi_at_entry, setup_type, strategy, ig_deal_reference
             FROM forex_network.trades
             WHERE exit_time IS NOT NULL
             ORDER BY exit_time DESC
@@ -86,13 +83,11 @@ def handler(event, context):
         out = []
         for r in cur.fetchall():
             uid = str(r["user_id"]) if r["user_id"] else None
-            profile = USER_PROFILES.get(uid, (uid or "", ""))
             exit_t = r["exit_time"]
             out.append({
                 "id": int(r["id"]),
-                "user": profile[0],
-                "profile": profile[1],
                 "user_id": uid,
+                "strategy": r["strategy"] or "v1_swing",
                 "instrument": _pair(r["instrument"]),
                 "direction": r["direction"],
                 "entry_time": r["entry_time"].isoformat() if r["entry_time"] else None,
@@ -123,6 +118,10 @@ def handler(event, context):
                 "hold_days": int(r["hold_days"]) if r["hold_days"] is not None else None,
                 "return_pct": float(r["return_pct"]) if r["return_pct"] is not None else None,
                 "exit_reason": r["exit_reason"],
+                "adx_at_entry": float(r["adx_at_entry"]) if r["adx_at_entry"] is not None else None,
+                "rsi_at_entry": float(r["rsi_at_entry"]) if r["rsi_at_entry"] is not None else None,
+                "setup_type": r["setup_type"],
+                "ig_deal_reference": r["ig_deal_reference"],
             })
         return _resp(200, out)
     except Exception as e:
