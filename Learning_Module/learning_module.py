@@ -1707,7 +1707,12 @@ class LearningModule:
             self.diagnose_architecture()
 
             # RG systematic rejection patterns
-            self.analyse_rg_rejections()
+            try:
+                self.analyse_rg_rejections()
+            except Exception as _rg_e:
+                logger.warning(f"analyse_rg_rejections failed, rolling back: {_rg_e}")
+                try: self.db.rollback()
+                except Exception: pass
 
         return count
 
@@ -3582,6 +3587,8 @@ class LearningModule:
             return proposals
         except Exception as e:
             logger.error(f"analyse_rg_rejections failed: {e}")
+            try: self.db.rollback()
+            except Exception: pass
             return []
 
     def compute_kelly_fraction(self) -> dict:
@@ -3931,6 +3938,10 @@ def main():
                     except Exception as e:
                         logger.error(f"Cycle failed for {uid}: {e}")
                 # Sleep in heartbeat-sized chunks so DB stays fresh between cycles
+                # Flush any aborted transaction before touching the DB again.
+                for uid, agent in agents.items():
+                    try: agent.db.rollback()
+                    except Exception: pass
                 elapsed = 0
                 while elapsed < CYCLE_INTERVAL_SECONDS:
                     chunk = min(HEARTBEAT_INTERVAL_SECONDS, CYCLE_INTERVAL_SECONDS - elapsed)
