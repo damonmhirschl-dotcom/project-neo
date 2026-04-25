@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Project Neo — Admin</title>
+<title>NeoTrade — Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
@@ -546,7 +546,7 @@ function Login({onAuth}) {
     </Card>
   );
   return (
-    <Card title="Project Neo" sub="Admin dashboard · eu-west-2">
+    <Card title="NeoTrade" sub="Admin dashboard · eu-west-2">
       <form onSubmit={submitPassword} style={{display:'flex',flexDirection:'column',gap:12}}>
         <div className="login-field"><label htmlFor="username">Username</label><input id="username" name="username" type="text" value={user} onChange={e=>setUser(e.target.value)} autoComplete="username"/></div>
         <div className="login-field"><label htmlFor="password">Password</label><input id="password" name="password" type="password" value={pass} onChange={e=>setPass(e.target.value)} autoComplete="current-password"/></div>
@@ -585,7 +585,7 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
   return (
     <div className="header">
       <div className="header-inner">
-        <div className="header-logo"><span>Project Neo</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Admin</span></div>
+        <div className="header-logo"><span>NeoTrade</span>&nbsp;<span style={{color:'var(--text3)',fontSize:'.72rem',fontWeight:400}}>Admin</span></div>
         <div className="header-divider"/>
         <div className="header-center">
           {balance!=null && (
@@ -612,6 +612,7 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
           {lastUpdated && <span className="ts">↻ {relTime(lastUpdated)}</span>}
           <span className={`session-badge ${sessCls}`}>{sessLabel}</span>
           <button onClick={()=>window.killSwitchActivate()} style={{background:'var(--red)',color:'#fff',border:'none',borderRadius:'var(--r)',padding:'4px 10px',fontFamily:'var(--mono)',fontSize:'.65rem',fontWeight:700,cursor:'pointer',letterSpacing:'.04em'}} title="Activate kill switch — requires SMS OTP">⛔ KILL</button>
+          <button className="btn-refresh" onClick={()=>{clearAuth();window.location.reload();}} title="Sign out of dashboard">⏻ Sign Out</button>
           <button className="btn-refresh" onClick={onRefresh} disabled={refreshing}>{refreshing?'↻ …':'↻ Refresh'}</button>
         </div>
       </div>
