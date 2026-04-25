@@ -116,7 +116,7 @@ WEEKLY_REPORT_DAY = 0   # Monday (0=Monday in weekday())
 WEEKLY_REPORT_HOUR = 6  # 06:00 UTC
 
 # First IG trade — reject any signal data predating the broker migration
-DATA_QUALITY_CUTOFF = '2026-04-23 21:55:00+00'
+DATA_QUALITY_CUTOFF = '2026-04-23 21:55:00+00'  # V1 Swing era start — permanent epoch, not a rolling window. All LM analysis restricted to post-migration trades. Do not change.
 
 CYCLE_LOG_PATH   = '/var/log/neo/learning_module.jsonl'
 AUTOPSY_LOG_PATH = '/var/log/neo/learning_module_autopsies.jsonl'
@@ -573,10 +573,9 @@ class TradeAutopsyEngine:
 
         # Determine if this loss should be excluded from pattern scoring
         # Losses during Pre-crisis/Crisis are structural, not strategy failures
-        exclude_from_patterns = (
-            not is_win and stress_at_entry is not None
-            and stress_at_entry > STRESS_EXCLUSION_THRESHOLD
-        )
+        # stress_score decommissioned 2026-04-24 (regime agent removed);
+        # exclude_from_patterns always False — no exclusion filter active
+        exclude_from_patterns = False
 
         # Build pattern context
         pattern_context = {
@@ -1782,6 +1781,40 @@ class LearningModule:
             cur.close()
         return written
 
+    def get_optimal_thresholds(self, instrument: str, session: str) -> dict:
+        """
+        Returns LM-computed optimal RSI/ADX thresholds for a given pair/session.
+        TA calls this at cycle start to get adaptive thresholds.
+        Falls back to V1 Swing defaults if no data or sample_size < 20.
+        """
+        DEFAULTS = {
+            'rsi_low': 40.0, 'rsi_high': 50.0,
+            'rsi_short_low': 50.0, 'rsi_short_high': 60.0,
+            'min_adx': 25.0,
+        }
+        MIN_SAMPLE = 20
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT optimal_rsi_low, optimal_rsi_high, min_adx, sample_size, win_rate
+                FROM forex_network.technical_timing_params
+                WHERE instrument = %s AND session = %s
+                  AND computed_at > NOW() - INTERVAL '7 days'
+            """, (instrument.replace('/', ''), session))
+            row = cur.fetchone()
+            cur.close()
+            if row and row['sample_size'] >= MIN_SAMPLE and (row['win_rate'] or 0) > 0.45:
+                return {
+                    'rsi_low':       row['optimal_rsi_low'],
+                    'rsi_high':      row['optimal_rsi_high'],
+                    'rsi_short_low': 100.0 - row['optimal_rsi_high'],
+                    'rsi_short_high': 100.0 - row['optimal_rsi_low'],
+                    'min_adx':       row['min_adx'],
+                }
+        except Exception as e:
+            logger.debug(f'get_optimal_thresholds fallback {instrument}/{session}: {e}')
+        return DEFAULTS
+
     def _write_proposals(self, proposals: List[Dict]):
         """Write performance-based proposals as a signal."""
         cur = self.db.cursor()
@@ -2556,388 +2589,6 @@ class LearningModule:
         finally:
             cur.close()
 
-    def _generate_proposals_legacy(self) -> int:
-        """
-        LEGACY (pre V1 Swing): threshold / sizing / directional proposals.
-        Kept for reference — superseded by _generate_v1_swing_proposals.
-        Read rejection_patterns and performance metrics; write structured proposals
-        into forex_network.proposals for human review / optional auto-apply.
-
-        FIX 1: same_instrument_open and already_approved rejections are excluded from
-                threshold proposals — those are gate rejections unrelated to threshold
-                calibration.
-        FIX 2: max_risk_pct proposed_value is stored as a FRACTION (e.g. 0.025 = 2.5%),
-                never as a bare percentage (2.5).
-        """
-        # ── Minimum data gate ─────────────────────────────────────────────────
-        # Do not write proposals until there are enough clean closed trades
-        # post DATA_QUALITY_CUTOFF to make the statistics meaningful.
-        MIN_TRADES_FOR_PROPOSALS = 20
-        _gate_cur = self.db.cursor()
-        try:
-            _gate_cur.execute("""
-                SELECT COUNT(*) FROM forex_network.trades
-                WHERE user_id = %s
-                  AND exit_time IS NOT NULL
-                  AND exit_time > %s
-            """, (self.user_id, DATA_QUALITY_CUTOFF))
-            _row = _gate_cur.fetchone()
-            _closed_trades = int(_row['count']) if _row else 0
-        except Exception as _gate_e:
-            logger.warning(
-                f"[{self.user_id}] Proposals gate query failed ({_gate_e}) — skipping proposals"
-            )
-            return 0
-        finally:
-            _gate_cur.close()
-        if _closed_trades < MIN_TRADES_FOR_PROPOSALS:
-            logger.info(
-                f"[{self.user_id}] Skipping proposals — only {_closed_trades} clean "
-                f"closed trades (minimum {MIN_TRADES_FOR_PROPOSALS})"
-            )
-            return 0
-        # ─────────────────────────────────────────────────────────────────────
-
-        cur = self.db.cursor()
-        written = 0
-        try:
-            # ── Load all risk_parameters once ─────────────────────────────────────
-            cur.execute("""
-                SELECT convergence_threshold, max_risk_pct, min_risk_pct,
-                       curve_exponent, max_convergence_reference,
-                       stress_threshold_score, stress_multiplier,
-                       min_risk_reward_ratio, max_usd_units, correlation_threshold
-                FROM forex_network.risk_parameters
-                WHERE user_id = %s
-            """, (self.user_id,))
-            rp_full = cur.fetchone()
-            if not rp_full:
-                return 0
-            rp_conv_thr  = float(rp_full['convergence_threshold'])
-            rp_max_risk  = float(rp_full['max_risk_pct'])
-            rp_min_risk  = float(rp_full['min_risk_pct'] or 0.0025)
-            logger.debug(
-                f"[{self.user_id}] _generate_proposals risk_params: "
-                f"conv_thr={rp_conv_thr:.4f} max_risk={rp_max_risk:.4f} "
-                f"min_risk={rp_min_risk:.4f} curve_exp={rp_full['curve_exponent']} "
-                f"max_conv_ref={rp_full['max_convergence_reference']} "
-
-                f"min_rr={rp_full['min_risk_reward_ratio']} "
-                f"max_units={rp_full['max_usd_units']} "
-                f"corr_thr={rp_full['correlation_threshold']}"
-            )
-
-            # ── Threshold adjustment proposals ────────────────────────────────────
-            # FIX 1: Exclude gate rejections at the SQL level so they never
-            #        contribute to the n / avg_conv that drives threshold proposals.
-            cur.execute("""
-                SELECT instrument,
-                       COUNT(*) AS n,
-                       AVG(convergence_score) AS avg_conv
-                FROM forex_network.rejection_patterns
-                WHERE user_id = %s
-                  AND created_at > NOW() - INTERVAL '7 days'
-                  AND convergence_score IS NOT NULL
-                  AND rejection_reason NOT ILIKE '%%same_instrument%%'
-                  AND rejection_reason NOT ILIKE '%%already_approved%%'
-                GROUP BY instrument
-                HAVING COUNT(*) >= 10
-            """, (self.user_id,))
-            threshold_rows = cur.fetchall()
-
-            for row in threshold_rows:
-                instrument = row['instrument']
-                n          = int(row['n'])
-                avg_conv   = float(row['avg_conv'] or 0)
-
-                current_thr = rp_conv_thr
-
-                # Only propose if the cluster sits within 0.10 below current threshold
-                if not (current_thr - 0.10 <= avg_conv < current_thr):
-                    continue
-
-                # Dedup: skip if a pending proposal already exists for this pair
-                cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                    WHERE user_id = %s AND parameter = 'convergence_threshold'
-                      AND instrument = %s AND status = 'pending'
-                """, (self.user_id, instrument))
-                if int(cur.fetchone()['cnt']) > 0:
-                    continue
-
-                proposed_thr = round(avg_conv + 0.005, 4)   # just above rejection cluster
-                cur.execute("""
-                    INSERT INTO forex_network.proposals
-                        (proposal_type, user_id, instrument, parameter,
-                         current_value, proposed_value, direction,
-                         n_trades, metric, metric_value, confidence, reasoning,
-                         status, auto_revert_hours, strategy)
-                    VALUES ('threshold_adjustment', %s, %s, 'convergence_threshold',
-                            %s, %s, 'decrease',
-                            %s, 'rejection_rate', 100.0,
-                            'medium', %s, 'pending', 48, 'v1_swing')
-                """, (
-                    self.user_id, instrument,
-                    current_thr, proposed_thr,
-                    n,
-                    (
-                        f"{n} {instrument} signals rejected with avg convergence "
-                        f"{avg_conv:.3f} (threshold {current_thr:.4f}, within 0.10 band). "
-                        f"Gate rejections (same_instrument_open, already_approved) excluded. "
-                        f"Proposed threshold {proposed_thr:.4f} targets this cluster."
-                    ),
-                ))
-                written += 1
-                logger.info(
-                    f"Threshold proposal: {instrument} {current_thr:.4f} → {proposed_thr:.4f} "
-                    f"(n={n}, avg_conv={avg_conv:.3f})"
-                )
-
-            # ── Position sizing proposals (Sortino-based) ─────────────────────────
-            metrics     = self.performance.get_metrics()
-            sortino     = metrics.get('sortino_ratio')
-            trade_count = int(metrics.get('trade_count', 0) or 0)
-
-            if sortino is not None and trade_count >= 10 and float(sortino) < SORTINO_TARGET_LIVE:
-                sortino = float(sortino)
-                current_risk = rp_max_risk   # fraction, e.g. 0.03
-
-                # Dedup: skip if pending proposal already exists
-                cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                    WHERE user_id = %s AND parameter = 'max_risk_pct'
-                      AND status = 'pending'
-                """, (self.user_id,))
-                if int(cur.fetchone()['cnt']) == 0:
-                    # FIX 2: compute proposed value as a FRACTION, never a percentage.
-                    # Reduce by 0.5 percentage points expressed as a fraction delta.
-                    proposed_risk = round(current_risk - 0.005, 4)   # e.g. 0.03 → 0.025
-                    proposed_risk = max(proposed_risk, rp_min_risk)   # floor from risk_parameters
-
-                    cur.execute("""
-                        INSERT INTO forex_network.proposals
-                            (proposal_type, user_id, instrument, parameter,
-                             current_value, proposed_value, direction,
-                             n_trades, metric, metric_value, confidence, reasoning,
-                             status, auto_revert_hours, strategy)
-                        VALUES ('position_sizing', %s, NULL, 'max_risk_pct',
-                                %s, %s, 'decrease',
-                                %s, 'sortino', %s,
-                                'medium', %s, 'pending', 72, 'v1_swing')
-                    """, (
-                        self.user_id,
-                        current_risk,    # stored as fraction (e.g. 0.0300)
-                        proposed_risk,   # stored as fraction (e.g. 0.0250) — FIX 2
-                        trade_count,
-                        round(sortino, 4),
-                        (
-                            f"Sortino {sortino:.2f} over {trade_count} trades is below "
-                            f"go-live minimum ({SORTINO_TARGET_LIVE}). Reducing max_risk_pct "
-                            f"from {current_risk*100:.2f}% to {proposed_risk*100:.2f}% "
-                            f"({current_risk:.4f} → {proposed_risk:.4f} fraction). "
-                            f"Auto-reverts in 72 h."
-                        ),
-                    ))
-                    written += 1
-                    logger.info(
-                        f"Sizing proposal: max_risk_pct {current_risk:.4f} → {proposed_risk:.4f} "
-                        f"(sortino={sortino:.2f}, trades={trade_count})"
-                    )
-
-            # ── DIRECTIONAL DISAGREEMENT ANALYSIS ────────────────────────────────
-            # When macro and technical disagree (rejection_stage='directional'),
-            # who was right next day?
-            # Derive macro direction from sign of macro_score (direction field is
-            # truncated in DB). Join to 1D historical_prices for next-day outcome.
-            # price_at_rejection is unpopulated — use same-day 1D close as reference.
-            cur.execute("""
-                SELECT
-                    r.instrument,
-                    COUNT(*) AS total,
-                    SUM(CASE
-                        WHEN r.macro_score > 0 AND next_d.close > ref_d.close THEN 1
-                        WHEN r.macro_score < 0 AND next_d.close < ref_d.close THEN 1
-                        ELSE 0 END) AS macro_correct,
-                    SUM(CASE
-                        WHEN r.macro_score > 0 AND next_d.close < ref_d.close THEN 1
-                        WHEN r.macro_score < 0 AND next_d.close > ref_d.close THEN 1
-                        ELSE 0 END) AS technical_correct
-                FROM forex_network.rejected_signals r
-                JOIN forex_network.historical_prices ref_d
-                    ON ref_d.instrument = r.instrument
-                    AND ref_d.timeframe  = '1D'
-                    AND ref_d.ts::date   = r.rejected_at::date
-                JOIN forex_network.historical_prices next_d
-                    ON next_d.instrument = r.instrument
-                    AND next_d.timeframe  = '1D'
-                    AND next_d.ts::date   = (r.rejected_at::date + 1)
-                WHERE r.rejection_stage = 'directional'
-                  AND r.rejected_at::date < CURRENT_DATE
-                  AND r.macro_score IS NOT NULL
-                  AND r.technical_score IS NOT NULL
-                  AND r.macro_score != 0
-                GROUP BY r.instrument
-                HAVING COUNT(*) >= 10
-            """)
-            dd_rows = cur.fetchall()
-            for row in dd_rows:
-                instrument     = row[0]
-                total          = int(row[1])
-                macro_correct  = int(row[2] or 0)
-                tech_correct   = int(row[3] or 0)
-                macro_rate     = macro_correct / total if total > 0 else 0.0
-                tech_rate      = tech_correct  / total if total > 0 else 0.0
-
-                if macro_rate > 0.60:
-                    # Macro was right when tech blocked it — tech gate may be too strict
-                    cur.execute("""
-                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                        WHERE user_id = %s AND proposal_type = 'tech_gate_too_strict'
-                          AND instrument = %s AND status = 'pending'
-                    """, (self.user_id, instrument))
-                    if int(cur.fetchone()[0]) == 0:
-                        cur.execute("""
-                            INSERT INTO forex_network.proposals
-                                (proposal_type, user_id, instrument, parameter,
-                                 current_value, proposed_value, direction,
-                                 n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours, strategy)
-                            VALUES ('tech_gate_too_strict', %s, %s, 'TECH_MIN_THRESHOLD',
-                                    NULL, NULL, 'decrease',
-                                    %s, 'macro_correct_rate', %s,
-                                    'medium', %s, 'pending', 72, 'v1_swing')
-                        """, (
-                            self.user_id, instrument, total,
-                            round(macro_rate, 4),
-                            (
-                                f"When macro and technical disagreed on {instrument}, "
-                                f"macro direction was correct {macro_rate:.0%} of the time "
-                                f"({total} rejections). Consider loosening TECH_MIN_THRESHOLD "
-                                f"or accepting directional disagreement on this pair."
-                            ),
-                        ))
-                        written += 1
-                        logger.info(
-                            f"Proposal: tech gate too strict on {instrument} — "
-                            f"macro right {macro_rate:.0%} when blocked ({total} samples)"
-                        )
-
-                elif tech_rate > 0.60:
-                    # Technical was right when it disagreed with macro
-                    cur.execute("""
-                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                        WHERE user_id = %s AND proposal_type = 'technical_catching_reversal'
-                          AND instrument = %s AND status = 'pending'
-                    """, (self.user_id, instrument))
-                    if int(cur.fetchone()[0]) == 0:
-                        cur.execute("""
-                            INSERT INTO forex_network.proposals
-                                (proposal_type, user_id, instrument, parameter,
-                                 current_value, proposed_value, direction,
-                                 n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours, strategy)
-                            VALUES ('technical_catching_reversal', %s, %s, NULL,
-                                    NULL, NULL, NULL,
-                                    %s, 'tech_correct_rate', %s,
-                                    'medium', %s, 'pending', 72, 'v1_swing')
-                        """, (
-                            self.user_id, instrument, total,
-                            round(tech_rate, 4),
-                            (
-                                f"When technical disagreed with macro on {instrument}, "
-                                f"technical direction was correct {tech_rate:.0%} of the time "
-                                f"({total} samples). Technical may be catching short-term "
-                                f"reversals that macro misses."
-                            ),
-                        ))
-                        written += 1
-                        logger.info(
-                            f"Proposal: technical catching reversal on {instrument} — "
-                            f"tech right {tech_rate:.0%} when conflicting ({total} samples)"
-                        )
-
-            # ── MACRO GATE ANALYSIS ───────────────────────────────────────────────
-            # When macro was blocked by the p75 gate (rejection_stage='macro_gate'),
-            # did price move in the macro direction anyway?
-            cur.execute("""
-                SELECT
-                    r.instrument,
-                    COUNT(*) AS total,
-                    SUM(CASE
-                        WHEN r.macro_score > 0 AND next_d.close > ref_d.close THEN 1
-                        WHEN r.macro_score < 0 AND next_d.close < ref_d.close THEN 1
-                        ELSE 0 END) AS macro_correct,
-                    AVG(ABS(r.macro_score)) AS avg_macro_magnitude
-                FROM forex_network.rejected_signals r
-                JOIN forex_network.historical_prices ref_d
-                    ON ref_d.instrument = r.instrument
-                    AND ref_d.timeframe  = '1D'
-                    AND ref_d.ts::date   = r.rejected_at::date
-                JOIN forex_network.historical_prices next_d
-                    ON next_d.instrument = r.instrument
-                    AND next_d.timeframe  = '1D'
-                    AND next_d.ts::date   = (r.rejected_at::date + 1)
-                WHERE r.rejection_stage = 'macro_gate'
-                  AND r.rejected_at::date < CURRENT_DATE
-                  AND r.macro_score IS NOT NULL
-                  AND r.macro_score != 0
-                GROUP BY r.instrument
-                HAVING COUNT(*) >= 10
-            """)
-            mg_rows = cur.fetchall()
-            for row in mg_rows:
-                instrument      = row[0]
-                total           = int(row[1])
-                macro_correct   = int(row[2] or 0)
-                avg_magnitude   = float(row[3] or 0)
-                macro_rate      = macro_correct / total if total > 0 else 0.0
-
-                if macro_rate > 0.60:
-                    # Macro direction was right even though signal was too weak to pass gate
-                    cur.execute("""
-                        SELECT COUNT(*) AS cnt FROM forex_network.proposals
-                        WHERE user_id = %s AND proposal_type = 'macro_gate_too_strict'
-                          AND instrument = %s AND status = 'pending'
-                    """, (self.user_id, instrument))
-                    if int(cur.fetchone()[0]) == 0:
-                        cur.execute("""
-                            INSERT INTO forex_network.proposals
-                                (proposal_type, user_id, instrument, parameter,
-                                 current_value, proposed_value, direction,
-                                 n_trades, metric, metric_value, confidence, reasoning,
-                                 status, auto_revert_hours, strategy)
-                            VALUES ('macro_gate_too_strict', %s, %s, 'MACRO_THRESHOLD',
-                                    NULL, NULL, 'decrease',
-                                    %s, 'macro_correct_rate', %s,
-                                    'medium', %s, 'pending', 72, 'v1_swing')
-                        """, (
-                            self.user_id, instrument, total,
-                            round(macro_rate, 4),
-                            (
-                                f"When macro was blocked by the p75 gate on {instrument}, "
-                                f"macro direction was still correct {macro_rate:.0%} of the time "
-                                f"({total} rejections, avg |macro_score|={avg_magnitude:.3f}). "
-                                f"The p75 threshold may be overfitted or too conservative for "
-                                f"this pair."
-                            ),
-                        ))
-                        written += 1
-                        logger.info(
-                            f"Proposal: macro gate too strict on {instrument} — "
-                            f"macro right {macro_rate:.0%} when gated ({total} samples, "
-                            f"avg_magnitude={avg_magnitude:.3f})"
-                        )
-
-            self.db.commit()
-            return written
-
-        except Exception as e:
-            logger.error(f"_generate_proposals failed: {e}")
-            self.db.rollback()
-            return 0
-        finally:
-            cur.close()
-
     def _generate_v1_swing_proposals(self) -> int:
         """Generate V1 Swing aligned proposals from trade outcome data.
         Writes proposals to forex_network.proposals table via agent_signals.
@@ -3139,8 +2790,7 @@ class LearningModule:
                 })
 
         if proposals and not self.dry_run:
-            self._write_proposals(proposals)
-            self._write_v1_proposals_to_table(proposals)  # also write to proposals table
+            self._write_v1_proposals_to_table(proposals)  # single sink: forex_network.proposals
             logger.info(
                 f"_generate_v1_swing_proposals: {len(proposals)} proposal(s) generated "
                 f"({', '.join(set(p['proposal_type'] for p in proposals))})"
