@@ -223,7 +223,7 @@ def check_data_freshness(conn):
             if tf == '4H' and age_h > 2 and is_market_hours():
                 send_alert('WARNING', f'price_metrics 4H stale: {age_h:.1f}h',
                     {'timeframe': '4H', 'age_h': round(age_h, 1)}, 'neo_monitor')
-            elif tf == '1D' and age_h > 26:
+            elif tf == '1D' and age_h > 26 and is_market_hours():
                 send_alert('WARNING', f'price_metrics 1D stale: {age_h:.1f}h',
                     {'timeframe': '1D', 'age_h': round(age_h, 1)}, 'neo_monitor')
             log.info(f'price_metrics {tf}: {age_h:.1f}h old')
@@ -233,7 +233,7 @@ def check_data_freshness(conn):
     last = cur.fetchone()[0]
     if last:
         age_h = (now - last).total_seconds() / 3600
-        if age_h > 26:
+        if age_h > 26 and is_market_hours():
             send_alert('WARNING', f'Correlation matrix stale: {age_h:.1f}h',
                 {'age_h': round(age_h, 1)}, 'neo_monitor')
         log.info(f'portfolio_correlation: {age_h:.1f}h old')
