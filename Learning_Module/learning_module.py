@@ -3314,7 +3314,7 @@ class LearningModule:
             win_rate = wins / total
             logger.info(
                 f"compute_macro_direction_accuracy: {tier} tier — "
-                f"{wins}/{total} = {win_rate:.1%%}"
+                f"{wins}/{total} = {win_rate:.1%}"
             )
             if tier == 'medium' and win_rate < 0.50:
                 proposals.append({
@@ -3323,7 +3323,7 @@ class LearningModule:
                     'win_rate': round(win_rate, 4),
                     'trade_count': total,
                     'message': (
-                        f"Medium-conviction trades (p50≤macro<p75) have a {win_rate:.0%%} win rate "
+                        f"Medium-conviction trades (p50≤macro<p75) have a {win_rate:.0%} win rate "
                         f"over {total} trades. Consider raising the macro gate threshold to p75 "
                         f"or tightening the medium tier definition."
                     ),
