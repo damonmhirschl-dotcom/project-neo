@@ -221,7 +221,7 @@ Backfill cron: 22:45 UTC weekdays
 - Kelly fraction + Calmar ratio (post-50-trade gate)
 - Learning module weight feedback loop
 - IBKR Gateway — not needed until go-live
-- Admin dashboard mobile/responsive polish: tablet breakpoint (700-1100px), header-right button overflow on narrow screens, font scaling
+- ~~Admin dashboard mobile/responsive polish~~ — DONE: 4 breakpoints (1100/900/700/400px), font clamp, grid collapse, header wrap, touch scroll
 - Eurostat + Stats NZ unemployment gaps
 
 ---
