@@ -248,6 +248,9 @@ class IGBroker(BrokerInterface):
         "AUDJPY": ( 0.45, -0.60),
         "CADJPY": ( 0.30, -0.45),
         "NZDJPY": ( 0.38, -0.52),
+        # New pairs added 2026-04-25 (EUR 2.0% vs NZD 3.25%; AUD 3.85% vs CAD 2.75%)
+        "EURNZD": (-0.25,  0.15),
+        "AUDCAD": ( 0.18, -0.28),
     }
 
     def get_swap_rates(self, pair: str):
