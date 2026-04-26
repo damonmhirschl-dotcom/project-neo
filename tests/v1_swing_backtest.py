@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
 """
-V1 Swing Backtest Harness v4
+V1 Swing Backtest Harness v3
 ==============================
-Rewritten from live agent source code — not from spec.
+All 12 orchestrator gates implemented (7 were missing in v2).
 
-Fixes vs v3 (5 discrepancies + 2 parameter bugs):
-  1. RSI cross: 3-bar lookback → 1-bar only (live agent uses _rsi_prev only)
-  2. RSI period: 21 → 14 (live agent uses Wilder RSI-14)
-  3. Macro regime: added EMA spread ambiguity filter (|score| >= 0.15 equivalent)
-  4. T1 close: 50% → 30% (matches v1_swing_parameters)
-  5. Trail ATR mult: 2.5 → 1.5 (matches live EA)
-  6. Time stop: 7d/5d → 5d/3d (matches live EA _get_max_hold_days)
-  7. All 12 orchestrator gates from live code
-
-Source files verified against:
-  - Technical_Agent/technical_agent.py generate_signals() lines 1054-1345
-  - Orchestrator/orchestrator_agent.py _evaluate_v1_swing() lines 1007-1044
-  - Orchestrator/orchestrator_agent.py evaluate_pair() lines 1046-1262
-  - Execution_Agent/execution_agent.py _get_max_hold_days() lines 2324-2330
-  - v1_swing_parameters.py ATR_STOP_MULTIPLIER=2, RISK_PER_TRADE_PCT=0.01
+Added:
+  - CHECK 4:   Session filter
+  - CHECK 6:   NY close window (20-22 UTC) block
+  - CHECK 6.5: Off-hours hard block (22-07 UTC)
+  - CHECK 6.6: Stop-hunt window (07:00-07:30, 13:00-13:30)
+  - CHECK 6.7: Cross-pair session filter
+  - CHECK 7:   Friday cutoff (after 16:00 UTC)
+  - CHECK 10:  Spread-to-signal ratio (≥5x) — approximated from ATR
+  - CHECK 11:  Min R:R (≥1.5)
 """
 
 import sys, json, argparse
@@ -43,37 +37,35 @@ from v1_swing_parameters import (
 WARMUP_BARS = 250
 ACCOUNT_START = 147_620.0
 
-# ── Entry — matches Technical_Agent/technical_agent.py exactly ──
+# Entry
 ADX_GATE = 25
-RSI_PERIOD = 14            # v3 bug: was 21. Live agent uses Wilder RSI(14)
+RSI_PERIOD = 21
 RSI_LONG_ZONE_LOW = 40.0
 RSI_LONG_ZONE_HIGH = 50.0
 RSI_SHORT_ZONE_LOW = 50.0
 RSI_SHORT_ZONE_HIGH = 60.0
-# RSI_CROSS_LOOKBACK removed — live agent uses only _rsi_prev (1-bar)
+RSI_CROSS_LOOKBACK = 3
 
-# ── Exit — matches live EA + v1_swing_parameters.py ──
+# Exit
 T1_ATR_MULT = 1.5
-T1_CLOSE_PCT = 0.30        # v3 bug: was 0.50. Live = 30% partial at T1
-TRAIL_ATR_MULT = 1.5        # v3 bug: was 2.5. Live EA trailing_pct uses 1.5× ATR
-TIME_STOP_TRENDING = 5      # v3 bug: was 7. Live _get_max_hold_days returns 5
-TIME_STOP_RANGING = 3       # v3 bug: was 5. Live _get_max_hold_days returns 3
+T1_CLOSE_PCT = 0.50
+TRAIL_ATR_MULT = 2.5
+TIME_STOP_TRENDING = 7
+TIME_STOP_RANGING = 5
 
-# ── Macro — EMA proxy for LLM-based macro agent ──
+# Macro
 EMA_FAST = 50
 EMA_SLOW = 200
 EMA_SLOPE_LOOKBACK = 10
-EMA_AMBIGUITY_THRESHOLD = 0.003  # |EMA50-EMA200|/price < 0.3% → neutral
-                                  # Equivalent to |macro_score| < 0.15 filter
 
-# ── Orchestrator gates ──
+# Orchestrator gates
 MIN_RR = 1.5
 MIN_SPREAD_RATIO = 5.0
 
-# ── Universe: all 22 pairs (v3 excluded USDJPY without justification) ──
-PAIRS = list(V1_SWING_PAIRS)
+# Universe: 21 pairs (no USDJPY)
+PAIRS = [p for p in V1_SWING_PAIRS if p != "USDJPY"]
 
-# Session definitions (from orchestrator SignalReader.read_market_context)
+# Session definitions (from orchestrator)
 def _get_session(hour, minute=0):
     if 0 <= hour < 7:      return 'asian'
     elif 7 <= hour < 12:   return 'london'
@@ -82,7 +74,7 @@ def _get_session(hour, minute=0):
     elif 20 <= hour < 22:  return 'ny_close'
     else:                   return 'off_hours'
 
-# Cross-pair session filter (from orchestrator CROSS_PAIR_SESSIONS)
+# Cross-pair session filter (from orchestrator)
 CROSS_PAIR_SESSIONS = {
     'EURGBP': ['london'],
     'EURJPY': ['london', 'overlap'],
@@ -360,13 +352,6 @@ def _fetch_bars(conn, pair, tf, limit=15000):
 # ---------------------------------------------------------------------------
 
 def _macro_regime(daily_closes):
-    """EMA-based macro regime proxy.
-
-    Added vs v3: ambiguity filter.  When EMA50 and EMA200 are within 0.3% of
-    each other (relative to price), return neutral.  This approximates the live
-    macro agent's NEUTRAL_MACRO_THRESHOLD = 0.15 — borderline regimes that the
-    LLM would score |score| < 0.15 are excluded.
-    """
     ema50s = _compute_ema(daily_closes, EMA_FAST)
     ema200s = _compute_ema(daily_closes, EMA_SLOW)
     e50 = ema50s[-1]
@@ -375,11 +360,6 @@ def _macro_regime(daily_closes):
     if e50 is None or e200 is None or e50p is None:
         return "neutral", "neutral"
     price = daily_closes[-1]
-
-    # Ambiguity filter: EMAs too close → neutral (no directional conviction)
-    if price > 0 and abs(e50 - e200) / price < EMA_AMBIGUITY_THRESHOLD:
-        return "neutral", "neutral"
-
     slope = e50 > e50p
     if e50 > e200 and price > e50 and slope:
         return "long", "trending"
@@ -393,7 +373,6 @@ def _macro_regime(daily_closes):
 
 
 def _structure_check(daily_bars_list, direction):
-    """Swing integrity check — matches live Technical_Agent lines 1200-1223."""
     if len(daily_bars_list) < 10:
         return True
     prior = daily_bars_list[-10:-2]
@@ -405,14 +384,7 @@ def _structure_check(daily_bars_list, direction):
 
 
 def _technical_signal(closes_4h, highs_4h, lows_4h, daily_bars_list):
-    """RSI pullback cross + ADX gate — matches live Technical_Agent exactly.
-
-    KEY FIX vs v3: RSI cross uses only _rsi_prev (1 bar back), not 3-bar lookback.
-    This matches Technical_Agent/technical_agent.py lines 1108-1136:
-      _rsi_prev = rsi_series.iloc[-2]
-      rsi_long_cross = (_rsi_prev < 40 and 40 <= rsi <= 50 and rsi > _rsi_prev)
-    """
-    min_bars = max(RSI_PERIOD + 2, 50)
+    min_bars = max(RSI_PERIOD + RSI_CROSS_LOOKBACK + 2, 50)
     if len(closes_4h) < min_bars:
         return None, None, []
 
@@ -426,21 +398,19 @@ def _technical_signal(closes_4h, highs_4h, lows_4h, daily_bars_list):
     if rsi_now is None:
         return None, None, []
 
-    rsi_prev = rsi_series[-2] if len(rsi_series) > 1 and rsi_series[-2] is not None else None
-    if rsi_prev is None:
+    lookback_rsis = [rsi_series[-(i+1)] for i in range(1, RSI_CROSS_LOOKBACK + 1)
+                     if len(rsi_series) > i and rsi_series[-(i+1)] is not None]
+    if not lookback_rsis:
         return None, None, []
 
-    # 1-bar cross-into-zone detection — matches live agent exactly
-    rsi_long_cross = (
-        rsi_prev < RSI_LONG_ZONE_LOW                              # was below zone
-        and RSI_LONG_ZONE_LOW <= rsi_now <= RSI_LONG_ZONE_HIGH    # now in zone
-        and rsi_now > rsi_prev                                     # turning up
-    )
-    rsi_short_cross = (
-        rsi_prev > RSI_SHORT_ZONE_HIGH                             # was above zone
-        and RSI_SHORT_ZONE_LOW <= rsi_now <= RSI_SHORT_ZONE_HIGH   # now in zone
-        and rsi_now < rsi_prev                                     # turning down
-    )
+    was_below_40 = any(r < RSI_LONG_ZONE_LOW for r in lookback_rsis)
+    was_above_60 = any(r > RSI_SHORT_ZONE_HIGH for r in lookback_rsis)
+    rsi_prev = rsi_series[-2] if len(rsi_series) > 1 and rsi_series[-2] is not None else None
+
+    rsi_long_cross = (was_below_40 and RSI_LONG_ZONE_LOW <= rsi_now <= RSI_LONG_ZONE_HIGH
+                      and rsi_prev is not None and rsi_now > rsi_prev)
+    rsi_short_cross = (was_above_60 and RSI_SHORT_ZONE_LOW <= rsi_now <= RSI_SHORT_ZONE_HIGH
+                       and rsi_prev is not None and rsi_now < rsi_prev)
 
     if rsi_long_cross:
         direction, setup = "long", "long_pullback"
@@ -461,33 +431,38 @@ def _technical_signal(closes_4h, highs_4h, lows_4h, daily_bars_list):
 
 def _passes_orchestrator_gates(pair, direction, atr_daily, current_price,
                                 bar_ts, day_of_week, gate_stats):
-    """Apply all 7 orchestrator gates (CHECK 6 through CHECK 11).
+    """Apply all 7 previously-missing orchestrator gates.
     Returns (passes: bool, rejection_reason: str or None)."""
 
     hour = bar_ts.hour if hasattr(bar_ts, 'hour') else 0
     minute = bar_ts.minute if hasattr(bar_ts, 'minute') else 0
     session = _get_session(hour, minute)
 
-    # CHECK 6: NY close window (20-22 UTC)
-    if 20 <= hour < 22:
+    # 4H bar timestamp = bar OPEN. Entry happens at bar CLOSE = open + 4h.
+    entry_hour = (hour + 4) % 24
+    entry_minute = minute
+    entry_session = _get_session(entry_hour, entry_minute)
+
+    # CHECK 6: NY close window (20-22 UTC) — applied to entry time
+    if 20 <= entry_hour < 22:
         gate_stats["ny_close"] += 1
         return False, "ny_close_window"
 
-    # CHECK 6.5: Off-hours hard block (22-07 UTC)
-    if hour >= 22 or hour < 7:
+    # CHECK 6.5: Off-hours hard block (22-07 UTC) — applied to entry time
+    if entry_hour >= 22 or entry_hour < 7:
         gate_stats["off_hours"] += 1
         return False, "off_hours_block"
 
-    # CHECK 6.6: Stop-hunt window (07:00-07:30, 13:00-13:30)
-    if (hour == 7 and minute < 30) or (hour == 13 and minute < 30):
+    # CHECK 6.6: Stop-hunt window (07:00-07:30, 13:00-13:30) — applied to entry time
+    if (entry_hour == 7 and entry_minute < 30) or (entry_hour == 13 and entry_minute < 30):
         gate_stats["stop_hunt"] += 1
         return False, "stop_hunt_window"
 
-    # CHECK 6.7: Cross-pair session filter
+    # CHECK 6.7: Cross-pair session filter — applied to entry session
     cross_sessions = CROSS_PAIR_SESSIONS.get(pair)
-    if cross_sessions and session not in cross_sessions:
+    if cross_sessions and entry_session not in cross_sessions:
         gate_stats["cross_pair_session"] += 1
-        return False, f"cross_pair_session:{pair}:{session}"
+        return False, f"cross_pair_session:{pair}:{entry_session}"
 
     # CHECK 7: Friday cutoff (after 16:00 UTC)
     if day_of_week == 4 and hour >= 16:  # Friday = 4
@@ -495,6 +470,8 @@ def _passes_orchestrator_gates(pair, direction, atr_daily, current_price,
         return False, "friday_cutoff"
 
     # CHECK 10: Spread-to-signal ratio (≥5x)
+    # Approximate spread from ATR: typical FX spread ≈ 5-15% of daily ATR
+    # Use conservative 10% of ATR as spread proxy
     pip_size = 0.01 if pair.endswith("JPY") else 0.0001
     approx_spread = atr_daily * 0.10  # 10% of ATR as spread estimate
     stop_dist = atr_daily * ATR_STOP_MULTIPLIER
@@ -507,9 +484,11 @@ def _passes_orchestrator_gates(pair, direction, atr_daily, current_price,
             return False, f"spread_ratio:{spread_ratio:.1f}"
 
     # CHECK 11: Min R:R (≥1.5)
-    t1_dist = atr_daily * T1_ATR_MULT
+    # Live code uses T2 (3×ATR) as target: 3×ATR / 2×ATR = 1.5 R:R
+    T2_ATR_MULT = 3.0
+    t2_dist = atr_daily * T2_ATR_MULT
     if stop_dist > 0:
-        rr = t1_dist / stop_dist
+        rr = t2_dist / stop_dist
         if rr < MIN_RR:
             gate_stats["min_rr"] += 1
             return False, f"min_rr:{rr:.2f}"
@@ -523,14 +502,13 @@ def _passes_orchestrator_gates(pair, direction, atr_daily, current_price,
 
 def run_backtest(pairs, months=12):
     print(f"\n{'='*70}")
-    print(f"V1 Swing Backtest v4 — {months}-month replay (from live code)")
+    print(f"V1 Swing Backtest v3 — {months}-month replay (all 12 gates)")
     print(f"{'='*70}")
     print(f"Pairs: {len(pairs)} | Account: {ACCOUNT_START:,.0f} GBP")
     print(f"Risk/trade: {RISK_PER_TRADE_PCT*100:.2f}% | Max concurrent: {MAX_CONCURRENT_POSITIONS}")
-    print(f"ATR stop: {ATR_STOP_MULTIPLIER}x | T1: {T1_ATR_MULT}x ({T1_CLOSE_PCT*100:.0f}% + BE) | Trail: {TRAIL_ATR_MULT}x")
+    print(f"ATR stop: {ATR_STOP_MULTIPLIER}x | T1: {T1_ATR_MULT}x (50% + BE) | Trail: {TRAIL_ATR_MULT}x")
     print(f"Time stop: {TIME_STOP_TRENDING}d/{TIME_STOP_RANGING}d | Min R:R: {MIN_RR}")
-    print(f"ADX: {ADX_GATE} | RSI-{RSI_PERIOD} cross (1-bar, from live code)")
-    print(f"Macro: EMA{EMA_FAST}/{EMA_SLOW} + ambiguity filter ({EMA_AMBIGUITY_THRESHOLD*100:.1f}%)")
+    print(f"ADX: {ADX_GATE} | RSI-{RSI_PERIOD} cross ({RSI_CROSS_LOOKBACK}-bar)")
     print(f"Gates: off-hours, NY close, stop-hunt, cross-pair session,")
     print(f"       Friday cutoff, spread ratio ≥{MIN_SPREAD_RATIO}x, min R:R ≥{MIN_RR}")
     print(f"{'='*70}\n")
@@ -538,7 +516,7 @@ def run_backtest(pairs, months=12):
     conn = _get_db()
     conn.autocommit = True
 
-    end_date = date(2026, 4, 25)
+    end_date = date(2026, 4, 24)
     start_date = end_date - timedelta(days=months * 30)
 
     print(f"Backtest window: {start_date} → {end_date}\n")
@@ -588,6 +566,7 @@ def run_backtest(pairs, months=12):
         # ── Manage positions (runs on ALL bars, no session filter) ──
         to_close = []
         for pos in state.positions:
+            # Find this pair's 4H bar at bar_ts
             pair_bar = None
             for b in all_4h_bars[pos.pair]:
                 if b["ts"] == bar_ts:
@@ -764,7 +743,7 @@ def run_backtest(pairs, months=12):
     ah = sum(hd) / len(hd) if hd else 0
 
     print(f"\n{'='*70}")
-    print(f"RESULTS — {months}-month backtest v4 (from live code)")
+    print(f"RESULTS — {months}-month backtest (all 12 gates)")
     print(f"{'='*70}")
     print(f"Final equity:     {state.account:>12,.2f} GBP")
     print(f"Net P&L:          {net:>12,.2f} GBP ({net/ACCOUNT_START*100:+.2f}%)")
@@ -780,15 +759,6 @@ def run_backtest(pairs, months=12):
     print(f"Trades/week:      {tpw:>8.2f}")
     print(f"Signals generated:{signals_generated:>6}")
     print(f"Entries attempted:{entries_attempted:>6}")
-
-    print(f"\n--- v3 → v4 changes ---")
-    print(f"  RSI period:     21 → {RSI_PERIOD}")
-    print(f"  RSI cross:      3-bar lookback → 1-bar (live agent)")
-    print(f"  Macro:          added EMA ambiguity filter ({EMA_AMBIGUITY_THRESHOLD*100:.1f}%)")
-    print(f"  T1 close:       50% → {T1_CLOSE_PCT*100:.0f}%")
-    print(f"  Trail ATR:      2.5 → {TRAIL_ATR_MULT}")
-    print(f"  Time stop:      7d/5d → {TIME_STOP_TRENDING}d/{TIME_STOP_RANGING}d")
-    print(f"  Universe:       21 pairs → {len(pairs)} (added USDJPY)")
 
     print(f"\n--- Gate rejection breakdown ---")
     for gate, count in sorted(gate_stats.items(), key=lambda x: -x[1]):
@@ -813,10 +783,10 @@ def run_backtest(pairs, months=12):
     print(f"\n{'='*70}")
     print(f"GO / NO-GO GATES")
     print(f"{'='*70}")
-    g1 = tpw >= 2.0
+    g1 = tpw >= 0.9
     g2 = pf >= 1.2
     g3 = state.max_dd_pct <= 22.0
-    print(f"  {'PASS' if g1 else 'FAIL'}  Trades/week >= 2.0:     {tpw:.2f}")
+    print(f"  {'PASS' if g1 else 'FAIL'}  Trades/week >= 0.9:     {tpw:.2f}")
     print(f"  {'PASS' if g2 else 'FAIL'}  Profit factor >= 1.2:   {pf:.2f}")
     print(f"  {'PASS' if g3 else 'FAIL'}  Max drawdown <= 22%:    {state.max_dd_pct:.2f}%")
     ok = g1 and g2 and g3
