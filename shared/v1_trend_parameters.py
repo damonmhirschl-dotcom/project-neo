@@ -15,7 +15,9 @@ STRATEGY_NAME = "v1_trend"
 # ---------------------------------------------------------------------------
 # Universe
 # ---------------------------------------------------------------------------
-V1_TREND_PAIRS = V1_SWING_PAIRS  # identical 22-pair G10 universe
+V1_TREND_PAIRS = [  # 20-pair universe — GBPUSD/USDCAD removed (news-driven, backtest negative)
+    p for p in V1_SWING_PAIRS if p not in ("GBPUSD", "USDCAD")
+]
 
 # ---------------------------------------------------------------------------
 # Timeframes
@@ -36,7 +38,7 @@ EMA_SPREAD_MIN_THRESHOLD = 0.0005
 # ADX (Technical Agent)
 # ---------------------------------------------------------------------------
 ADX_PERIOD = 14
-ADX_GATE   = 25
+ADX_GATE   = 28
 
 # ---------------------------------------------------------------------------
 # MACD (Technical Agent)
@@ -59,19 +61,19 @@ RSI_SHORT_GATE = 50
 ATR_PERIOD           = 14
 ATR_STOP_MULTIPLIER  = 2.5
 ATR_T1_MULTIPLIER    = 1.5
-ATR_TRAIL_MULTIPLIER = 2.0
+ATR_TRAIL_MULTIPLIER = 2.5
 
 # ---------------------------------------------------------------------------
 # Position management
 # ---------------------------------------------------------------------------
 T1_CLOSE_PCT   = 0.30
-TIME_STOP_DAYS = 25
+TIME_STOP_DAYS = 35
 
 # ---------------------------------------------------------------------------
 # Risk and sizing
 # ---------------------------------------------------------------------------
-RISK_PER_TRADE_PCT             = 0.0075
-MAX_CONCURRENT_POSITIONS       = 3
+RISK_PER_TRADE_PCT             = 0.01
+MAX_CONCURRENT_POSITIONS       = 4
 MIN_RR                         = 2.5
 CONCENTRATION_CAP_PER_CURRENCY = 2
 CORRELATION_BLOCK_THRESHOLD    = 0.70
