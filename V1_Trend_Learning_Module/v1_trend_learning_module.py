@@ -51,6 +51,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 AGENT_NAME = "v1_trend_learning"
+# =============================================================================
+# RESEARCH-BACKED PAIR PRIORS
+# =============================================================================
+PAIR_TIERS = {
+    1: ["AUDUSD","AUDCAD","AUDNZD","AUDJPY","CADJPY","EURJPY","NZDJPY"],
+    2: ["EURUSD","USDCHF","NZDUSD","EURCAD","EURCHF","EURGBP","EURNZD"],
+    3: ["GBPAUD","GBPCAD","GBPCHF","GBPJPY","GBPUSD","USDCAD","USDJPY"],
+}
+PAIR_PRIOR_MIN_TRADES = {
+    **{p: LM_MIN_TRADES_FOR_PROPOSAL      for p in PAIR_TIERS[1]},
+    **{p: LM_MIN_TRADES_FOR_PROPOSAL      for p in PAIR_TIERS[2]},
+    **{p: LM_MIN_TRADES_FOR_PROPOSAL + 10 for p in PAIR_TIERS[3]},
+}
+PAIR_PRIOR_REMOVAL_THRESHOLD = {
+    **{p: LM_WIN_RATE_REMOVAL_THRESHOLD - 0.05 for p in PAIR_TIERS[1]},
+    **{p: LM_WIN_RATE_REMOVAL_THRESHOLD        for p in PAIR_TIERS[2]},
+    **{p: LM_WIN_RATE_REMOVAL_THRESHOLD + 0.10 for p in PAIR_TIERS[3]},
+}
+
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +417,14 @@ class V1TrendProposalGenerator:
             return False
 
     def generate_pair_removal_proposals(self, pair_accuracy: Dict[str, Dict]) -> int:
-        """Propose removing pairs with win_rate < threshold over min sample."""
+        """Propose removing pairs with win_rate < threshold over min sample.
+        Tier-aware: Tier 3 pairs require more trades and fire at higher threshold."""
         written = 0
         for pair, stats in pair_accuracy.items():
-            if (stats["total"] >= LM_MIN_TRADES_FOR_PROPOSAL and
-                    stats["win_rate"] < LM_WIN_RATE_REMOVAL_THRESHOLD):
+            min_trades = PAIR_PRIOR_MIN_TRADES.get(pair, LM_MIN_TRADES_FOR_PROPOSAL)
+            threshold  = PAIR_PRIOR_REMOVAL_THRESHOLD.get(pair, LM_WIN_RATE_REMOVAL_THRESHOLD)
+            if (stats["total"] >= min_trades and
+                    stats["win_rate"] < threshold):
                 written += int(self._write_proposal(
                     proposal_type="pair_removal",
                     pair=pair,
