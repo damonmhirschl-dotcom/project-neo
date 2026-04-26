@@ -281,10 +281,10 @@ def _get_macro_direction(daily_bars: List[Dict]) -> Tuple[str, float, float]:
     e200 = next((v for v in reversed(ema200) if v is not None), None)
     if e50 is None or e200 is None or e200 == 0:
         return "neutral", 0.0, 0.0
-    spread_pct = (e50 - e200) / e200
-    if spread_pct > EMA_NEUTRAL_THRESHOLD:
+    # Binary rule per research: EMA50 above/below EMA200 = direction. No threshold.
+    if e50 > e200:
         return "long", e50, e200
-    elif spread_pct < -EMA_NEUTRAL_THRESHOLD:
+    elif e50 < e200:
         return "short", e50, e200
     return "neutral", e50, e200
 
@@ -446,6 +446,7 @@ class Position:
         self.remaining  = 1.0
         self.trail_stop = None
         self.best_price = entry
+        self.original_stop_dist = abs(entry - stop)
 
 # ── Main backtest ─────────────────────────────────────────────────────────────
 
@@ -520,38 +521,28 @@ def run_backtest():
             low     = cur_bar["low"]
             hold_days = (bar_ts - pos.opened_ts).total_seconds() / 86400
 
-            # Macro regime check
-            daily_up_to = [b for b in daily_data[pos.pair] if b["ts"] <= bar_ts]
-            macro_dir, _, _ = _get_macro_direction(daily_up_to)
-            regime_rev = (
-                (pos.direction == "long"  and macro_dir in ("short","neutral")) or
-                (pos.direction == "short" and macro_dir in ("long", "neutral"))
-            )
-
             exit_reason = None
             exit_price  = close
 
-            if regime_rev:
-                exit_reason = "regime_exit"
-            elif pos.t1_hit and pos.trail_stop is not None:
+            if pos.trail_stop is not None:
                 if pos.direction == "long"  and low  <= pos.trail_stop:
                     exit_reason = "trailing_stop"
                     exit_price  = pos.trail_stop
                 elif pos.direction == "short" and high >= pos.trail_stop:
                     exit_reason = "trailing_stop"
                     exit_price  = pos.trail_stop
-            elif pos.direction == "long"  and low  <= pos.stop:
+            if exit_reason is None and pos.direction == "long" and low <= pos.stop:
                 exit_reason = "stop"
                 exit_price  = pos.stop
-            elif pos.direction == "short" and high >= pos.stop:
+            elif exit_reason is None and pos.direction == "short" and high >= pos.stop:
                 exit_reason = "stop"
                 exit_price  = pos.stop
-            elif not pos.t1_hit and hold_days >= TIME_STOP_DAYS:
+            if exit_reason is None and hold_days >= TIME_STOP_DAYS:
                 exit_reason = "time_stop"
 
             if exit_reason:
                 risk_amt  = ACCOUNT_VALUE * RISK_PER_TRADE_PCT
-                stop_dist = abs(pos.entry - pos.stop)
+                stop_dist = pos.original_stop_dist  # always use original, not current (may be BE)
                 pnl_r     = 0.0
                 if stop_dist > 0:
                     pnl_r = (exit_price - pos.entry) / stop_dist * pos.remaining
@@ -581,29 +572,34 @@ def run_backtest():
                     reentry_blocks[(pos.pair, pos.direction)] = bar_ts + timedelta(days=REENTRY_BLOCK_DAYS)
                 closed.append(pos)
             else:
-                # T1 check
+                # T1 partial close: fires when price hits T1 (entry +/- 1.5*ATR)
+                # Close 30%, move stop to breakeven. Independent of trail.
                 if not pos.t1_hit:
                     if pos.direction == "long"  and high >= pos.t1_price:
-                        pos.t1_hit     = True
-                        pos.remaining  = 1.0 - T1_CLOSE_PCT
-                        pos.stop       = pos.entry
-                        pos.trail_stop = close - ATR_TRAIL_MULTIPLIER * pos.atr
+                        pos.t1_hit    = True
+                        pos.remaining = 1.0 - T1_CLOSE_PCT
+                        pos.stop      = pos.entry  # breakeven
                     elif pos.direction == "short" and low <= pos.t1_price:
-                        pos.t1_hit     = True
-                        pos.remaining  = 1.0 - T1_CLOSE_PCT
-                        pos.stop       = pos.entry
-                        pos.trail_stop = close + ATR_TRAIL_MULTIPLIER * pos.atr
-                # Trail update
-                if pos.t1_hit and pos.trail_stop is not None:
-                    if pos.direction == "long":
-                        pos.best_price = max(pos.best_price, close)
+                        pos.t1_hit    = True
+                        pos.remaining = 1.0 - T1_CLOSE_PCT
+                        pos.stop      = pos.entry  # breakeven
+
+                # Trail activation: independent of T1. Activates at 1R profit
+                # (unrealised price move >= stop_distance from entry).
+                stop_dist = ATR_STOP_MULTIPLIER * pos.atr
+                if pos.direction == "long":
+                    pos.best_price = max(pos.best_price, close)
+                    in_profit_1r = pos.best_price >= pos.entry + stop_dist
+                    if in_profit_1r:
                         new_t = pos.best_price - ATR_TRAIL_MULTIPLIER * pos.atr
-                        if new_t > pos.trail_stop:
+                        if pos.trail_stop is None or new_t > pos.trail_stop:
                             pos.trail_stop = new_t
-                    else:
-                        pos.best_price = min(pos.best_price, close)
+                else:
+                    pos.best_price = min(pos.best_price, close)
+                    in_profit_1r = pos.best_price <= pos.entry - stop_dist
+                    if in_profit_1r:
                         new_t = pos.best_price + ATR_TRAIL_MULTIPLIER * pos.atr
-                        if new_t < pos.trail_stop:
+                        if pos.trail_stop is None or new_t < pos.trail_stop:
                             pos.trail_stop = new_t
 
         for pos in closed:
@@ -689,11 +685,7 @@ def run_backtest():
                 stop = entry + stop_dist
                 t1   = entry - t1_dist
 
-            # MIN_RR check — T2_dist (trail is unlimited, use T1 × 2 as conservative proxy)
-            rr = (t1_dist * 2) / stop_dist if stop_dist > 0 else 0
-            if rr < MIN_RR:
-                rejections["min_rr"] += 1
-                continue
+            # MIN_RR: enforced by Risk Guardian, not orchestrator — no gate here
 
             pos = Position(pair, direction, entry, stop, t1, atr, bar_ts, sig["session"])
             open_positions.append(pos)
@@ -709,7 +701,7 @@ def run_backtest():
         if not p_4h:
             continue
         exit_price = p_4h[-1]["close"]
-        stop_dist  = abs(pos.entry - pos.stop)
+        stop_dist  = pos.original_stop_dist
         hold_days  = (backtest_end - pos.opened_ts).total_seconds() / 86400
         pnl_r = 0.0
         if stop_dist > 0:
