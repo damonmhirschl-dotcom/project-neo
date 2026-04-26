@@ -47,8 +47,8 @@ RSI_SHORT_ZONE_HIGH = 60.0
 RSI_CROSS_LOOKBACK = 3
 
 # Exit
-T1_ATR_MULT = 1.5
-T1_CLOSE_PCT = 0.50
+T1_ATR_MULT = 3.0  # matches live ATR_TARGET_1_MULTIPLIER
+T1_CLOSE_PCT = 1.0  # full close at T1 (no partial), trailing stop activates after
 TRAIL_ATR_MULT = 2.5
 TIME_STOP_TRENDING = 7
 TIME_STOP_RANGING = 5

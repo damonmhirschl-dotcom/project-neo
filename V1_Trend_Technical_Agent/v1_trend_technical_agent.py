@@ -773,7 +773,7 @@ def main():
                         agent.update_heartbeat()
                     except Exception:
                         pass
-                time.sleep(300)
+                _interruptible_sleep(300)
                 continue
 
             try:
