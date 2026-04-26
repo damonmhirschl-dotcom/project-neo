@@ -38,7 +38,7 @@ from shared.signal_validator import SignalValidator
 from shared.market_hours import get_market_state
 from shared.system_events import log_event
 from shared.warn_log import warn
-from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_2_MULTIPLIER
+from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_1_MULTIPLIER, ATR_TARGET_2_MULTIPLIER, ATR_TRAIL_MULTIPLIER
 from shared.schemas.v1_swing_payloads import validate_trade_write
 from shared.broker_interface import BrokerInterface
 
@@ -1196,16 +1196,16 @@ class TradeExecutor:
         _setup_type_val   = _ec_for_tech.get("setup_type")
 
         # V1 Swing spec: target is always ATR-derived, never swing-based.
-        # T1 = entry ± 2.0 × ATR(14, 1D); T2 = entry ± ATR_TARGET_2_MULTIPLIER × ATR(14, 1D).
-        # v0 stores T1 as target_price (full close); partial exits (T2) are v0.1.
+        # T1 = entry ± ATR_TARGET_1_MULTIPLIER × ATR(14, 1D). After T1: trailing stop at ATR_TRAIL_MULTIPLIER × ATR.
+        # Post-T1 exit via ATR trailing stop (replaces fixed T2 limit). T2 price kept for reference only.
         _atr_1d_val, _atr_1d_tf = _fetch_atr_for_stop(self.db, instrument)
         _pip_prec_tgt = 3 if instrument.upper().endswith('JPY') else 5
         if _atr_1d_val and _atr_1d_val > 0:
             if direction == 'long':
-                _atr_target_1 = round(entry_price + 2.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_1 = round(entry_price + ATR_TARGET_1_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
                 _atr_target_2 = round(entry_price + ATR_TARGET_2_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
             else:
-                _atr_target_1 = round(entry_price - 2.0 * _atr_1d_val, _pip_prec_tgt)
+                _atr_target_1 = round(entry_price - ATR_TARGET_1_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
                 _atr_target_2 = round(entry_price - ATR_TARGET_2_MULTIPLIER * _atr_1d_val, _pip_prec_tgt)
             logger.info(
                 f"{instrument} ATR targets: T1={_atr_target_1} T2={_atr_target_2} "
@@ -1239,6 +1239,8 @@ class TradeExecutor:
             trade_parameters=(lambda p: {
                 **self._build_trade_parameters_helper(p),
                 'target_1_price': _atr_target_1,
+                'atr_daily': _atr_1d_val,
+                'trail_atr_mult': ATR_TRAIL_MULTIPLIER,
                 'target_2_price': _atr_target_2,
             })(payload),
             adx_at_entry=_adx_at_entry_val,
@@ -2211,9 +2213,9 @@ class ExecutionAgent:
                             except Exception: _tp = {}
                         _trade_strategy = trade.get("strategy") or _tp.get("strategy", "v1_swing")
 
-                        if _trade_strategy == "v1_trend" and _tp.get("atr_daily"):
+                        if _tp.get("atr_daily"):
                             _atr = float(_tp["atr_daily"])
-                            _trail_mult = float(_tp.get("trail_atr_mult", 2.0))
+                            _trail_mult = float(_tp.get("trail_atr_mult", ATR_TRAIL_MULTIPLIER))
                             trail_distance = _atr * _trail_mult
                         else:
                             trail_distance = current_price * (trailing_pct / 100.0)

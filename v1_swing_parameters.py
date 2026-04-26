@@ -81,7 +81,7 @@ EXIT_REASONS       = (EXIT_TARGET_1_ONLY, EXIT_TARGET_2, EXIT_STOP, EXIT_BREAKEV
 
 # === Thresholds ===
 NEUTRAL_MACRO_THRESHOLD  = 0.15
-RISK_PER_TRADE_PCT       = 0.03
+RISK_PER_TRADE_PCT       = 0.10
 MAX_CONCURRENT_POSITIONS = 4
 CONCENTRATION_CAP_PER_CURRENCY = 2
 CORRELATION_BLOCK_THRESHOLD    = 0.70
@@ -94,5 +94,6 @@ MIN_4H_BARS_FOR_SIGNAL = 21
 
 # === ATR multipliers ===
 ATR_STOP_MULTIPLIER      = 2  # stop at 2× daily ATR
-ATR_TARGET_1_MULTIPLIER  = 2  # T1 at 2× daily ATR
-ATR_TARGET_2_MULTIPLIER  = 3  # T2 at 3× daily ATR (pro FX consensus; was 4× prior to 2026-04-25)
+ATR_TARGET_1_MULTIPLIER  = 3  # T1 at 3× daily ATR (was 2×; updated 2026-04-26)
+ATR_TARGET_2_MULTIPLIER  = 3  # DEPRECATED: T2 replaced by ATR trailing stop post-T1
+ATR_TRAIL_MULTIPLIER     = 2.5  # Trailing stop distance after T1 hit: 2.5× daily ATR

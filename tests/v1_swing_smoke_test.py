@@ -365,6 +365,7 @@ except Exception as e:
 print('\n--- Step 8: _inject_atr_targets — T2 uses ATR_TARGET_2_MULTIPLIER=3 ---')
 try:
     import math
+    from v1_swing_parameters import ATR_TARGET_1_MULTIPLIER
     sys.path.insert(0, '/root/Project_Neo_Damon/Technical_Agent')
     from technical_agent import TechnicalAgent
 
@@ -384,7 +385,7 @@ try:
     _test_price = 1.0850
     _factor     = 100000  # EURUSD: 5 pip decimal places
 
-    _expected_t1    = math.ceil((_test_price + 2.0 * _atr_1d) * _factor) / _factor
+    _expected_t1    = math.ceil((_test_price + ATR_TARGET_1_MULTIPLIER * _atr_1d) * _factor) / _factor
     _expected_t2_3x = math.ceil((_test_price + 3.0 * _atr_1d) * _factor) / _factor
     _expected_t2_4x = math.ceil((_test_price + 4.0 * _atr_1d) * _factor) / _factor
 
@@ -404,7 +405,7 @@ try:
     _assert(_rm.get('target_price') != _expected_t2_4x,
             'Step 8d: T2 is NOT the old 4× hardcoded value')
     _assert(abs(float(_rm.get('target_1_price', 0)) - _expected_t1) < 1e-5,
-            f'Step 8e: T1 = 2× atr_1d ({_expected_t1:.5f})',
+            f'Step 8e: T1 = ATR_TARGET_1_MULTIPLIER× atr_1d ({_expected_t1:.5f})',
             f'got {_rm.get("target_1_price")}')
     _assert('atr_stop_loss' in _rm,
             'Step 8f: atr_stop_loss present in rm', str(list(_rm.keys())))

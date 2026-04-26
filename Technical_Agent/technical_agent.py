@@ -60,7 +60,7 @@ from shared.agent_state import save_state, load_state, log_loaded_state_summary
 from shared.score_trajectory import get_recent_trajectory, get_recent_trajectory_batch, analyse_trajectory
 from shared.schema_validator import validate_schema
 from shared.warn_log import warn
-from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_2_MULTIPLIER
+from v1_swing_parameters import V1_SWING_PAIRS, ATR_TARGET_1_MULTIPLIER, ATR_TARGET_2_MULTIPLIER
 from shared.schemas.v1_swing_payloads import validate_technical_payload
 
 EXPECTED_TABLES = {
@@ -1689,11 +1689,11 @@ class TechnicalAgent:
                 _factor = 10 ** pip_precision  # ceil/floor scale factor
                 if bias == 'bullish':
                     # Long: round UP (away from entry) so R:R is never truncated below 2.0
-                    target_1 = math.ceil((current_price + 2.0 * atr_1d) * _factor) / _factor
+                    target_1 = math.ceil((current_price + ATR_TARGET_1_MULTIPLIER * atr_1d) * _factor) / _factor
                     target_2 = math.ceil((current_price + ATR_TARGET_2_MULTIPLIER * atr_1d) * _factor) / _factor
                 else:  # bearish
                     # Short: round DOWN (away from entry on the downside) for same reason
-                    target_1 = math.floor((current_price - 2.0 * atr_1d) * _factor) / _factor
+                    target_1 = math.floor((current_price - ATR_TARGET_1_MULTIPLIER * atr_1d) * _factor) / _factor
                     target_2 = math.floor((current_price - ATR_TARGET_2_MULTIPLIER * atr_1d) * _factor) / _factor
 
                 rm['target_price']   = target_2   # T2 for R:R gate (2:1)
