@@ -88,9 +88,9 @@ CROSS_PAIR_SESSIONS = {
     'AUDNZD': ['asian', 'london'],
     'AUDJPY': ['asian', 'london'],
     'CADJPY': ['newyork', 'overlap'],
-    'NZDJPY': ['asian'],
+    'NZDJPY': ['asian', 'london'],
     'EURNZD': ['london', 'overlap'],
-    'AUDCAD': ['asian', 'overlap'],
+    'AUDCAD': ['asian', 'london', 'overlap'],
 }
 
 # ---------------------------------------------------------------------------

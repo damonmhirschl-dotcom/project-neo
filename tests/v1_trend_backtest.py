@@ -248,6 +248,44 @@ def _concentration_ok(state: BacktestState, pair: str, direction: str) -> bool:
     return count < CONCENTRATION_CAP_PER_CURRENCY
 
 
+def _session_eligible(pair: str) -> bool:
+    """Check if pair would be eligible during at least one non-dead-zone session.
+    Daily-bar backtest cannot check exact hour, so we conservatively filter out
+    pairs that are ONLY eligible during Asia session but are not in ASIA_SESSION_PAIRS.
+    All pairs are eligible during London/NY, so non-Asia pairs always pass.
+    Asia-only restriction: pairs in ASIA_SESSION_PAIRS are always eligible (they
+    trade in Asia + all later sessions). The dead zone (21-24 UTC) blocks everyone
+    equally — accounted for by not running ~12.5% of hours, which is baked into
+    the daily bar already.
+
+    The real filter: in live, the agent runs every 5 min and only fires when
+    session is eligible. A daily backtest over-counts by allowing one entry per day
+    regardless of session timing. We approximate by applying a representative-hour
+    check: simulate entry at London open (10 UTC) for most pairs, Asia open (02 UTC)
+    for Asia pairs. If neither passes, skip the pair for the day.
+    """
+    # All pairs are eligible during London (08-13) and NY (13-21)
+    # Asia pairs (00-08) are additionally eligible during Asia session
+    # The only pairs that would be filtered out are ones not in any session window,
+    # which doesn't happen for V1_TREND_PAIRS. The real constraint is: pairs NOT
+    # in ASIA_SESSION_PAIRS cannot trade during 00-08 UTC (Asia hours).
+    # Since daily bars collapse all hours, we accept this approximation.
+    # The substantive filter is already applied: V1_TREND_PAIRS excludes GBPUSD/USDCAD.
+    return True  # All V1 Trend pairs are eligible in at least London+NY
+
+
+def _session_eligible_at_hour(pair: str, utc_hour: int) -> bool:
+    """Exact session check matching live agent — used for 4H bar timestamp filtering."""
+    for session, (start, end) in SESSION_WINDOWS_UTC.items():
+        if session == "dead_zone":
+            continue
+        if start <= utc_hour < end:
+            if session == "asia" and pair not in ASIA_SESSION_PAIRS:
+                return False
+            return True
+    return False  # dead zone
+
+
 def _reentry_blocked(state: BacktestState, pair: str, direction: str, current_date: date) -> bool:
     key = f"{pair}_{direction}"
     blocked_until = state.reentry_blocks.get(key)
@@ -412,14 +450,35 @@ def _technical_signal(closes_4h, highs_4h, lows_4h, daily_atr):
     if not hist_expanding:
         failures.append("histogram_not_expanding")
 
-    # Direction from MACD
-    if macd_now > signal_now and hist_now > 0:
-        direction = "long"
-        setup_type = "trend_long"
-    elif macd_now < signal_now and hist_now < 0:
-        direction = "short"
-        setup_type = "trend_short"
+    # Direction from MACD — require crossover within MACD_LOOKBACK_BARS (matches live agent)
+    valid_hist = [(i, v) for i, v in enumerate(histogram) if v is not None]
+    crossover_direction = None
+    crossover_bars_ago = None
+    for lookback in range(1, MACD_LOOKBACK_BARS + 2):
+        if len(valid_hist) < lookback + 1:
+            break
+        h_curr = valid_hist[-lookback][1]
+        h_prev = valid_hist[-lookback - 1][1]
+        if h_prev < 0 and h_curr >= 0:
+            crossover_bars_ago = lookback
+            crossover_direction = "long"
+            break
+        elif h_prev > 0 and h_curr <= 0:
+            crossover_bars_ago = lookback
+            crossover_direction = "short"
+            break
+
+    if crossover_direction is None or crossover_bars_ago > MACD_LOOKBACK_BARS:
+        failures.append(f"no_macd_crossover_within_{MACD_LOOKBACK_BARS}_bars")
+        direction = None
+        setup_type = None
     else:
+        direction = crossover_direction
+        setup_type = "trend_long" if direction == "long" else "trend_short"
+
+    if direction is None:
+        if failures:
+            return None, None, failures
         return None, None, ["no_macd_direction"]
 
     # RSI gate
@@ -604,6 +663,11 @@ def run_backtest(pairs: List[str], months: int = 12):
                        if (b["ts"].date() if hasattr(b["ts"], "date") else b["ts"]) <= dt]
             bars_4h = _resample_1h_to_4h(pair_1h)
             if len(bars_4h) < 60:
+                continue
+
+            # Session eligibility — check last 4H bar's hour (the triggering bar)
+            last_4h_hour = bars_4h[-1]["ts"].hour if hasattr(bars_4h[-1]["ts"], "hour") else 12
+            if not _session_eligible_at_hour(pair, last_4h_hour):
                 continue
 
             closes_4h = [b["close"] for b in bars_4h]

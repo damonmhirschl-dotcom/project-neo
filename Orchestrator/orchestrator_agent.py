@@ -135,10 +135,10 @@ CROSS_PAIR_SESSIONS = {
     'AUDNZD': ['asian', 'london'],
     'AUDJPY': ['asian', 'london'],
     'CADJPY': ['newyork', 'overlap'],
-    'NZDJPY': ['asian'],
+    'NZDJPY': ['asian', 'london'],
     # New pairs added 2026-04-25
     'EURNZD': ['london', 'overlap'],
-    'AUDCAD': ['asian', 'overlap'],
+    'AUDCAD': ['asian', 'london', 'overlap'],
 }
 
 # Per-cycle convergence cache for collapse-alert delta comparison

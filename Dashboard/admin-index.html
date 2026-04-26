@@ -64,6 +64,17 @@ html,body{background:var(--bg);color:var(--text1);font-family:var(--sans);font-s
 .stress-low{background:var(--green-dim);color:var(--green);border:1px solid #00d4aa33}
 .stress-med{background:var(--amber-dim);color:var(--amber);border:1px solid #f59e0b33}
 .stress-high{background:var(--red-dim);color:var(--red);border:1px solid #ff475733}
+.strategy-toggle{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);padding:2px}
+.strategy-btn{font-family:var(--mono);font-size:.62rem;font-weight:600;padding:3px 9px;border:none;border-radius:2px;cursor:pointer;background:transparent;color:var(--text3);letter-spacing:.04em;transition:background .15s,color .15s}
+.strategy-btn.active{background:var(--panel2);color:var(--text1)}
+.strategy-btn.active.swing{color:var(--green)}
+.strategy-btn.active.trend{color:var(--blue)}
+.strategy-btn.active.combined{color:var(--amber)}
+.heat-bar-wrap{display:flex;align-items:center;gap:8px;padding:5px 0}
+.heat-seg{height:6px;border-radius:2px;transition:width .3s;min-width:2px}
+.heat-swing{background:var(--green)}
+.heat-trend{background:var(--blue)}
+.heat-empty{background:var(--border2);flex:1}
 
 /* PANEL SHELL */
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px;overflow:hidden}
@@ -560,7 +571,7 @@ function Login({onAuth}) {
 /* =====================================================
    ROW 1: HEADER
    ===================================================== */
-function Header({data,lastUpdated,onRefresh,refreshing}) {
+function Header({data,lastUpdated,onRefresh,refreshing,strategyView,setStrategyView}) {
   const [clock,setClock] = useState('');
   useEffect(()=>{
     const tick=()=>setClock(new Date().toUTCString().replace(/.*,\s*/,'').replace(/\s+GMT$/,' UTC'));
@@ -604,7 +615,11 @@ function Header({data,lastUpdated,onRefresh,refreshing}) {
           </div>
           <div className="header-stat">
             <span className="lbl">Strategy</span>
-            <span className="val mono-sm" style={{color:'var(--green)',fontWeight:600}}>V1 SWING</span>
+            <div className="strategy-toggle">
+              {[['v1_swing','SWING','swing'],['v1_trend','TREND','trend'],['combined','ALL','combined']].map(([val,lbl,cls])=>(
+                <button key={val} className={`strategy-btn ${strategyView===val?'active '+cls:''}`} onClick={()=>setStrategyView(val)}>{lbl}</button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="header-right">
@@ -896,7 +911,7 @@ function OpenPositionsPanel({openPositions}) {
                   : '—';
                 return (
                   <tr key={i}>
-                    <td className="mono">{'V1 SWING'}</td>
+                    <td className="mono">{p.strategy==='v1_trend'?'V1 TR':'V1 SW'}</td>
                     <td className="mono" style={{fontWeight:600}}>{p.instrument||p.pair||'—'}</td>
                     <td className={p.direction==='long'?'dir-long':'dir-short'}>{(p.direction||'').toUpperCase()}</td>
                     <td className="mono">{p.position_size!=null?Number(p.position_size).toLocaleString():'—'}</td>
@@ -1259,7 +1274,7 @@ function RecentTradesPanel({trades}) {
                 return (
                   <tr key={i}>
                     <td className="mono val-dim" style={{fontSize:'.62rem'}}>{exitTs?relTime(exitTs):'—'}</td>
-                    <td className="mono" style={{fontSize:'.65rem'}}>{'V1 SW'}</td>
+                    <td className="mono" style={{fontSize:'.65rem'}}>{t.strategy==='v1_trend'?'V1 TR':'V1 SW'}</td>
                     <td className="mono" style={{fontWeight:600}}>{t.instrument||t.pair||'—'}</td>
                     <td className={t.direction==='long'?'dir-long':'dir-short'}>{(t.direction||'').toUpperCase()}</td>
                     <td className="mono">{fmt(t.entry_price,4)}</td>
@@ -1504,7 +1519,7 @@ function TradesTab({trades, openPositions, onDownload}) {
                   return (
                     <tr key={i}>
                       <td className="mono val-dim" style={{fontSize:'.62rem'}}>{exitTs?relTime(exitTs):'—'}</td>
-                      <td className="mono" style={{fontSize:'.65rem'}}>{'V1 SW'}</td>
+                      <td className="mono" style={{fontSize:'.65rem'}}>{t.strategy==='v1_trend'?'V1 TR':'V1 SW'}</td>
                       <td className="mono" style={{fontWeight:600}}>{t.instrument||t.pair||'—'}</td>
                       <td className={t.direction==='long'?'dir-long':'dir-short'}>{(t.direction||'').toUpperCase()}</td>
                       <td className="mono">{fmt(t.entry_price,4)}</td>
@@ -1712,6 +1727,7 @@ function App() {
   });
   const [proposals,setProposals] = useState([]);
   const [activeTab,setActiveTab] = useState('overview');
+  const [strategyView,setStrategyView] = useState('combined');
   const [lastUpdated,setLastUpdated] = useState(null);
   const [refreshing,setRefreshing] = useState(false);
 
@@ -1770,7 +1786,7 @@ function App() {
 
   return (
     <div>
-      <Header data={data} lastUpdated={lastUpdated} onRefresh={refresh} refreshing={refreshing}/>
+      <Header data={data} lastUpdated={lastUpdated} onRefresh={refresh} refreshing={refreshing} strategyView={strategyView} setStrategyView={setStrategyView}/>
       <div className="page-wrap"><div className="dash">
 
         {/* TAB NAV */}
@@ -1788,23 +1804,58 @@ function App() {
 
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (<>
-          <div className="row row-3">
-            <GateStatusPanel decisions={decisions}/>
-            <CurrencyStrengthPanel currency_strength={currency_strength}/>
-            <MacroSignalsPanel decisions={decisions} signals_full={signals_full} currency_strength={currency_strength}/>
-          </div>
-          <div className="row row-6040">
-            <OpenPositionsPanel openPositions={open_positions}/>
-            <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} openPositions={open_positions}/>
-          </div>
-          <div className="row row-3">
-            <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
-            <LearningPanel learning={learning} proposals={proposals}/>
-            <NewsBlackoutPanel/>
-          </div>
-          <div className="row row-1">
-            <RecentTradesPanel trades={trades}/>
-          </div>
+
+          {strategyView === 'combined' && (<>
+            <div className="row row-3">
+              <GateStatusPanel decisions={decisions}/>
+              <V1TrendGatePanel signals_full={signals_full}/>
+              <CombinedHeatPanel openPositions={open_positions}/>
+            </div>
+            <div className="row row-6040">
+              <OpenPositionsPanel openPositions={open_positions}/>
+              <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} openPositions={open_positions}/>
+            </div>
+            <div className="row row-3">
+              <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
+              <V1TrendEMAPanel signals_full={signals_full}/>
+              <NewsBlackoutPanel/>
+            </div>
+            <div className="row row-1"><RecentTradesPanel trades={trades}/></div>
+          </>)}
+
+          {strategyView === 'v1_swing' && (<>
+            <div className="row row-3">
+              <GateStatusPanel decisions={decisions}/>
+              <CurrencyStrengthPanel currency_strength={currency_strength}/>
+              <MacroSignalsPanel decisions={decisions} signals_full={signals_full} currency_strength={currency_strength}/>
+            </div>
+            <div className="row row-6040">
+              <OpenPositionsPanel openPositions={open_positions}/>
+              <PortfolioExposurePanel portfolio_exposure={portfolio_exposure} openPositions={open_positions}/>
+            </div>
+            <div className="row row-3">
+              <TechnicalSignalsPanel signals_full={signals_full} decisions={decisions}/>
+              <LearningPanel learning={learning} proposals={proposals}/>
+              <NewsBlackoutPanel/>
+            </div>
+            <div className="row row-1"><RecentTradesPanel trades={trades}/></div>
+          </>)}
+
+          {strategyView === 'v1_trend' && (<>
+            <div className="row row-3">
+              <V1TrendGatePanel signals_full={signals_full}/>
+              <V1TrendEMAPanel signals_full={signals_full}/>
+              <NewsBlackoutPanel/>
+            </div>
+            <div className="row row-6040">
+              <V1TrendPositionsPanel openPositions={open_positions}/>
+              <LearningPanel learning={learning} proposals={proposals}/>
+            </div>
+            <div className="row row-1">
+              <RecentTradesPanel trades={(trades||[]).filter(t=>t.strategy==='v1_trend')}/>
+            </div>
+          </>)}
+
         </>)}
 
         {/* AGENT OBSERVATION TAB */}
@@ -1888,6 +1939,171 @@ function resetSessionTimer() {
   document.addEventListener(e, resetSessionTimer, {passive: true})
 );
 resetSessionTimer();
+
+
+/* ===================================================== V1 TREND PANELS ===================================================== */
+
+function V1TrendEMAPanel({signals_full}) {
+  const V1_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD','EUR/GBP','EUR/AUD','EUR/CHF','EUR/CAD','EUR/JPY','EUR/NZD','GBP/AUD','GBP/CAD','GBP/CHF','GBP/JPY','AUD/JPY','AUD/CAD','AUD/NZD','NZD/JPY','CAD/JPY'];
+  const pairMap = {};
+  (signals_full||[]).filter(s=>s.agent_name==='v1_trend_macro').forEach(s=>{
+    const inst = s.instrument||'';
+    const display = inst.length===6 ? inst.slice(0,3)+'/'+inst.slice(3) : inst;
+    if (!pairMap[display] || new Date(s.created_at)>new Date(pairMap[display].created_at)) {
+      pairMap[display] = {...(s.payload||{}), bias:s.bias, score:s.score, created_at:s.created_at};
+    }
+  });
+  const rows = V1_PAIRS.map(pair => ({pair, d:pairMap[pair]||null}));
+  const hasData = rows.some(r=>r.d);
+  const longCount = rows.filter(r=>r.d&&r.d.direction==='long').length;
+  const shortCount = rows.filter(r=>r.d&&r.d.direction==='short').length;
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">V1 Trend — EMA Regime</span>
+        <span className="panel-sub">{hasData?`${longCount}L · ${shortCount}S · ${22-longCount-shortCount}N`:'no data'}</span>
+      </div>
+      {!hasData ? (
+        <div className="empty-state"><div className="em-icon">◌</div><span>Waiting for v1_trend_macro signals</span></div>
+      ) : rows.map(({pair,d},i) => {
+        if (!d) return <div key={i} style={{display:'grid',gridTemplateColumns:'64px 1fr',gap:6,padding:'3px 6px'}}><span className="tech-pair">{pair}</span><span className="conv-sub">—</span></div>;
+        const dir=d.direction||'neutral';
+        const dirCls=dir==='long'?'dir-bull':dir==='short'?'dir-bear':'dir-neut';
+        const spreadPct=d.ema_spread_pct?(d.ema_spread_pct*100).toFixed(2)+'%':'—';
+        return (
+          <div key={i} style={{display:'grid',gridTemplateColumns:'64px 48px 48px 36px 1fr 52px',gap:6,padding:'3px 6px',borderRadius:'var(--r)'}}>
+            <span className="conv-pair" style={{fontSize:'.65rem'}}>{pair}</span>
+            <span className="mono-sm text-dim">{d.ema50?d.ema50.toFixed(4):'—'}</span>
+            <span className="mono-sm text-dim">{d.ema200?d.ema200.toFixed(4):'—'}</span>
+            <span className={`mono-sm ${d.slope_ok?'gate-pass':'gate-block'}`}>{d.slope_ok!=null?(d.slope_ok?'↑':'↓'):'—'}</span>
+            <span className="mono-sm text-dim">{spreadPct}</span>
+            <span className={`dir-badge ${dirCls}`} style={{fontSize:'.57rem',textAlign:'center'}}>{dir.toUpperCase()}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function V1TrendGatePanel({signals_full}) {
+  const V1_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','EUR/JPY','GBP/JPY','AUD/JPY','CAD/JPY','EUR/GBP','EUR/AUD'];
+  const techMap = {};
+  (signals_full||[]).filter(s=>s.agent_name==='v1_trend_technical').forEach(s=>{
+    const inst=s.instrument||'';
+    const display=inst.length===6?inst.slice(0,3)+'/'+inst.slice(3):inst;
+    if (!techMap[display]||new Date(s.created_at)>new Date(techMap[display].created_at)) {
+      techMap[display]={...(s.payload||{}),bias:s.bias,score:s.score};
+    }
+  });
+  const hasData=Object.keys(techMap).length>0;
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">V1 Trend — Gate Status</span>
+        <span className="panel-sub">ADX · MACD · RSI</span>
+      </div>
+      {!hasData ? (
+        <div className="empty-state"><div className="em-icon">◌</div><span>Waiting for v1_trend_technical signals</span></div>
+      ) : V1_PAIRS.map((pair,i) => {
+        const d=techMap[pair];
+        if (!d) return <div key={i} style={{display:'grid',gridTemplateColumns:'64px 1fr',gap:4,padding:'3px 4px'}}><span className="tech-pair">{pair}</span><span className="conv-sub">no signal</span></div>;
+        const adxPass=(d.adx||0)>25;
+        const macdPass=d.crossover_bars_ago!=null&&d.crossover_bars_ago<=2;
+        const histPass=d.histogram_expanding===true;
+        const rsiPass=d.score>0?(d.rsi||0)>50:(d.rsi||0)<50;
+        const allPass=d.score>0;
+        return (
+          <div key={i} style={{display:'grid',gridTemplateColumns:'64px 40px 40px 40px 40px 40px 40px',gap:4,padding:'3px 4px',borderRadius:'var(--r)'}}>
+            <span className="tech-pair">{pair}</span>
+            <span className={`mono-sm ${adxPass?'gate-pass':'gate-block'}`} style={{textAlign:'center'}}>{d.adx?d.adx.toFixed(0):'—'}</span>
+            <span className={`mono-sm ${rsiPass?'gate-pass':'gate-dim'}`} style={{textAlign:'center'}}>{d.rsi?d.rsi.toFixed(0):'—'}</span>
+            <span className={`mono-sm ${macdPass?'gate-pass':'gate-block'}`} style={{textAlign:'center'}}>{macdPass?`${d.crossover_bars_ago}b`:'✗'}</span>
+            <span className={`mono-sm ${histPass?'gate-pass':'gate-block'}`} style={{textAlign:'center'}}>{histPass?'↗':'✗'}</span>
+            <span className="mono-sm text-dim" style={{textAlign:'center'}}>{d.score||0}</span>
+            <span className={`mono-sm ${allPass?'gate-pass':'gate-block'}`} style={{textAlign:'center',fontWeight:600}}>{allPass?'✓':'✗'}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function V1TrendPositionsPanel({openPositions}) {
+  const pos=(Array.isArray(openPositions)?openPositions:[]).filter(p=>p.strategy==='v1_trend');
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">V1 Trend — Open Positions</span>
+        <span className="panel-sub">{pos.length} open</span>
+      </div>
+      {!pos.length ? (
+        <div className="empty-state"><div className="em-icon">◻</div><span>No V1 Trend positions open</span></div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Pair</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Trail</th><th>T1</th><th>Days</th></tr></thead>
+            <tbody>
+              {pos.map((p,i)=>{
+                const holdDays=p.hold_hours?(p.hold_hours/24).toFixed(1):'—';
+                return (
+                  <tr key={i}>
+                    <td className="mono" style={{fontWeight:600}}>{p.instrument||p.pair||'—'}</td>
+                    <td className={p.direction==='long'?'dir-long':'dir-short'}>{(p.direction||'').toUpperCase()}</td>
+                    <td className="mono">{fmt(p.entry_price,4)}</td>
+                    <td className="mono val-dim">{fmt(p.stop_price,4)}</td>
+                    <td className="mono" style={{color:p.trail_stop_price?'var(--blue)':'var(--text3)'}}>{p.trail_stop_price?fmt(p.trail_stop_price,4):'—'}</td>
+                    <td className={p.target_1_hit?'val-pos':'val-dim'}>{p.target_1_hit?'✓':'—'}</td>
+                    <td className="mono val-dim">{holdDays}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CombinedHeatPanel({openPositions}) {
+  const pos=Array.isArray(openPositions)?openPositions:[];
+  const swingPos=pos.filter(p=>!p.strategy||p.strategy==='v1_swing');
+  const trendPos=pos.filter(p=>p.strategy==='v1_trend');
+  const swingHeat=swingPos.length*1.0;
+  const trendHeat=trendPos.length*0.75;
+  const totalHeat=swingHeat+trendHeat;
+  const combinedCap=5.0;
+  const swingPct=Math.min(100,(swingHeat/combinedCap)*100);
+  const trendPct=Math.min(100,(trendHeat/combinedCap)*100);
+  const heatColor=totalHeat>4?'var(--red)':totalHeat>2.5?'var(--amber)':'var(--green)';
+  return (
+    <div className="panel">
+      <div className="panel-hdr">
+        <span className="panel-title">Combined Portfolio Heat</span>
+        <span className="panel-sub" style={{color:heatColor,fontFamily:'var(--mono)',fontWeight:600}}>{totalHeat.toFixed(2)}% / {combinedCap}% cap</span>
+      </div>
+      <div className="heat-bar-wrap">
+        <span className="mono-sm text-dim" style={{width:70,flexShrink:0}}>V1 Swing</span>
+        <div style={{flex:1,height:6,background:'var(--border2)',borderRadius:4,overflow:'hidden'}}>
+          <div className="heat-seg heat-swing" style={{width:`${swingPct}%`}}/>
+        </div>
+        <span className="mono-sm" style={{color:'var(--green)',width:50,textAlign:'right'}}>{swingHeat.toFixed(2)}%</span>
+      </div>
+      <div className="heat-bar-wrap">
+        <span className="mono-sm text-dim" style={{width:70,flexShrink:0}}>V1 Trend</span>
+        <div style={{flex:1,height:6,background:'var(--border2)',borderRadius:4,overflow:'hidden'}}>
+          <div className="heat-seg heat-trend" style={{width:`${trendPct}%`}}/>
+        </div>
+        <span className="mono-sm" style={{color:'var(--blue)',width:50,textAlign:'right'}}>{trendHeat.toFixed(2)}%</span>
+      </div>
+      <div style={{marginTop:8,paddingTop:6,borderTop:'1px solid var(--border)',display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+        <div className="macro-stat"><span className="macro-lbl">Swing</span><span className="macro-val" style={{color:'var(--green)'}}>{swingPos.length} / 4</span></div>
+        <div className="macro-stat"><span className="macro-lbl">Trend</span><span className="macro-val" style={{color:'var(--blue)'}}>{trendPos.length} / 3</span></div>
+      </div>
+      {totalHeat>=4.5&&<div className="exp-warn">⚠ Combined heat {totalHeat.toFixed(2)}% — approaching 5% RG cap</div>}
+    </div>
+  );
+}
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>

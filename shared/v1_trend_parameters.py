@@ -72,7 +72,7 @@ TIME_STOP_DAYS = 35
 # ---------------------------------------------------------------------------
 # Risk and sizing
 # ---------------------------------------------------------------------------
-RISK_PER_TRADE_PCT             = 0.01
+RISK_PER_TRADE_PCT             = 0.03
 MAX_CONCURRENT_POSITIONS       = 4
 MIN_RR                         = 2.5
 CONCENTRATION_CAP_PER_CURRENCY = 2

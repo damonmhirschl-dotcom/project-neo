@@ -103,7 +103,27 @@ MIN_TRADES_FOR_ACTIVATION = 20
 FAILURE_RATE_FLOOR = 0.65          # Auto-deactivate above this
 CONFIDENCE_DECAY_DAYS = 30         # Half-life for confidence decay
 ROLLING_WINDOW_SIZE = 30           # Out-of-sample validation window
-STRESS_EXCLUSION_THRESHOLD = 70    # Losses at stress > 70 excluded from pattern scoring
+STRESS_EXCLUSION_THRESHOLD = 70
+# =============================================================================
+# RESEARCH-BACKED PAIR PRIORS
+# =============================================================================
+PAIR_TIERS = {
+    1: ["AUDUSD","AUDCAD","AUDNZD","AUDJPY","CADJPY","EURJPY","NZDJPY"],
+    2: ["EURUSD","USDCHF","NZDUSD","EURCAD","EURCHF","EURGBP","EURNZD"],
+    3: ["GBPAUD","GBPCAD","GBPCHF","GBPJPY","GBPUSD","USDCAD","USDJPY"],
+}
+PAIR_NEWS_SENSITIVE = {"GBPAUD","GBPCAD","GBPCHF","GBPJPY","GBPUSD","USDJPY","USDCAD"}
+PAIR_PRIOR_MIN_ADX = {
+    **{p: 25.0 for p in PAIR_TIERS[1]},
+    **{p: 27.0 for p in PAIR_TIERS[2]},
+    **{p: 30.0 for p in PAIR_TIERS[3]},
+}
+PAIR_PRIOR_MIN_TRADES = {
+    **{p: 20 for p in PAIR_TIERS[1]},
+    **{p: 20 for p in PAIR_TIERS[2]},
+    **{p: 30 for p in PAIR_TIERS[3]},
+}
+    # Losses at stress > 70 excluded from pattern scoring
 
 # Sortino/Sharpe targets
 SORTINO_TARGET_PAPER = 2.0
@@ -1050,7 +1070,9 @@ class PatternMemoryManager:
         failure_rate = losses / recent_total if recent_total > 0 else 0.5
 
         # Rule 1: Minimum trades for activation
-        active = total >= MIN_TRADES_FOR_ACTIVATION
+        pair = pattern_key.split("_")[0]
+        min_trades = PAIR_PRIOR_MIN_TRADES.get(pair, MIN_TRADES_FOR_ACTIVATION)
+        active = total >= min_trades
 
         # Rule 5: Failure rate floor
         if failure_rate > FAILURE_RATE_FLOOR:
@@ -1519,6 +1541,8 @@ class LearningModule:
         self.weekly_report = WeeklyReportGenerator(self.db, user_id)
         self.session_id = str(uuid.uuid4())
         self.cycle_count = 0
+        if not dry_run:
+            self.seed_research_priors()
 
     def _write_cycle_log(self, cycle_start: float, autopsies: int,
                           rejections: int, proposals: int, arch_issues: int) -> None:
@@ -1634,6 +1658,37 @@ class LearningModule:
             )
         except Exception as _e:
             logger.debug(f"_write_cycle_log failed: {_e}")
+
+
+    def seed_research_priors(self):
+        """Pre-seed technical_timing_params with research-backed pair tier priors.
+        Runs once -- skips if records already exist. Overridden by live data once
+        sample_size reaches MIN_SAMPLE (20) in get_optimal_thresholds()."""
+        cur = self.db.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) AS n FROM forex_network.technical_timing_params WHERE sample_size = 0")
+            if int(cur.fetchone()["n"]) > 0:
+                logger.info("seed_research_priors: priors already seeded -- skipping")
+                return
+            sessions = ["asian", "london", "overlap", "newyork"]
+            seeded = 0
+            for pair, min_adx in PAIR_PRIOR_MIN_ADX.items():
+                for session in sessions:
+                    cur.execute("""
+                        INSERT INTO forex_network.technical_timing_params
+                            (instrument, session, optimal_rsi_low, optimal_rsi_high,
+                             min_adx, sample_size, win_rate, computed_at)
+                        VALUES (%s, %s, 40.0, 50.0, %s, 0, 0.0, NOW())
+                        ON CONFLICT (instrument, session) DO NOTHING
+                    """, (pair, session, min_adx))
+                    seeded += 1
+            self.db.commit()
+            logger.info(f"seed_research_priors: seeded {seeded} pair/session priors from research tier classification")
+        except Exception as e:
+            logger.error(f"seed_research_priors failed: {e}")
+            self.db.rollback()
+        finally:
+            cur.close()
 
     def write_heartbeat(self):
         cur = self.db.cursor()
