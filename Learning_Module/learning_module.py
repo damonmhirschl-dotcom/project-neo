@@ -2844,6 +2844,141 @@ class LearningModule:
                     'evidence': {'long': long_stats, 'short': short_stats},
                 })
 
+        # 6. Exit profile drift: time_stop dominance, T1 unreachable, trail inactive
+        try:
+            cur = self.db.cursor()
+            try:
+                cur.execute("""
+                    SELECT exit_reason, count(*) as cnt
+                    FROM forex_network.trades
+                    WHERE user_id = %s AND exit_time IS NOT NULL
+                      AND strategy = 'v1_swing'
+                    GROUP BY exit_reason
+                """, (self.user_id,))
+                exit_rows = cur.fetchall()
+
+                cur.execute("""
+                    SELECT count(*) as total,
+                           count(*) FILTER (WHERE target_1_hit = TRUE) as t1_hits
+                    FROM forex_network.trades
+                    WHERE user_id = %s AND exit_time IS NOT NULL
+                      AND strategy = 'v1_swing'
+                """, (self.user_id,))
+                t1_row = cur.fetchone()
+            finally:
+                cur.close()
+
+            exit_dist = {r['exit_reason']: int(r['cnt']) for r in exit_rows} if exit_rows else {}
+            total_closed = sum(exit_dist.values())
+            t1_total = int(t1_row['total']) if t1_row else 0
+            t1_hits = int(t1_row['t1_hits']) if t1_row else 0
+
+            if total_closed >= 20:
+                time_stop_count = exit_dist.get('time_stop', 0)
+                trail_count = exit_dist.get('trailing_stop', 0)
+                time_stop_rate = time_stop_count / total_closed
+                t1_hit_rate = t1_hits / t1_total if t1_total > 0 else 0.0
+                trail_rate = trail_count / total_closed
+
+                exit_data = {
+                    'total_closed': total_closed,
+                    'exit_distribution': exit_dist,
+                    'time_stop_rate': round(time_stop_rate, 3),
+                    't1_hit_rate': round(t1_hit_rate, 3),
+                    'trail_rate': round(trail_rate, 3),
+                }
+
+                if time_stop_rate > 0.85:
+                    proposals.append({
+                        'proposal_type': 'exit_profile_drift',
+                        'pair': None,
+                        'instrument': None,
+                        'priority': 'high',
+                        'title': (
+                            f"Time stop dominance: {time_stop_rate:.0%} of exits "
+                            f"({time_stop_count}/{total_closed})"
+                        ),
+                        'reasoning': (
+                            f"T1 target may be too wide or time stop too short. "
+                            f"Time stop rate {time_stop_rate:.0%} > 85% threshold. "
+                            f"T1 hit rate {t1_hit_rate:.0%}, trail rate {trail_rate:.0%}."
+                        ),
+                        'message': (
+                            f"Time stop {time_stop_rate:.0%} over {total_closed} trades — "
+                            f"consider reducing ATR_TARGET_1_MULTIPLIER or extending time stop"
+                        ),
+                        'data_supporting': exit_data,
+                        'suggested_action': (
+                            "Reduce ATR_TARGET_1_MULTIPLIER or extend TIME_STOP_DAYS"
+                        ),
+                        'expected_impact': (
+                            "More trades reach T1/trail exit, improving avg R:R"
+                        ),
+                        'auto_apply': False,
+                        'evidence': exit_data,
+                    })
+
+                if t1_hit_rate < 0.15:
+                    proposals.append({
+                        'proposal_type': 'exit_profile_drift',
+                        'pair': None,
+                        'instrument': None,
+                        'priority': 'medium',
+                        'title': (
+                            f"T1 target unreachable: {t1_hit_rate:.0%} hit rate "
+                            f"({t1_hits}/{t1_total})"
+                        ),
+                        'reasoning': (
+                            f"T1 hit rate {t1_hit_rate:.0%} < 15% threshold over "
+                            f"{t1_total} trades. ATR_TARGET_1_MULTIPLIER may be too high."
+                        ),
+                        'message': (
+                            f"T1 hit rate {t1_hit_rate:.0%} — consider reducing "
+                            f"ATR_TARGET_1_MULTIPLIER"
+                        ),
+                        'data_supporting': exit_data,
+                        'suggested_action': (
+                            "Reduce ATR_TARGET_1_MULTIPLIER (currently 3×)"
+                        ),
+                        'expected_impact': (
+                            "Higher T1 hit rate → better realised R:R"
+                        ),
+                        'auto_apply': False,
+                        'evidence': exit_data,
+                    })
+
+                if trail_rate < 0.05:
+                    proposals.append({
+                        'proposal_type': 'exit_profile_drift',
+                        'pair': None,
+                        'instrument': None,
+                        'priority': 'medium',
+                        'title': (
+                            f"Trail never activating: {trail_rate:.0%} trail exits "
+                            f"({trail_count}/{total_closed})"
+                        ),
+                        'reasoning': (
+                            f"Trail hit rate {trail_rate:.0%} < 5% threshold. "
+                            f"Trail may be firing after time stop; review trail vs "
+                            f"time stop relationship."
+                        ),
+                        'message': (
+                            f"Trail rate {trail_rate:.0%} — review trail activation "
+                            f"vs time stop timing"
+                        ),
+                        'data_supporting': exit_data,
+                        'suggested_action': (
+                            "Review ATR_TRAIL_MULTIPLIER vs TIME_STOP_DAYS interaction"
+                        ),
+                        'expected_impact': (
+                            "Trail captures trend continuations that time stop currently kills"
+                        ),
+                        'auto_apply': False,
+                        'evidence': exit_data,
+                    })
+        except Exception as e:
+            logger.debug(f"Exit profile drift proposal check failed: {e}")
+
         if proposals and not self.dry_run:
             self._write_v1_proposals_to_table(proposals)  # single sink: forex_network.proposals
             logger.info(
