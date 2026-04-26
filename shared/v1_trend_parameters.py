@@ -67,7 +67,7 @@ ATR_TRAIL_MULTIPLIER = 2.5
 # Position management
 # ---------------------------------------------------------------------------
 T1_CLOSE_PCT   = 0.30
-TIME_STOP_DAYS = 35
+TIME_STOP_DAYS = 365  # No fixed time stop per CTA research -- trail is the exit
 
 # ---------------------------------------------------------------------------
 # Risk and sizing

@@ -2232,10 +2232,10 @@ class ExecutionAgent:
             # ── T1 partial exit monitoring (v0.1)
             _regime = (trade.get("regime_at_entry") or "").lower()
             _trade_strat = trade.get("strategy") or "v1_swing"
-            _is_trending = "trend" in _regime
+            _is_trending = "trend" in _regime or _trade_strat == "v1_trend"
             _t1_hit = trade.get("target_1_hit", False)
-            # V1 Trend always uses T1 partial exit (30% at T1); V1 Swing skips for trending
-            if not _t1_hit and (_trade_strat == "v1_trend" or not _is_trending):
+            # V1 Trend: always skip T1 (trail only per CTA research). V1 Swing skips for trending regime.
+            if not _t1_hit and not _is_trending:
                 # Resolve T1 price: prefer trade_parameters['target_1_price'],
                 # fall back to target_price column (legacy/ATR-no-T2 trades)
                 _t1_price_raw = None
