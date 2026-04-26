@@ -769,6 +769,9 @@ class RiskDataReader:
         }
 
 
+class CorrelationChecker:
+    """Enforces correlation-based position blocking."""
+
     def __init__(self, user_id: str, threshold: float = 0.70):
         self.user_id = user_id
         self.threshold = threshold
@@ -878,6 +881,79 @@ def compute_position_risk_pct(
 # =============================================================================
 # POSITION SIZER
 # =============================================================================
+class CorrelationChecker:
+    """Enforces correlation-based position blocking."""
+
+    def __init__(self, user_id: str, threshold: float = 0.70):
+        self.user_id = user_id
+        self.threshold = threshold
+
+    def check(
+        self,
+        instrument: str,
+        direction: str,
+        open_positions: List[Dict[str, Any]],
+        correlations: Dict[Tuple[str, str], float],
+        market_context: Dict[str, Any],
+    ) -> Tuple[bool, List[str]]:
+        """
+        Check if proposed trade would violate correlation limits.
+        Returns (passed, list_of_reasons).
+        """
+        reasons = []
+
+        # Check R4 relaxation from regime agent
+        relaxation_active = False
+        relaxed_pair = None
+        # In production, read from market_context_snapshots metadata
+        # For now, check correlations directly
+
+        for pos in open_positions:
+            pos_instrument = pos["instrument"]
+            pos_direction = pos["direction"]
+
+            if pos_instrument == instrument:
+                # Same pair — already checked by max_open_positions
+                continue
+
+            # Look up correlation
+            pair_key = (instrument, pos_instrument)
+            reverse_key = (pos_instrument, instrument)
+            corr = correlations.get(pair_key) or correlations.get(reverse_key)
+
+            if corr is None:
+                continue
+
+            abs_corr = abs(corr)
+            if abs_corr < self.threshold:
+                continue
+
+            # Correlation exceeds threshold — check direction
+            blocked = False
+
+            if corr > 0:
+                # Positive correlation: block if same direction
+                if direction == pos_direction:
+                    blocked = True
+                    reasons.append(
+                        f"Correlation block: {instrument} {direction} + {pos_instrument} "
+                        f"{pos_direction} (corr: {corr:+.2f}, threshold: {self.threshold}). "
+                        f"Same direction in positively correlated pairs doubles exposure."
+                    )
+            else:
+                # Negative correlation: block if opposite direction
+                if direction != pos_direction:
+                    blocked = True
+                    reasons.append(
+                        f"Correlation block: {instrument} {direction} + {pos_instrument} "
+                        f"{pos_direction} (corr: {corr:+.2f}, threshold: {self.threshold}). "
+                        f"Opposite direction in negatively correlated pairs doubles exposure."
+                    )
+
+        return len(reasons) == 0, reasons
+
+
+
 class PositionSizer:
     """Calculates position size based on ATR, Kelly fraction, and multipliers."""
 
